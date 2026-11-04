@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -82,3 +83,129 @@ def test_legacy_response_does_not_print_missing_diagnostics_as_an_empty_gap_list
     assert summary["current_run_gaps"] is None
     assert summary["current_run_skip_reasons"] is None
     assert summary["current_run_diagnostics_available"] is False
+
+
+def test_next_open_continues_persisted_progress_beyond_two_requests(tmp_path, capsys):
+    remaining = iter([222, 123, 30, 0])
+    calls = []
+    def post(endpoint, token, payload):
+        calls.append(dict(payload))
+        count = next(remaining) if payload["return_basis"] == "next_open" else 0
+        return {"status": "completed", "as_of_date": "2026-11-03",
+                "retryable_skipped_count": count,
+                "report": {"remaining_retryable_window_count": count}}
+    assert runner().run(endpoint="test", token="private", run_date="2026-11-03",
+        output_dir=tmp_path, request=post, sleep=lambda _: None) == 0
+    assert [c["return_basis"] for c in calls] == ["signal_close"] + ["next_open"] * 4
+    assert {c["as_of_date"] for c in calls} == {"2026-11-03"}
+    assert len(list(tmp_path.glob("next_open-attempt-*.json"))) == 4
+
+
+def test_next_open_stops_when_remaining_backlog_no_longer_decreases(tmp_path, capsys):
+    calls = []
+    def post(endpoint, token, payload):
+        calls.append(payload["return_basis"])
+        count = 123 if payload["return_basis"] == "next_open" else 0
+        return {"status": "completed", "as_of_date": "2026-11-03",
+                "retryable_skipped_count": count,
+                "report": {"remaining_retryable_window_count": count}}
+    assert runner().run(endpoint="test", token="private", run_date="2026-11-03",
+        output_dir=tmp_path, request=post, sleep=lambda _: None) == 1
+    assert calls == ["signal_close", "next_open", "next_open"]
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert summaries[-2]["stop_reason"] == "no_progress"
+    artifact = json.loads((tmp_path / "next_open-attempt-2.json").read_text())
+    assert artifact["runner"]["stop_reason"] == "no_progress"
+
+
+def test_next_open_progress_cannot_exceed_six_requests(tmp_path, capsys):
+    calls = []
+    def post(endpoint, token, payload):
+        calls.append(payload["return_basis"])
+        count = 100 - len(calls) if payload["return_basis"] == "next_open" else 0
+        return {"status": "completed", "as_of_date": "2026-11-03",
+                "retryable_skipped_count": count,
+                "report": {"remaining_retryable_window_count": count}}
+    assert runner().run(endpoint="test", token="private", run_date="2026-11-03",
+        output_dir=tmp_path, request=post, sleep=lambda _: None) == 1
+    assert calls.count("next_open") == 6
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert summaries[-2]["stop_reason"] == "attempt_limit"
+
+
+def test_complete_http_request_is_bounded_and_other_basis_keeps_its_budget(tmp_path, capsys):
+    now = [0]
+    calls = []
+    def post(endpoint, token, payload):
+        calls.append(payload["return_basis"])
+        if payload["return_basis"] == "signal_close":
+            now[0] += 901
+        return {"status": "completed", "as_of_date": "2026-11-03",
+                "retryable_skipped_count": 0,
+                "report": {"remaining_retryable_window_count": 0}}
+    assert runner().run(endpoint="test", token="private", run_date="2026-11-03",
+        output_dir=tmp_path, request=post, sleep=lambda _: None, clock=lambda: now[0]) == 1
+    assert calls == ["signal_close", "next_open"]
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert summaries[0]["stop_reason"] == "budget_exhausted"
+    assert summaries[1]["status"] == "completed"
+
+
+def test_recovery_errors_are_visible_and_secrets_remain_redacted(tmp_path, capsys):
+    error = {"symbol": "1727.TW", "stage": "official_prices",
+             "reason": "research_official_price_conflict", "extra": "private"}
+    def post(endpoint, token, payload):
+        return {"status": "completed", "as_of_date": "2026-11-03",
+                "retryable_skipped_count": 1,
+                "report": {"remaining_retryable_window_count": 1,
+                           "source_recovery_summary": {"error_count": 1},
+                           "source_recovery": [error]}}
+    assert runner().run(endpoint="test", token="private", run_date="2026-11-03",
+        output_dir=tmp_path, request=post, sleep=lambda _: None) == 1
+    output = capsys.readouterr().out
+    assert "private" not in output
+    summary = json.loads(output.splitlines()[0])
+    assert summary["source_recovery_summary"]["error_count"] == 1
+    assert summary["source_recovery_errors"][0]["reason"] == "research_official_price_conflict"
+
+
+def test_next_open_transport_failure_is_limited_without_data_progress(tmp_path, capsys):
+    calls = []
+    def post(endpoint, token, payload):
+        calls.append(payload["return_basis"])
+        if payload["return_basis"] == "next_open":
+            raise TimeoutError()
+        return {"status": "completed", "as_of_date": "2026-11-03", "retryable_skipped_count": 0}
+    assert runner().run(endpoint="test", token="private", run_date="2026-11-03",
+        output_dir=tmp_path, request=post, sleep=lambda _: None) == 1
+    assert calls == ["signal_close", "next_open", "next_open"]
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert summaries[-2]["stop_reason"] == "transport_retry_limit"
+
+
+def test_recovery_budget_limits_the_remaining_request_and_wait(tmp_path, monkeypatch, capsys):
+    from contextlib import contextmanager
+    now = [0]
+    deadlines = []
+    sleeps = []
+    module = runner()
+    @contextmanager
+    def deadline(seconds):
+        deadlines.append(seconds)
+        yield
+    monkeypatch.setattr(module, "request_deadline", deadline)
+    def post(endpoint, token, payload):
+        if payload["return_basis"] == "next_open":
+            now[0] += 898
+        return {"status": "completed", "as_of_date": "2026-11-03",
+                "retryable_skipped_count": int(payload["return_basis"] == "next_open"),
+                "report": {"remaining_retryable_window_count": 1}}
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+    assert module.run(endpoint="test", token="private", run_date="2026-11-03",
+        output_dir=tmp_path, request=post, sleep=sleep, clock=lambda: now[0]) == 1
+    assert sleeps == [2]
+    assert deadlines == [300, 300]
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert summaries[-2]["stop_reason"] == "budget_exhausted"

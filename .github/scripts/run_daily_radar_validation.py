@@ -10,7 +10,12 @@ from urllib.error import HTTPError
 from daily_radar_http import post, request_deadline, _NoRedirect, diagnostic_json
 
 
-def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep, attempts=2):
+def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep,
+        attempts=6, basis_timeout=900, clock=time.monotonic):
+    if date.fromisoformat(run_date).isoformat() != run_date:
+        raise ValueError("invalid_validation_date")
+    if type(attempts) is not int or attempts < 1 or basis_timeout <= 0:
+        raise ValueError("invalid_validation_budget")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     failed = []
@@ -18,48 +23,84 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
         payload = {"mode": "due", "market": "TW", "as_of_date": run_date,
                    "windows": [5, 10, 20, 40, 60], "return_basis": basis, "benchmark_symbol": "TAIEX"}
         ready = False
-        for attempt in range(1, attempts + 1):
+        deadline = clock() + basis_timeout
+        attempt_limit = attempts if basis == "next_open" else min(attempts, 2)
+        previous_remaining = None
+        transport_failures = 0
+        for attempt in range(1, attempt_limit + 1):
             retryable = False
+            valid = False
             try:
-                with request_deadline(300):
+                remaining_time = deadline - clock()
+                if remaining_time <= 0:
+                    raise TimeoutError("validation_budget_exhausted")
+                with request_deadline(min(300, remaining_time)):
                     response = request(endpoint, token, payload)
+                if clock() > deadline:
+                    raise TimeoutError("validation_budget_exhausted")
                 if not isinstance(response, dict):
                     raise ValueError("validation_response_invalid")
                 report = response.get("report") if isinstance(response.get("report"), dict) else {}
                 remaining = report.get("remaining_retryable_window_count") if basis == "next_open" else 0
-                ready = (response.get("status") == "completed" and response.get("as_of_date") == run_date
+                valid = (response.get("status") == "completed" and response.get("as_of_date") == run_date
                          and type(response.get("retryable_skipped_count")) is int
-                         and response["retryable_skipped_count"] == 0
-                         and type(remaining) is int and remaining == 0)
-                retryable = (response.get("status") == "completed" and response.get("as_of_date") == run_date
-                             and type(response.get("retryable_skipped_count")) is int
-                             and type(remaining) is int
-                             and (response["retryable_skipped_count"] > 0 or remaining > 0))
+                         and response["retryable_skipped_count"] >= 0
+                         and type(remaining) is int and remaining >= 0)
+                ready = valid and response["retryable_skipped_count"] == 0 and remaining == 0
+                retryable = valid and not ready
+                transport_failures = 0
             except HTTPError as exc:
                 response = {"error_type": "HTTPError", "http_status": exc.code}
                 retryable = exc.code in (408, 425, 429) or 500 <= exc.code < 600
+                transport_failures += 1
             except (OSError, HTTPException) as exc:
                 response = {"error_type": type(exc).__name__}
                 retryable = True
+                transport_failures += 1
             except (ValueError, TypeError) as exc:
                 response = {"error_type": type(exc).__name__}
-            (output_dir / f"{basis}-attempt-{attempt}.json").write_text(diagnostic_json(response, token))
+            stop_reason = None
+            if ready:
+                stop_reason = "completed"
+            elif clock() >= deadline:
+                stop_reason = "budget_exhausted"
+            elif not retryable:
+                stop_reason = "non_retryable_response"
+            elif transport_failures >= 2:
+                stop_reason = "transport_retry_limit"
+            elif (valid and basis == "next_open" and previous_remaining is not None
+                  and remaining >= previous_remaining):
+                stop_reason = "no_progress"
+            elif attempt == attempt_limit:
+                stop_reason = "attempt_limit"
+            diagnostic = response | {"runner": {"return_basis": basis, "attempt": attempt,
+                                                 "stop_reason": stop_reason}}
+            (output_dir / f"{basis}-attempt-{attempt}.json").write_text(diagnostic_json(diagnostic, token))
             report = response.get("report") if isinstance(response.get("report"), dict) else {}
+            recovery = report.get("source_recovery")
+            recovery_errors = ([row for row in recovery if isinstance(row, dict)
+                                and (row.get("error_type") or row.get("reason"))]
+                               if isinstance(recovery, list) else None)
             summary = {key: response.get(key) for key in (
                 "status", "as_of_date", "candidate_count", "records_written", "validated_count",
                 "skipped_count", "retryable_skipped_count", "terminal_skipped_count", "error_type", "http_status")}
             summary.update(return_basis=basis, attempt=attempt,
+                stop_reason=stop_reason,
                 current_run_skip_reasons=report.get("current_run_skip_reasons"),
                 remaining_retryable_window_count=report.get("remaining_retryable_window_count"),
                 persisted_skip_reasons=report.get("skip_reasons", {}),
                 current_run_gaps=report.get("current_run_gaps"),
+                source_recovery_summary=report.get("source_recovery_summary"),
+                source_recovery_errors=recovery_errors[:8] if recovery_errors is not None else None,
                 current_run_diagnostics_available=(isinstance(report.get("current_run_skip_reasons"), dict)
                                                    and isinstance(report.get("current_run_gaps"), list)))
             print(diagnostic_json(summary, token, indent=None), flush=True)
-            if ready or not retryable:
+            if stop_reason:
                 break
+            if valid and basis == "next_open":
+                previous_remaining = remaining
             if attempt < attempts:
-                sleep(5)
+                sleep(min(5, max(0, deadline - clock())))
         if not ready:
             failed.append(basis)
     print(diagnostic_json({"run_date": run_date, "failed_return_bases": failed}, token, indent=None), flush=True)

@@ -81,6 +81,32 @@ def test_immaturity_and_missing_prices_are_distinct_and_future_rows_are_ignored(
     assert row["skip_reason"] == "missing_future_price"
 
 
+def test_a_missing_target_does_not_hide_a_known_price_conflict():
+    row = evaluate([price("2026-06-08", ohlc_conflict_fields=["open"])])
+    assert row["status"] == "skipped"
+    assert row["skip_reason"] == "conflicting_price_records"
+    assert row["outcome"]["missing_dates"] == ["2026-06-09"]
+
+
+def test_a_missing_stock_target_does_not_hide_a_benchmark_price_conflict():
+    row = evaluate([price("2026-06-08")], benchmark=[price("2026-06-05"),
+        price("2026-06-08", ohlc_conflict_fields=["open"]), price("2026-06-09")])
+    assert row["skip_reason"] == "conflicting_price_records"
+
+
+@pytest.mark.parametrize("missing_day", ["2026-06-05", "2026-06-09"])
+def test_saved_calendar_preserves_known_stock_conflict_when_benchmark_has_a_gap(missing_day):
+    row = evaluate_research_window(
+        {"candidate_id": 1, "symbol": "2330.TW", "record_date": "2026-06-05",
+         "data_dates": {"ohlcv": "2026-06-05"}},
+        price_series=[price("2026-06-08", ohlc_conflict_fields=["open"])],
+        benchmark_prices=[price(day) for day in ["2026-06-05", "2026-06-08", "2026-06-09"] if day != missing_day],
+        window_days=2, as_of_date=date(2026, 6, 9), benchmark_symbol="TAIEX",
+        trading_calendar=[date(2026, 6, 8), date(2026, 6, 9)])
+    assert row["skip_reason"] == "conflicting_price_records"
+    assert "2026-06-09" in row["outcome"]["missing_dates"]
+
+
 def test_benchmark_requires_real_open_and_matching_price_basis():
     benchmark = [price("2026-06-05"), price("2026-06-08", open=None), price("2026-06-09")]
     assert evaluate(benchmark=benchmark)["skip_reason"] == "missing_benchmark_entry_open"
@@ -169,6 +195,12 @@ def test_api_keeps_legacy_results_and_research_retry_is_idempotent(monkeypatch):
         session.commit()
     class Provider:
         calls = []
+        diagnostics = ([{"symbol": f"{2400 + i}.TW", "stage": "recovery", "recovered_dates": ["2026-06-09"]}
+                        for i in range(70)] +
+                       [{"symbol": "1727.TW", "stage": "official_prices", "error_type": "ValueError",
+                         "reason": "research_official_price_conflict"},
+                        {"symbol": "2890.TW", "stage": "corporate_actions", "error_type": "TimeoutError",
+                         "reason": "research_recovery_budget_exhausted"}])
         def fetch(self, symbols, *, start_date, end_date):
             self.calls.append(symbols)
             return {s: [price("2026-06-05", 100, 100), price("2026-06-08"),
@@ -188,6 +220,13 @@ def test_api_keeps_legacy_results_and_research_retry_is_idempotent(monkeypatch):
             assert response.status_code == 200, response.text
             assert response.json()["records_written"] == 1
             assert response.json()["report"]["validation_version"] == RESEARCH_VALIDATION_VERSION
+            report = response.json()["report"]
+            assert report["source_recovery_summary"]["total_count"] == 72
+            assert report["source_recovery_summary"]["error_count"] == 2
+            assert report["source_recovery_summary"]["truncated"] is True
+            assert report["source_recovery_summary"]["error_reasons"] == {
+                "research_official_price_conflict": 1, "research_recovery_budget_exhausted": 1}
+            assert [row["symbol"] for row in report["source_recovery"][:2]] == ["1727.TW", "2890.TW"]
             calls = list(provider.calls)
             response = client.post("/internal/daily-radar/forward-validation/run", **args)
             assert response.status_code == 200, response.text

@@ -113,20 +113,29 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
                       if signal < day <= as_of_date and (number(row.get("close")) or 0) > 0)
     if trading_calendar is not None:
         calendar = sorted({day for day in trading_calendar if signal < day <= as_of_date})
-    if signal not in benchmark:
-        return skip("missing_benchmark", missing_dates=[signal])
     if len(calendar) < window_days:
+        if signal not in benchmark:
+            return skip("missing_benchmark", missing_dates=[signal])
         # Beyond a conservative calendar bound, an incomplete index history is
         # missing evidence, not proof that the observation is still immature.
         if (as_of_date - signal).days >= window_days * 2:
             return skip("missing_benchmark")
         return skip("window_not_mature", pending=True)
     days = calendar[:window_days]
-    if any(day not in benchmark for day in days):
-        return skip("missing_benchmark", missing_dates=[d for d in days if d not in benchmark], target_date=days[-1])
     prices = _index(price_series)
-    if any(day not in prices for day in days):
-        return skip("missing_future_price", missing_dates=[d for d in days if d not in prices], target_date=days[-1])
+    missing_dates = [day for day in days if day not in prices]
+    missing_benchmark_dates = [day for day in days if day not in benchmark]
+    if any(series.get(day, {}).get("ohlc_conflict_fields") for series in (prices, benchmark) for day in days):
+        unavailable = set(missing_dates + missing_benchmark_dates)
+        if signal not in benchmark:
+            unavailable.add(signal)
+        return skip("conflicting_price_records", missing_dates=sorted(unavailable), target_date=days[-1])
+    if signal not in benchmark:
+        return skip("missing_benchmark", missing_dates=[signal])
+    if missing_benchmark_dates:
+        return skip("missing_benchmark", missing_dates=missing_benchmark_dates, target_date=days[-1])
+    if missing_dates:
+        return skip("missing_future_price", missing_dates=missing_dates, target_date=days[-1])
     entry = number(prices[days[0]].get("open"))
     benchmark_entry = number(benchmark[days[0]].get("open"))
     if entry is None or entry <= 0:
@@ -142,8 +151,6 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
                 return skip("price_provenance_missing")
             if row.get("corporate_actions_checked") is not True:
                 return skip("corporate_action_provenance_missing")
-            if row.get("ohlc_conflict_fields"):
-                return skip("conflicting_price_records")
             split = number(row.get("stock_splits"))
             if split is None or number(row.get("dividends")) is None:
                 return skip("corporate_action_provenance_missing")
@@ -287,6 +294,10 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     persisted = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date,
         validation_version=RESEARCH_VALIDATION_VERSION)
+    recovery = list(getattr(price_provider, "diagnostics", []))
+    recovery_errors = [row for row in recovery if row.get("error_type")]
+    recovery_successes = [row for row in recovery if not row.get("error_type")]
+    reported_recovery = (recovery_errors + recovery_successes)[:64]
     report = {"validation_version": RESEARCH_VALIDATION_VERSION, "return_basis": "next_open",
               "price_basis": RESEARCH_PRICE_BASIS, "dividends_included": False,
               "windows": windows, "as_of_date": as_of_date.isoformat(),
@@ -298,7 +309,15 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
               "current_run_gaps": [{"symbol": r["symbol"], "signal_date": r["signal_date"],
                   "window_days": r["window_days"], "reason": r["skip_reason"], **r["outcome"]}
                   for r in outcomes if r["status"] == "skipped" and r["skip_reason"] not in RESEARCH_TERMINAL_REASONS][:50],
-              "source_recovery": getattr(price_provider, "diagnostics", [])[:64],
+              "source_recovery": reported_recovery,
+              "source_recovery_summary": {
+                  "total_count": len(recovery), "reported_count": len(reported_recovery),
+                  "truncated": len(recovery) > len(reported_recovery),
+                  "error_count": len(recovery_errors),
+                  "error_reasons": dict(Counter(row.get("reason") or row["error_type"] for row in recovery_errors)),
+                  "request_count": getattr(price_provider, "request_count", None),
+                  "max_requests": getattr(price_provider, "max_requests", None),
+                  "total_timeout_seconds": getattr(price_provider, "total_timeout", None)},
               "skip_reasons": dict(Counter(r["skip_reason"] for r in persisted if r["status"] == "skipped"))}
     return {"status": "completed", "mode": request.mode, "market": request.market,
             "as_of_date": as_of_date, "candidate_count": len(candidates), **summary, "report": report}
