@@ -1,12 +1,16 @@
 """Bounded repair of price-only research; never mix adjusted technical data."""
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from hashlib import sha256
+import json
 import math
 from time import monotonic
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
 
 from ai_stock_sentinel.calibration.price_provider import YFinanceResearchPriceProvider
+from ai_stock_sentinel.calibration.twse_rights_recovery import TWSE
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.phase1_avwap.provider import normalize_twse_stock_day_payload
@@ -131,6 +135,35 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             raise ValueError("official_research_row_dates_invalid")
         self.cache[key] = rows
         return rows
+
+    def official_research_history(self, symbol, *, start_date, end_date):
+        """Read a complete caller-selected window from TWSE using the shared budget."""
+        month = start_date.replace(day=1)
+        rows = []
+        while month <= end_date:
+            rows.extend(row for row in self._official_month(symbol, month)
+                        if start_date.isoformat() <= row["date"] <= end_date.isoformat())
+            month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return rows
+
+    def capture_twse_report(self, path, params):
+        """Share report snapshots and the existing request budget within a run."""
+        key = ("twse_report", path, tuple(sorted(params.items())))
+        if key not in self.cache:
+            self.cache[key] = None
+            payload = self._request(self.official_getter, TWSE + path, params=params)
+            if not isinstance(payload, dict):
+                raise ValueError("twse_rights_invalid_report")
+            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            self.cache[key] = payload, {
+                "source_url": f"{TWSE}{path}?{urlencode(params)}",
+                "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "snapshot_sha256": sha256(encoded).hexdigest(),
+            }
+        captured = self.cache[key]
+        if captured is None:
+            raise ValueError("twse_rights_report_unavailable")
+        return captured
 
     def _actions(self, symbol, start, end):
         key = ("actions", symbol, start, end)

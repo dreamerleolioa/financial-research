@@ -4,6 +4,7 @@ from datetime import date
 from collections import defaultdict
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
+from ai_stock_sentinel.calibration import twse_rights_recovery as rights
 from ai_stock_sentinel.calibration.repository import load_benchmark_calendar_from_prepared_market_context
 from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult, DailyRadarCandidate, DailyRadarRun
 from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
@@ -22,7 +23,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 )
 
 
-RESEARCH_VALIDATION_VERSION = "daily-radar-next-open-price-v2"
+RESEARCH_VALIDATION_VERSION = rights.RESEARCH_VERSION
 RESEARCH_PRICE_BASIS = "unadjusted_price"
 RESEARCH_COSTS = (0.0, 0.5, 1.0)
 RESEARCH_TERMINAL_REASONS = TERMINAL_FORWARD_VALIDATION_SKIP_REASONS | {
@@ -66,8 +67,6 @@ def _retryable_windows_query(request, as_of_date):
             ~current_exists),
         DailyRadarForwardValidationResult.status == "skipped",
         DailyRadarForwardValidationResult.skip_reason.not_in(RESEARCH_TERMINAL_REASONS),
-        or_(DailyRadarForwardValidationResult.evaluation_as_of_date.is_(None),
-            DailyRadarForwardValidationResult.evaluation_as_of_date <= as_of_date),
         DailyRadarForwardValidationResult.window_days.in_(ordered_positive_values(request.windows)),
         DailyRadarForwardValidationResult.signal_date <= end_date,
         DailyRadarRun.market == request.market,
@@ -80,7 +79,19 @@ def _retryable_windows_query(request, as_of_date):
     )
     if request.start_date is not None:
         query = query.where(DailyRadarForwardValidationResult.signal_date >= request.start_date)
-    return query
+    if request.conflict_recovery_symbols is not None:
+        # A later retry of the same conflict does not change the historical price window.
+        return query.where(
+            DailyRadarCandidate.symbol.in_(request.conflict_recovery_symbols),
+            DailyRadarForwardValidationResult.signal_date == request.start_date,
+            DailyRadarForwardValidationResult.validation_version == RESEARCH_VALIDATION_VERSION,
+            DailyRadarForwardValidationResult.skip_reason == rights.CONFLICT_REASON,
+            DailyRadarForwardValidationResult.evaluation_as_of_date >= as_of_date,
+            DailyRadarForwardValidationResult.outcome["expected_target_date"].as_string()
+            == as_of_date.isoformat(),
+        )
+    return query.where(or_(DailyRadarForwardValidationResult.evaluation_as_of_date.is_(None),
+                           DailyRadarForwardValidationResult.evaluation_as_of_date <= as_of_date))
 
 
 def _index(rows):
@@ -193,9 +204,48 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
                    "skip_reason": None, "outcome": payload}
 
 
+def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *, as_of_date, scoped, provider):
+    symbol = candidate["symbol"]
+    signal = parse_date(candidate["record_date"])
+    window = row["window_days"]
+    sessions = [day for day in calendar if signal < day <= as_of_date][:window]
+    target = as_of_date if scoped else parse_date(row["outcome"].get("expected_target_date"))
+    capture = getattr(provider, "capture_twse_report", None)
+    load_history = getattr(provider, "official_research_history", None)
+    if len(sessions) != window or sessions[-1] != target or not callable(capture) or not callable(load_history):
+        return None
+    dates = {day.isoformat() for day in sessions}
+    flags = {r["date"] for r in marked if r["date"] in dates and r.get("ohlc_conflict_fields")}
+    if not scoped and not flags:
+        return None
+    try:
+        prices, index, evidence = rights.recover_window(
+            symbol, signal, sessions, yahoo_rows=yahoo, benchmark_rows=benchmark,
+            flagged_dates=flags, capture=capture, load_history=load_history,
+        )
+        result = evaluate_research_window(
+            candidate, price_series=prices, benchmark_prices=index, window_days=window,
+            as_of_date=as_of_date, benchmark_symbol="TAIEX", trading_calendar=sessions,
+        )
+        if result["status"] != "validated":
+            raise ValueError("twse_rights_window_evaluation_failed")
+    except Exception as exc:
+        reason = str(exc)
+        provider.diagnostics.append({
+            "symbol": symbol, "stage": rights.PROVENANCE_KEY, "target_date": target.isoformat(),
+            "error_type": type(exc).__name__,
+            "reason": reason if reason.startswith(("twse_rights_", "research_", "official_research_"))
+            else type(exc).__name__,
+        })
+        return None
+    result["outcome"][rights.PROVENANCE_KEY] = evidence
+    return result
+
+
 def run_research_validation(session, request, *, as_of_date: date, price_provider):
     """Bounded, resumable research. The router owns the single transaction."""
     windows = ordered_positive_values(request.windows)
+    scoped = request.conflict_recovery_symbols is not None
     start = request.start_date
     resume = defaultdict(set)
     retryable_query = _retryable_windows_query(request, as_of_date)
@@ -212,25 +262,27 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             resume[cid].add(window)
     candidates = forward_validation_candidates_from_runs(
         session, market=request.market, start_date=start, end_date=request.end_date or as_of_date,
-        include_candidate_ids=list(resume))
+        include_candidate_ids=list(resume), symbols=request.conflict_recovery_symbols)
     candidates = [c for c in candidates if c["selection_status"] == "selected"
                   or (c["selection_status"] == "shadow" and c["shadow_cohort"] == "comparable")]
     validate_forward_validation_benchmark(candidates, benchmark_symbol=request.benchmark_symbol)
     pending = {candidate_key(c): (sorted(resume[c["candidate_id"]])
-               if start and parse_date(c["record_date"]) < start else windows) for c in candidates}
+               if scoped or (start and parse_date(c["record_date"]) < start) else windows) for c in candidates}
     if request.mode == "due":
         pending = exclude_persisted_daily_radar_windows(
             session, pending, validation_version=RESEARCH_VALIDATION_VERSION,
             benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS)
     active = [c for c in candidates if pending.get(candidate_key(c))]
     outcomes = []
+    rights_checks = []
     fresh = []
     for candidate in active:
         signal = parse_date(candidate["record_date"])
         if _candidate_price_date_reason(candidate, signal):
-            outcomes.extend(evaluate_research_window(candidate, price_series=[], benchmark_prices=[],
-                window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol)
-                for w in pending[candidate_key(candidate)])
+            if not scoped:
+                outcomes.extend(evaluate_research_window(candidate, price_series=[], benchmark_prices=[],
+                    window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol)
+                    for w in pending[candidate_key(candidate)])
         else:
             fresh.append(candidate)
     if fresh:
@@ -268,7 +320,8 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         for offset in range(0, len(symbols), FORWARD_PRICE_FETCH_BATCH_SIZE):
             batch = symbols[offset:offset + FORWARD_PRICE_FETCH_BATCH_SIZE]
             batch_start = min(parse_date(c["record_date"]) for s in batch for c, _, _ in by_symbol[s])
-            prices = price_provider.fetch(batch, start_date=batch_start, end_date=as_of_date)
+            yahoo = price_provider.fetch(batch, start_date=batch_start, end_date=as_of_date)
+            prices = yahoo
             required_by_symbol = {}
             for symbol in batch:
                 required = set()
@@ -285,12 +338,22 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
                             candidate, price_series=prices.get(symbol, []), benchmark_prices=benchmark,
                             window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
                             trading_calendar=candidate_calendar)
-                        if row["status"] != "pending":
+                        if scoped or (request.market == "TW" and request.benchmark_symbol == "TAIEX"
+                                      and symbol.endswith(".TW") and row["skip_reason"] == rights.CONFLICT_REASON):
+                            rights_checks.append((candidate, row, yahoo.get(symbol, []), prices.get(symbol, []),
+                                                  benchmark, candidate_calendar))
+                        elif row["status"] != "pending":
                             outcomes.append(row)
-    summary = upsert_forward_validation_results(session, outcomes)
+    # Ordinary price recovery gets first use of the shared request budget.
+    for check in rights_checks:
+        result = _recover_rights_window(*check, as_of_date=as_of_date, scoped=scoped, provider=price_provider)
+        if result is not None:
+            outcomes.append(result)
+        elif not scoped:
+            outcomes.append(check[1])
+    summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
+                                               require_existing_conflict=scoped)
     remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
-    terminal = sum(r["status"] == "skipped" and r["skip_reason"] in RESEARCH_TERMINAL_REASONS for r in outcomes)
-    summary.update(terminal_skipped_count=terminal, retryable_skipped_count=summary["skipped_count"] - terminal)
     persisted = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date,
         validation_version=RESEARCH_VALIDATION_VERSION)
@@ -319,5 +382,18 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
                   "max_requests": getattr(price_provider, "max_requests", None),
                   "total_timeout_seconds": getattr(price_provider, "total_timeout", None)},
               "skip_reasons": dict(Counter(r["skip_reason"] for r in persisted if r["status"] == "skipped"))}
+    if scoped:
+        report["aggregation_scope"] = "explicit_conflict_windows"
+        verified = [
+            {"symbol": row["symbol"], "target_date": row["target_date"],
+             "evidence": row["outcome"][rights.PROVENANCE_KEY]}
+            for row in persisted if row["status"] == "validated"
+            and row["target_date"] == as_of_date.isoformat()
+            and rights.PROVENANCE_KEY in row["outcome"]
+        ]
+        unverified = sorted(set(request.conflict_recovery_symbols) - {row["symbol"] for row in verified})
+        report["conflict_recovery"] = {
+            "ready": not unverified, "verified_windows": verified, "unverified_symbols": unverified,
+        }
     return {"status": "completed", "mode": request.mode, "market": request.market,
             "as_of_date": as_of_date, "candidate_count": len(candidates), **summary, "report": report}
