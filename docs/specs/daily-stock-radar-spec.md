@@ -744,3 +744,9 @@ scoring required steps、候選範圍與排名規則保留；單股分析、AVWA
 AVWAP 只在官方上櫃證據已可見、掛牌日起至截止日的已保存基準交易日曆與官方 final 個股行情完整對齊，且所有價格檢查通過時，將不足 60 根的歷史記為 `insufficient_listed_history` skip。Snapshot 保留 `missing`、實際／所需根數、來源與事件證據，不產生 20／60 日錨點，也不以興櫃歷史補足根數。已知上櫃日期亦限制遠端 fallback 的請求與回傳範圍；若只有不足根數的遠端資料，無法證實完整官方歷史，仍記為 `daily_price_history_incomplete` 失敗。未知上櫃日期、交易日缺口或無效價格保留失敗判定。
 
 兩種 validation 的本次 skip 與累積 skip 分開。`signal_close` 的 `current_run_gaps` 保存 candidate、標的、訊號日、窗口、目標日、缺少日期及 retryable 分類；workflow 遇舊版未提供這些欄位時顯示 `null` 並標記診斷不可用，不把缺少診斷解讀為空缺口。
+
+### Validation 有界續跑與來源衝突
+
+Workflow 對每種 return basis 各保留 15 分鐘預算，單次完整 HTTP request 最多 300 秒。`signal_close` 最多兩次；`next_open` 最多六次，依已提交結果續跑剩餘 retryable 視窗，剩餘數不再下降即停止。連續 transport 失敗最多兩次。每輪保留原始診斷 artifact、固定 `as_of_date`、剩餘數與停止原因；任一 basis 未完成仍回傳失敗，另一 basis 獨立執行。
+
+`next_open` 即使 Yahoo 已補齊所需日期，仍比對該窗口可用的官方 final 歸檔；來源 OHLC 衝突保留原值與衝突標記，不覆寫成成功。已知窗口衝突優先回報 `conflicting_price_records`，同時保留缺少日期。`source_recovery_summary` 統計全部恢復診斷及錯誤原因，`source_recovery` 的 64 筆樣本優先保留錯誤並標明是否截斷；價格衝突提供有界的日期、欄位與兩側價格，預算耗盡另區分 request limit 與 deadline。Workflow 摘要列出錯誤樣本；舊後端缺少彙總時保留 `null`，不宣稱取得完整統計。

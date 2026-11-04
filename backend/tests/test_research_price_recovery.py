@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -78,6 +79,7 @@ def test_recovery_budget_and_failed_action_cache_are_bounded():
     assert recover(provider)["2330.TW"] == []
     assert len(calls) == 1
     assert provider.request_count == 1
+    assert provider.diagnostics[0]["budget_limit"] == "request_limit"
 
 
 def test_corporate_actions_are_preserved_instead_of_hiding_a_split():
@@ -134,3 +136,81 @@ def test_action_history_endpoints_cannot_hide_an_unverified_internal_date():
                            as_of_date=DAY)["2330.TW"]
     assert [row["date"] for row in rows] == ["2026-10-14"]
     assert provider.diagnostics[-1]["reason"] == "research_corporate_action_coverage_unverified"
+
+
+def test_complete_yahoo_prices_still_reject_conflicting_official_archive(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("complete archived dates need no recovery HTTP requests")
+    monkeypatch.setattr("ai_stock_sentinel.calibration.research_prices.get_taiwan_daily_bars",
+        lambda *args, **kwargs: [SimpleNamespace(trade_date=DAY, open=100, high=103,
+            low=99, close=102, source_dataset="TWSE_MI_INDEX")])
+    provider = RecoveringResearchPriceProvider(session=object(), official_getter=forbidden,
+                                               actions_getter=forbidden)
+    original = {"date": str(DAY), "open": 100, "high": 103, "low": 99,
+                "close": 101, "corporate_actions_checked": True}
+    row = recover(provider, {"2330.TW": [original]})["2330.TW"][0]
+    assert row["close"] == 101
+    assert row["ohlc_conflict_fields"] == ["close"]
+    assert "ohlc_conflict_fields" not in original
+    diagnostic = provider.diagnostics[-1]
+    assert diagnostic["reason"] == "research_official_price_conflict"
+    assert diagnostic["conflicting_prices"] == [{"date": str(DAY), "field": "close",
+                                                "provider_value": 101, "official_value": 102}]
+
+
+def test_complete_matching_archive_needs_no_extra_recovery_requests(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("matching prices must not consume the recovery request budget")
+    monkeypatch.setattr("ai_stock_sentinel.calibration.research_prices.get_taiwan_daily_bars",
+        lambda *args, **kwargs: [SimpleNamespace(trade_date=DAY, open=100, high=103,
+            low=99, close=102, source_dataset="TWSE_MI_INDEX")])
+    provider = RecoveringResearchPriceProvider(session=object(), official_getter=forbidden,
+                                               actions_getter=forbidden)
+    original = {"date": str(DAY), "open": 100, "high": 103, "low": 99,
+                "close": 102, "corporate_actions_checked": True}
+    assert recover(provider, {"2330.TW": [original]})["2330.TW"] == [original]
+    assert provider.request_count == 0
+    assert provider.diagnostics == []
+
+
+@pytest.mark.parametrize("remote_failure", [False, True])
+def test_archived_conflict_is_marked_before_recovering_another_missing_date(monkeypatch, remote_failure):
+    previous = date(2026, 10, 13)
+    monkeypatch.setattr("ai_stock_sentinel.calibration.research_prices.get_taiwan_daily_bars",
+        lambda *args, **kwargs: [SimpleNamespace(trade_date=previous, open=100, high=103,
+            low=99, close=102, source_dataset="TWSE_MI_INDEX")])
+    calls = []
+    def remote(url, **kwargs):
+        calls.append(url)
+        if remote_failure:
+            raise TimeoutError()
+        payload = official(url, **kwargs)
+        payload["data"].insert(0, ["115/10/13", "1000", "101000", "100", "103", "99", "101"])
+        return payload
+    original = {"date": str(previous), "open": 100, "high": 103, "low": 99,
+                "close": 101, "corporate_actions_checked": True}
+    provider = RecoveringResearchPriceProvider(session=object(), official_getter=remote, actions_getter=actions)
+    rows = provider.repair({"2330.TW": [original]},
+        required_dates_by_symbol={"2330.TW": [previous, DAY]}, as_of_date=DAY)["2330.TW"]
+    assert rows[0]["ohlc_conflict_fields"] == ["close"]
+    assert rows[0]["close"] == 101
+    assert provider.diagnostics[-1]["reason"] == "research_official_price_conflict"
+    assert calls == []
+
+
+def test_remote_gap_recovery_preserves_an_existing_matching_archive(monkeypatch):
+    previous = date(2026, 10, 13)
+    monkeypatch.setattr("ai_stock_sentinel.calibration.research_prices.get_taiwan_daily_bars",
+        lambda *args, **kwargs: [SimpleNamespace(trade_date=previous, open=100, high=103,
+            low=99, close=102, source_dataset="TWSE_MI_INDEX")])
+    def remote(url, **kwargs):
+        payload = official(url, **kwargs)
+        payload["data"].insert(0, ["115/10/13", "1000", "101000", "100", "103", "99", "101"])
+        return payload
+    original = {"date": str(previous), "open": 100, "high": 103, "low": 99,
+                "close": 102, "corporate_actions_checked": True}
+    provider = RecoveringResearchPriceProvider(session=object(), official_getter=remote, actions_getter=actions)
+    rows = provider.repair({"2330.TW": [original]},
+        required_dates_by_symbol={"2330.TW": [previous, DAY]}, as_of_date=DAY)["2330.TW"]
+    assert [row["date"] for row in rows] == [str(previous), str(DAY)]
+    assert "ohlc_conflict_fields" not in rows[0]

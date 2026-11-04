@@ -16,6 +16,7 @@ from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 TAIPEI = ZoneInfo("Asia/Taipei")
 INDEX_URL = "https://www.twse.com.tw/indicesReport/MI_5MINS_HIST"
 STOCK_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+OHLC_FIELDS = ("open", "high", "low", "close")
 
 
 def _number(value):
@@ -27,7 +28,27 @@ def _number(value):
 
 
 def _complete(row):
-    return all((_number(row.get(f)) or 0) > 0 for f in ("open", "high", "low", "close"))
+    return all((_number(row.get(f)) or 0) > 0 for f in OHLC_FIELDS)
+
+
+def _mark_conflicts(original, official):
+    """Keep both sources' prices and mark each conflicting day for evaluation."""
+    date_count = 0
+    sample = []
+    for day in sorted(original.keys() & official.keys()):
+        fields = []
+        for field in OHLC_FIELDS:
+            observed = _number(original[day].get(field))
+            expected = _number(official[day].get(field))
+            if observed is None or expected is None or math.isclose(observed, expected, rel_tol=1e-7, abs_tol=.005):
+                continue
+            fields.append(field)
+            if len(sample) < 20:
+                sample.append({"date": day, "field": field, "provider_value": observed, "official_value": expected})
+        if fields:
+            date_count += 1
+            original[day]["ohlc_conflict_fields"] = sorted(set(original[day].get("ohlc_conflict_fields") or []) | set(fields))
+    return date_count, sample
 
 
 def _json(response):
@@ -49,6 +70,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.request_count = 0
         self.cache = {}
         self.diagnostics = []
+        self.budget_limit = None
 
     def fetch(self, symbols, *, start_date, end_date):
         supported = [s for s in symbols if s in {"TAIEX", "SPX"} or is_supported_taiwan_symbol(s)]
@@ -65,6 +87,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             self.deadline = self.clock() + self.total_timeout
         remaining = self.deadline - self.clock()
         if remaining <= 0 or self.request_count >= self.max_requests:
+            self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
             raise TimeoutError("research_recovery_budget_exhausted")
         self.request_count += 1
         kwargs = {"params": params, "timeout": min(8, remaining)}
@@ -157,12 +180,16 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             if symbol != "TAIEX" and not is_supported_taiwan_symbol(symbol):
                 continue
             required = sorted({d for d in requested if d <= as_of_date})
+            if not required:
+                continue
             original = {str(r["date"])[:10]: r for r in result.get(symbol, [])}
             missing = [d for d in required if not _complete(original.get(str(d), {}))
                        or original[str(d)].get("corporate_actions_checked") is not True]
-            if not missing:
+            if not missing and (self.session is None or symbol == "TAIEX"):
                 continue
             stage = "official_prices"
+            conflicting_prices = []
+            conflict_date_count = 0
             try:
                 official = {}
                 if self.session is not None and symbol != "TAIEX":
@@ -171,6 +198,13 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                         official[str(row.trade_date)] = {"date": str(row.trade_date),
                             **{f: float(getattr(row, f)) for f in ("open", "high", "low", "close")},
                             "price_source": row.source_dataset}
+                # Archived overlaps are authoritative even if a different date
+                # requires a remote request that fails or overlaps the archive.
+                conflict_date_count, conflicting_prices = _mark_conflicts(original, official)
+                if conflict_date_count:
+                    raise ValueError("research_official_price_conflict")
+                if not missing:
+                    continue
                 unresolved = [d for d in missing if str(d) not in official]
                 if symbol.endswith(".TWO") and unresolved:
                     # Reuse market-level official reports, cached across symbols.
@@ -195,19 +229,11 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     for month in sorted(months):
                         for row in self._official_month(symbol, month):
                             if min(required) <= date.fromisoformat(row["date"]) <= max(required):
-                                official[row["date"]] = row
+                                official.setdefault(row["date"], row)
                     if symbol == "TAIEX":
                         missing = sorted(set(missing) | {date.fromisoformat(day) for day in official if day not in original})
-                conflicts = {}
-                for day in original.keys() & official.keys():
-                    fields = [f for f in ("open", "high", "low", "close")
-                              if _number(original[day].get(f)) is not None and _number(official[day].get(f)) is not None
-                              and not math.isclose(float(original[day][f]), float(official[day][f]), rel_tol=1e-7, abs_tol=.005)]
-                    if fields:
-                        conflicts[day] = fields
-                if conflicts:
-                    for day, fields in conflicts.items():
-                        original[day]["ohlc_conflict_fields"] = sorted(set(original[day].get("ohlc_conflict_fields", [])) | set(fields))
+                conflict_date_count, conflicting_prices = _mark_conflicts(original, official)
+                if conflict_date_count:
                     raise ValueError("research_official_price_conflict")
                 stage = "corporate_actions"
                 actions = self._actions(symbol, min(required), max(required)) if symbol != "TAIEX" else None
@@ -230,8 +256,14 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                 self.diagnostics.append({"symbol": symbol, "stage": "recovery", "recovered_dates":
                     [str(d) for d in missing if _complete(original.get(str(d), {})) and original[str(d)].get("corporate_actions_checked") is True]})
             except Exception as exc:
-                self.diagnostics.append({"symbol": symbol, "stage": stage, "error_type": type(exc).__name__,
+                diagnostic = {"symbol": symbol, "stage": stage, "error_type": type(exc).__name__,
                                          "reason": str(exc) if str(exc).startswith(("research_", "official_research_")) else type(exc).__name__,
-                                         "missing_dates": [str(d) for d in missing]})
+                                         "missing_dates": [str(d) for d in missing]}
+                if conflicting_prices:
+                    diagnostic["conflicting_prices"] = conflicting_prices
+                    diagnostic["conflict_date_count"] = conflict_date_count
+                if str(exc) == "research_recovery_budget_exhausted":
+                    diagnostic["budget_limit"] = self.budget_limit
+                self.diagnostics.append(diagnostic)
             result[symbol] = [original[d] for d in sorted(original)]
         return result
