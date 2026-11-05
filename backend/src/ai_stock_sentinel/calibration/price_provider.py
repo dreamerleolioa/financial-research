@@ -111,6 +111,7 @@ def _price_rows(frame: Any, *, research: bool = False, benchmark: bool = False) 
         return []
     dividend_column = _matching_column(frame, "Dividends")
     split_column = _matching_column(frame, "Stock Splits")
+    volume_column = _matching_column(frame, "Volume")
     rows: list[dict[str, Any]] = []
     for position, index_value in enumerate(index):
         close = _frame_number(frame, columns["Close"], position)
@@ -134,6 +135,7 @@ def _price_rows(frame: Any, *, research: bool = False, benchmark: bool = False) 
                 "corporate_actions_checked": benchmark or (dividend is not None and split is not None),
                 "dividends": 0 if benchmark else dividend,
                 "stock_splits": 0 if benchmark else split,
+                "volume": _frame_number(frame, volume_column, position),
             })
         rows.append(row)
     return rows
