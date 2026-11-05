@@ -5,6 +5,7 @@ from collections import defaultdict
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 from ai_stock_sentinel.calibration import twse_rights_recovery as rights
+from ai_stock_sentinel.calibration import official_corporate_actions as corporate_actions
 from ai_stock_sentinel.calibration.repository import load_benchmark_calendar_from_prepared_market_context
 from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult, DailyRadarCandidate, DailyRadarRun
 from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
@@ -28,7 +29,7 @@ RESEARCH_PRICE_BASIS = "unadjusted_price"
 RESEARCH_COSTS = (0.0, 0.5, 1.0)
 RESEARCH_TERMINAL_REASONS = TERMINAL_FORWARD_VALIDATION_SKIP_REASONS | {
     "stock_split_in_window", "candidate_price_date_missing", "future_candidate_price",
-}
+} | corporate_actions.TERMINAL_REASONS
 RESEARCH_RESUME_BATCH_SIZE = 512
 RESEARCH_RESUME_VERSIONS = ("daily-radar-next-open-price-v1", RESEARCH_VALIDATION_VERSION)
 
@@ -242,6 +243,42 @@ def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *
     return result
 
 
+def _classify_corporate_action(row, yahoo, marked, benchmark, *, as_of_date, provider):
+    target = parse_date(row["outcome"].get("expected_target_date"))
+    signal = parse_date(row["signal_date"])
+    if target is None or not yahoo:
+        return None
+    symbol = row["symbol"]
+    try:
+        proof = corporate_actions.prove_window(
+            symbol, signal, row["window_days"], as_of_date, yahoo_rows=yahoo, benchmark_rows=benchmark,
+            marked_rows=marked, provider=provider,
+        )
+    except Exception as exc:
+        # An unavailable, incomplete or contradictory report preserves the original gap.
+        reason = str(exc)
+        getattr(provider, "diagnostics", []).append({
+            "symbol": symbol, "stage": corporate_actions.PROVENANCE_KEY, "target_date": str(target),
+            "error_type": type(exc).__name__,
+            "reason": reason if reason.startswith(("official_", "twse_rights_", "research_"))
+            else type(exc).__name__,
+        })
+        return None
+    if proof is None:
+        return None
+    reason, evidence = proof
+    verified_target = evidence["session_dates"][-1]
+    if verified_target != str(target):
+        evidence["prior_expected_target_date"] = str(target)
+    if row["outcome"].get("missing_dates"):
+        evidence["prior_missing_dates"] = row["outcome"]["missing_dates"]
+    return row | {"skip_reason": reason, "outcome": row["outcome"] | {
+        "expected_target_date": verified_target,
+        "missing_dates": [],
+        corporate_actions.PROVENANCE_KEY: evidence,
+    }}
+
+
 def run_research_validation(session, request, *, as_of_date: date, price_provider):
     """Bounded, resumable research. The router owns the single transaction."""
     windows = ordered_positive_values(request.windows)
@@ -274,7 +311,9 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS)
     active = [c for c in candidates if pending.get(candidate_key(c))]
     outcomes = []
-    rights_checks = []
+    recovery_checks = []
+    can_prove_actions = all(callable(getattr(price_provider, name, None)) for name in
+                            ("official_research_history", "capture_twse_report", "capture_tpex_report"))
     fresh = []
     for candidate in active:
         signal = parse_date(candidate["record_date"])
@@ -338,19 +377,29 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
                             candidate, price_series=prices.get(symbol, []), benchmark_prices=benchmark,
                             window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
                             trading_calendar=candidate_calendar)
-                        if scoped or (request.market == "TW" and request.benchmark_symbol == "TAIEX"
-                                      and symbol.endswith(".TW") and row["skip_reason"] == rights.CONFLICT_REASON):
-                            rights_checks.append((candidate, row, yahoo.get(symbol, []), prices.get(symbol, []),
-                                                  benchmark, candidate_calendar))
+                        if scoped or (request.market == "TW" and request.benchmark_symbol == "TAIEX" and (
+                                (symbol.endswith(".TW") and row["skip_reason"] == rights.CONFLICT_REASON)
+                                or (can_prove_actions and row["skip_reason"] in
+                                    {rights.CONFLICT_REASON, "missing_future_price"}))):
+                            recovery_checks.append((candidate, row, yahoo.get(symbol, []), prices.get(symbol, []),
+                                                    benchmark, candidate_calendar))
                         elif row["status"] != "pending":
                             outcomes.append(row)
-    # Ordinary price recovery gets first use of the shared request budget.
-    for check in rights_checks:
-        result = _recover_rights_window(*check, as_of_date=as_of_date, scoped=scoped, provider=price_provider)
+    # Ordinary price recovery and the existing cash-rights path keep priority in the shared budget.
+    unclassified = []
+    for check in recovery_checks:
+        _, row, yahoo, marked, benchmark, _ = check
+        result = None
+        if scoped or (row["symbol"].endswith(".TW") and row["skip_reason"] == rights.CONFLICT_REASON):
+            result = _recover_rights_window(*check, as_of_date=as_of_date, scoped=scoped, provider=price_provider)
         if result is not None:
             outcomes.append(result)
         elif not scoped:
-            outcomes.append(check[1])
+            unclassified.append((row, yahoo, marked, benchmark))
+    for row, yahoo, marked, benchmark in unclassified:
+        resolved = _classify_corporate_action(row, yahoo, marked, benchmark, as_of_date=as_of_date,
+                                              provider=price_provider) if can_prove_actions else None
+        outcomes.append(resolved if resolved is not None else row)
     summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
                                                require_existing_conflict=scoped)
     remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0

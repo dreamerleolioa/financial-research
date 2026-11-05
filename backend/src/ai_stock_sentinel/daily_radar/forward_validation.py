@@ -15,6 +15,7 @@ from ai_stock_sentinel.data_sources.reviewed_market_lifecycle import termination
 
 from ai_stock_sentinel.calibration import forward_validation as shared_forward_validation
 from ai_stock_sentinel.calibration import twse_rights_recovery as rights
+from ai_stock_sentinel.calibration import official_corporate_actions as corporate_actions
 from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_FORWARD_WINDOWS,
@@ -569,11 +570,31 @@ def upsert_forward_validation_results(
             statement = statement.with_for_update().execution_options(populate_existing=True)
         existing = session.execute(statement).scalar_one_or_none()
         payload = dict(_mapping(outcome.get("outcome")))
+        if (research_window and existing is not None and existing.status == "skipped"
+                and existing.skip_reason in corporate_actions.TERMINAL_REASONS
+                and corporate_actions.PROVENANCE_KEY in existing.outcome):
+            continue
         if (research_window and existing is not None and existing.status == "validated"
                 and (rights.PROVENANCE_KEY in existing.outcome or "reviewed_rights_recovery" in existing.outcome)):
             continue
         if require_existing_conflict and rights.PROVENANCE_KEY not in payload:
             continue
+        official_terminal = outcome.get("skip_reason") in corporate_actions.TERMINAL_REASONS
+        if official_terminal:
+            proof = _mapping(payload.get(corporate_actions.PROVENANCE_KEY))
+            event = _mapping(proof.get("event"))
+            target = _parse_date(payload.get("expected_target_date"))
+            cutoff = _parse_date(outcome.get("evaluation_as_of_date"))
+            event_date = _parse_date(event.get("effective_date"))
+            if (not research_window or candidate_market != "TW" or benchmark_symbol != "TAIEX"
+                    or outcome.get("status") != "skipped" or event.get("symbol") != candidate_symbol
+                    or proof.get("evidence_version") != corporate_actions.EVIDENCE_VERSION
+                    or not target or not cutoff or not event_date or not signal_date < event_date <= target <= cutoff
+                    or (existing is not None and (existing.status != "skipped"
+                                                   or existing.skip_reason in terminal_skip_reasons
+                                                   or (existing.evaluation_as_of_date is not None
+                                                       and existing.evaluation_as_of_date > cutoff)))):
+                continue
         if rights.PROVENANCE_KEY in payload:
             target = _parse_date(outcome.get("target_date"))
             cutoff = _parse_date(outcome.get("evaluation_as_of_date"))
@@ -591,6 +612,7 @@ def upsert_forward_validation_results(
                 or existing.evaluation_as_of_date is None or existing.evaluation_as_of_date < target
             ):
                 continue
+        if official_terminal or rights.PROVENANCE_KEY in payload:
             # Recheck the canonical scoring run after external reads, while saving only the selected identity.
             if session.scalar(select(DailyRadarCandidate.id).where(
                 DailyRadarCandidate.id == int(candidate_id),

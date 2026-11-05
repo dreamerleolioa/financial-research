@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from curl_cffi import requests
 
 from ai_stock_sentinel.calibration.price_provider import YFinanceResearchPriceProvider
+from ai_stock_sentinel.calibration.official_corporate_actions import tpex_report_rows
 from ai_stock_sentinel.calibration.twse_rights_recovery import TWSE
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.data_sources.official_http import official_request_get
@@ -20,6 +21,8 @@ from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 TAIPEI = ZoneInfo("Asia/Taipei")
 INDEX_URL = "https://www.twse.com.tw/indicesReport/MI_5MINS_HIST"
 STOCK_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+TPEX = "https://www.tpex.org.tw"
+TPEX_STOCK_PATH = "/www/zh-tw/afterTrading/tradingStock"
 OHLC_FIELDS = ("open", "high", "low", "close")
 
 
@@ -107,12 +110,29 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             return self.cache[key]
         # Cache failed requests too: many candidate windows share a month.
         self.cache[key] = []
-        payload = self._request(self.official_getter, INDEX_URL if symbol == "TAIEX" else STOCK_URL,
-            params={"response": "json", "date": month.strftime("%Y%m%d"),
-                    **({} if symbol == "TAIEX" else {"stockNo": symbol.split(".")[0]})})
-        if (not isinstance(payload, dict) or payload.get("stat") != "OK"
-                or str(payload.get("date", ""))[:6] != month.strftime("%Y%m")):
-            raise ValueError("official_research_date_or_status_mismatch")
+        if symbol.endswith(".TWO"):
+            rows = self._tpex_stock_month(symbol, month)
+        else:
+            path = (INDEX_URL if symbol == "TAIEX" else STOCK_URL).removeprefix(TWSE)
+            payload, source = self.capture_twse_report(path, {
+                "response": "json", "date": month.strftime("%Y%m%d"),
+                **({} if symbol == "TAIEX" else {"stockNo": symbol.split(".")[0]}),
+            })
+            if (not isinstance(payload, dict) or payload.get("stat") != "OK"
+                    or str(payload.get("date", ""))[:6] != month.strftime("%Y%m")):
+                raise ValueError("official_research_date_or_status_mismatch")
+            if "total" in payload and (type(payload["total"]) is not int
+                    or not isinstance(payload.get("data"), list) or payload["total"] != len(payload["data"])):
+                raise ValueError("official_research_incomplete_month_report")
+            rows = [row | {"official_price_report": source} for row in self._twse_month_rows(symbol, payload)]
+        days = [date.fromisoformat(row["date"]) for row in rows]
+        if len(set(days)) != len(days) or any((day.year, day.month) != (month.year, month.month) for day in days):
+            raise ValueError("official_research_row_dates_invalid")
+        self.cache[key] = sorted(rows, key=lambda row: row["date"])
+        return self.cache[key]
+
+    @staticmethod
+    def _twse_month_rows(symbol, payload):
         if symbol == "TAIEX":
             fields = payload.get("fields", [])
             names = ("日期", "開盤指數", "最高指數", "最低指數", "收盤指數")
@@ -130,33 +150,54 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             rows = [{"date": str(bar.trade_date), "open": bar.open, "high": bar.high,
                      "low": bar.low, "close": bar.close, "price_source": "twse_stock_day"}
                     for bar in normalize_twse_stock_day_payload(payload)]
-        days = [date.fromisoformat(row["date"]) for row in rows]
-        if len(set(days)) != len(days) or any((day.year, day.month) != (month.year, month.month) for day in days):
-            raise ValueError("official_research_row_dates_invalid")
-        self.cache[key] = rows
         return rows
 
-    def official_research_history(self, symbol, *, start_date, end_date):
-        """Read a complete caller-selected window from TWSE using the shared budget."""
+    def _tpex_stock_month(self, symbol, month):
+        code = symbol.split(".")[0]
+        payload, source = self.capture_tpex_report(TPEX_STOCK_PATH,
+            {"response": "json", "code": code, "date": month.strftime("%Y/%m/%d")})
+        if str(payload.get("code")) != code or payload.get("date") != month.strftime("%Y%m%d"):
+            raise ValueError("official_research_symbol_or_month_mismatch")
+        fields = ("開盤", "最高", "最低", "收盤")
+        rows = tpex_report_rows(payload, ("日 期", *fields))
+        result = []
+        for row in rows:
+            year, month_, day = map(int, str(row["日 期"]).split("/"))
+            result.append({"date": str(date(year + 1911, month_, day)), "price_source": "tpex_trading_stock",
+                           "official_price_report": source,
+                           **{key: _number(row[field]) for key, field in zip(OHLC_FIELDS, fields)}})
+        return result
+
+    def official_research_history(self, symbol, *, start_date, end_date, max_rows=None):
+        """Read a caller-selected stock or index window using the shared budget."""
         month = start_date.replace(day=1)
         rows = []
         while month <= end_date:
             rows.extend(row for row in self._official_month(symbol, month)
                         if start_date.isoformat() <= row["date"] <= end_date.isoformat())
+            if max_rows is not None and len(rows) >= max_rows:
+                return rows[:max_rows]
             month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
         return rows
 
     def capture_twse_report(self, path, params):
-        """Share report snapshots and the existing request budget within a run."""
-        key = ("twse_report", path, tuple(sorted(params.items())))
+        return self._capture_report(TWSE, path, params)
+
+    def capture_tpex_report(self, path, params):
+        return self._capture_report(TPEX, path, params)
+
+    def _capture_report(self, origin, path, params):
+        """Share official report snapshots and the existing request budget within a run."""
+        url = origin + path
+        key = ("official_report", url, tuple(sorted(params.items())))
         if key not in self.cache:
             self.cache[key] = None
-            payload = self._request(self.official_getter, TWSE + path, params=params)
+            payload = self._request(self.official_getter, url, params=params)
             if not isinstance(payload, dict):
                 raise ValueError("twse_rights_invalid_report")
             encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
             self.cache[key] = payload, {
-                "source_url": f"{TWSE}{path}?{urlencode(params)}",
+                "source_url": f"{url}?{urlencode(params)}",
                 "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                 "snapshot_sha256": sha256(encoded).hexdigest(),
             }
