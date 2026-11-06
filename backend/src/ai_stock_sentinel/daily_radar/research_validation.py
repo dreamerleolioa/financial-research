@@ -102,7 +102,7 @@ def _index(rows):
 
 
 def evaluate_research_window(candidate, *, price_series, benchmark_prices,
-                             window_days, as_of_date, benchmark_symbol, trading_calendar=None):
+                             window_days, as_of_date, benchmark_symbol, trading_calendar=None, validate_signal_session=False):
     signal = parse_date(candidate.get("record_date"))
     base = {"candidate_id": candidate.get("candidate_id"), "symbol": candidate.get("symbol"),
             "signal_date": signal.isoformat() if signal else None, "window_days": window_days,
@@ -124,6 +124,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
     calendar = sorted(day for day, row in benchmark.items()
                       if signal < day <= as_of_date and (number(row.get("close")) or 0) > 0)
     if trading_calendar is not None:
+        if validate_signal_session and signal not in trading_calendar:
+            return skip("non_trading_signal_date")
         calendar = sorted({day for day in trading_calendar if signal < day <= as_of_date})
     if len(calendar) < window_days:
         if signal not in benchmark:
@@ -279,7 +281,7 @@ def _classify_corporate_action(row, yahoo, marked, benchmark, *, as_of_date, pro
     }}
 
 
-def run_research_validation(session, request, *, as_of_date: date, price_provider):
+def run_research_validation(session, request, *, as_of_date: date, price_provider, calendar_provider=None):
     """Bounded, resumable research. The router owns the single transaction."""
     windows = ordered_positive_values(request.windows)
     scoped = request.conflict_recovery_symbols is not None
@@ -326,9 +328,6 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             fresh.append(candidate)
     if fresh:
         price_start = min(parse_date(c["record_date"]) for c in fresh)
-        benchmark = list(price_provider.fetch(
-            [request.benchmark_symbol], start_date=price_start, end_date=as_of_date
-        ).get(request.benchmark_symbol, []))
         reference = load_benchmark_prices_from_prepared_market_context(
             session, market=request.market, benchmark_symbol=request.benchmark_symbol,
             as_of_date=as_of_date, required_dates=[parse_date(c["record_date"]) for c in fresh])
@@ -336,6 +335,15 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             session, market=request.market, benchmark_symbol=request.benchmark_symbol,
             start_date=price_start, as_of_date=as_of_date)) |
             {day for day in _index(reference) if price_start <= day <= as_of_date})
+        official_calendar = None
+        if calendar_provider is not None:
+            session.rollback()
+            from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
+            official_calendar = require_calendar(calendar_provider,start_date=price_start,end_date=as_of_date)
+            reference_days = list(official_calendar.sessions)
+        benchmark = list(price_provider.fetch(
+            [request.benchmark_symbol], start_date=price_start, end_date=as_of_date
+        ).get(request.benchmark_symbol, []))
         repair = getattr(price_provider, "repair", None)
         if callable(repair):
             required = sorted(set(reference_days) | {price_start, as_of_date})
@@ -345,7 +353,8 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         calendar = sorted(day for day in _index(benchmark) if day <= as_of_date)
         # Both sources can prove a session. Never drop a real provider session
         # merely because an older prepared snapshot has an internal hole.
-        complete_calendar = sorted(set(reference_days) | set(calendar))
+        complete_calendar = (list(official_calendar.sessions) if official_calendar is not None
+                             else sorted(set(reference_days) | set(calendar)))
         by_symbol = defaultdict(list)
         for candidate in fresh:
             signal = parse_date(candidate["record_date"])
@@ -376,7 +385,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
                         row = evaluate_research_window(
                             candidate, price_series=prices.get(symbol, []), benchmark_prices=benchmark,
                             window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
-                            trading_calendar=candidate_calendar)
+                            trading_calendar=candidate_calendar, validate_signal_session=official_calendar is not None)
                         if scoped or (request.market == "TW" and request.benchmark_symbol == "TAIEX" and (
                                 (symbol.endswith(".TW") and row["skip_reason"] == rights.CONFLICT_REASON)
                                 or (can_prove_actions and row["skip_reason"] in
@@ -402,6 +411,9 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         outcomes.append(resolved if resolved is not None else row)
     summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
                                                require_existing_conflict=scoped)
+    if fresh and calendar_provider is not None:
+        from ai_stock_sentinel.daily_radar.trading_calendar import save_calendar
+        save_calendar(session,official_calendar)
     remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
     persisted = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date,

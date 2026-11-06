@@ -1,3 +1,4 @@
+from tests.radar_calendar_support import FixtureCalendarProvider
 """Memory boundaries must preserve the validation and transaction contracts."""
 from copy import deepcopy
 from datetime import date, timedelta
@@ -193,7 +194,7 @@ def test_endpoint_rolls_back_all_written_results_if_commit_fails(monkeypatch):
         with pytest.raises(RuntimeError, match="commit_failed"):
             maintenance_router.run_daily_radar_forward_validation_endpoint(
                 DailyRadarForwardValidationRunRequest(mode="due", as_of_date=date(2026, 6, 2), windows=[1]),
-                db=session, price_provider=Provider())
+                db=session, price_provider=Provider(), calendar_provider=FixtureCalendarProvider())
         assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 1
         session.rollback()
     with Session(engine) as session:
@@ -223,14 +224,14 @@ def test_endpoint_batches_provider_and_commits_once_with_idempotent_results(monk
     with Session(engine, autoflush=False) as session:
         commits = []
         event.listen(session, "after_commit", lambda session: commits.append(True))
-        result = maintenance_router.run_daily_radar_forward_validation_endpoint(request, db=session, price_provider=Provider())
+        result = maintenance_router.run_daily_radar_forward_validation_endpoint(request, db=session, price_provider=Provider(), calendar_provider=FixtureCalendarProvider())
         assert len(commits) == 1
         assert result.candidate_count == result.validated_count == result.records_written == 5
         assert calls == [["2300.TW", "2301.TW"], ["2302.TW", "2303.TW"], ["2304.TW"]]
         assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 5
         first_report = result.report
         calls.clear()
-        result = maintenance_router.run_daily_radar_forward_validation_endpoint(request, db=session, price_provider=Provider())
+        result = maintenance_router.run_daily_radar_forward_validation_endpoint(request, db=session, price_provider=Provider(), calendar_provider=FixtureCalendarProvider())
         assert result.records_written == 0
         assert result.report == first_report
         assert calls == []

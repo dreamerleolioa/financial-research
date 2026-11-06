@@ -63,6 +63,16 @@ def _compile_jsonb_for_sqlite(type_, compiler, **kw):
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "daily_radar"
 
+@pytest.fixture(autouse=True)
+def official_calendar_fixture():
+    from tests.radar_calendar_support import FixtureCalendarProvider
+    from ai_stock_sentinel.daily_radar.trading_calendar import get_trading_calendar_provider
+    provider = FixtureCalendarProvider((date(2026,9,25),date(2026,9,28)))
+    api.app.dependency_overrides[get_trading_calendar_provider] = lambda: provider
+    yield provider
+    api.app.dependency_overrides.pop(get_trading_calendar_provider,None)
+
+
 
 def test_forward_window_calculates_return_mfe_mae_and_benchmark_excess() -> None:
     candidate = _candidate_snapshot()
@@ -663,7 +673,8 @@ def test_forward_validation_due_mode_only_writes_matured_windows(monkeypatch) ->
     assert recent_candidate_id not in [row.candidate_id for row in rows]
 
 
-def test_forward_validation_due_mode_uses_price_rows_not_weekdays(monkeypatch) -> None:
+def test_forward_validation_due_mode_uses_official_sessions_not_weekdays(monkeypatch, official_calendar_fixture) -> None:
+    official_calendar_fixture.closed_dates = {date(2026,6,4)}
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
         engine,
@@ -1639,18 +1650,19 @@ def test_forward_validation_due_mode_waits_for_incomplete_benchmark_window(monke
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["records_written"] == 0
+    assert data["records_written"] == 1
     assert data["validated_count"] == 0
-    assert data["skipped_count"] == 0
-    assert data["retryable_skipped_count"] == 0
+    assert data["skipped_count"] == 1
+    assert data["retryable_skipped_count"] == 1
     assert data["terminal_skipped_count"] == 0
-    assert data["report"]["skip_reasons"] == {}
+    assert data["report"]["skip_reasons"] == {"missing_benchmark": 1}
 
     with Session(engine) as session:
-        assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 0
+        assert session.scalar(select(func.count()).select_from(DailyRadarForwardValidationResult)) == 1
 
 
-def test_due_mode_recomputes_candidate_refresh_after_benchmark_expands(monkeypatch) -> None:
+def test_due_mode_recomputes_candidate_refresh_after_benchmark_expands(monkeypatch, official_calendar_fixture) -> None:
+    official_calendar_fixture.closed_dates = {date(2026,6,4)}
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
         engine,

@@ -4,8 +4,8 @@ from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import delete, func, select, exists
+from sqlalchemy.orm import Session, selectinload, aliased
 
 from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_BACKGROUND_CONTEXT_TYPES
@@ -19,6 +19,14 @@ from ai_stock_sentinel.db.models import (
 
 
 PUBLIC_RUN_STATUSES = ("completed", "stale_data")
+def public_run_predicate(statuses=PUBLIC_RUN_STATUSES):
+    invalid = aliased(DailyRadarRun)
+    closed = exists(select(invalid.id).where(
+        invalid.market == DailyRadarRun.market, invalid.run_date == DailyRadarRun.run_date,
+        invalid.status == "invalidated")).correlate(DailyRadarRun)
+    return DailyRadarRun.status.in_(statuses) & ~closed
+
+
 BACKGROUND_CONTEXT_TYPES = DAILY_RADAR_BACKGROUND_CONTEXT_TYPES
 BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR = "daily_radar"
 
@@ -248,7 +256,7 @@ def get_symbol_candidate_history(
         ).label("revision"),
     ).where(
         DailyRadarRun.market == market,
-        DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+        public_run_predicate(),
         DailyRadarRun.run_date < before_date,
     ).subquery()
     query = (
@@ -515,7 +523,7 @@ def _public_run_query(*, market: str, statuses: tuple[str, ...]):
     return (
         select(DailyRadarRun)
         .options(selectinload(DailyRadarRun.candidates))
-        .where(DailyRadarRun.market == market, DailyRadarRun.status.in_(statuses))
+        .where(DailyRadarRun.market == market, public_run_predicate(statuses))
     )
 
 

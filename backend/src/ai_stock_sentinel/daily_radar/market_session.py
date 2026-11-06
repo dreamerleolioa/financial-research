@@ -108,3 +108,35 @@ __all__ = [
     "TWSE_NO_DATA_MARKERS",
     "TwseMarketSessionProvider",
 ]
+
+
+def require_open_session(provider, *, run_date, market):
+    from fastapi import HTTPException
+    try:
+        result = provider.resolve(run_date=run_date, market=market)
+    except MarketSessionProviderError as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code}) from exc
+    if result.run_date != run_date or result.market != market or result.status != "open":
+        raise HTTPException(status_code=409, detail={"code": "non_trading_signal_date", "run_date": str(run_date)})
+    return {"status": "open", "run_date": str(run_date), "market": market,
+            "provider": result.provider, "dataset": result.dataset}
+
+
+def require_prepared_open_session(prepared):
+    from fastapi import HTTPException
+    from ai_stock_sentinel.daily_radar.trading_calendar import SESSION_STEP
+    proof = (prepared.step_statuses or {}).get(SESSION_STEP) or {}
+    if (proof.get("status") != "open" or proof.get("run_date") != str(prepared.run_date)
+            or proof.get("market") != prepared.market or proof.get("provider") != "twse"
+            or proof.get("dataset") not in ("MI_INDEX", "MI_5MINS_HIST")):
+        raise HTTPException(status_code=409, detail={"code": "market_session_evidence_missing_or_invalid",
+                                                    "run_date": str(prepared.run_date)})
+    if proof.get("dataset") == "MI_5MINS_HIST":
+        from ai_stock_sentinel.daily_radar.trading_calendar import TradingCalendar, CALENDAR_STEP
+        try:
+            calendar = TradingCalendar.parse(prepared.step_statuses[CALENDAR_STEP])
+            if prepared.run_date not in calendar.sessions:
+                raise ValueError("closed")
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(status_code=409, detail={"code": "market_session_evidence_missing_or_invalid",
+                                                    "run_date": str(prepared.run_date)})

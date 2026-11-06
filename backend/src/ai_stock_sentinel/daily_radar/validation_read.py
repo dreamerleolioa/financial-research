@@ -21,6 +21,7 @@ from ai_stock_sentinel.daily_radar.observation_validation import (
     OBSERVATION_DIAGNOSTIC_VERSION, STRATEGY_FIELDS, canonical_radar_run_ids,
     load_observation_origins, observation_report, strategy_cohort,
 )
+from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar, check_outcome_calendar
 from ai_stock_sentinel.daily_radar.pool_quality import pool_comparisons
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
 from ai_stock_sentinel.daily_radar.research_quality import research_pool_comparisons
@@ -95,7 +96,7 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     # A partial/older calendar must not hide an already saved mature result as
     # immature. Without usable dates, absent outcomes stay missing, not pending.
     def usable_calendar(saved, days):
-        return bool(days) and all(
+        return bool(days) and max(days) >= as_of_date and all(
             date.fromisoformat(c["record_date"]) in days for c in candidates
         ) and all(
             parse_date(row.get("target_date")) in days and
@@ -107,6 +108,26 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     # must never change legacy observation maturity or hide its saved results.
     calendar_usable = usable_calendar(outcomes, calendar_days)
     research_calendar_usable = usable_calendar(research_outcomes, research_calendar_days)
+    official = load_calendar(session, start_date=min(
+        (date.fromisoformat(c["record_date"]) for c in candidates), default=as_of_date), as_of_date=as_of_date)
+    calendar_invalid = []
+    required_through = max([date.fromisoformat(c["record_date"]) for c in candidates] + [
+        parse_date(r["target_date"]) for r in outcomes + research_outcomes
+        if r["status"] == "validated" and r.get("target_date")], default=start)
+    if official is not None and official.through < required_through:
+        official = None
+    if official is not None:
+        calendar_days = research_calendar_days = set(official.sessions)
+        calendar_through = max(calendar_days, default=None)
+        # A complete proof through yesterday can establish saved targets, but
+        # cannot establish that a missing result is still immature today.
+        calendar_usable = research_calendar_usable = official.through >= as_of_date
+        outcomes, close_invalid = check_outcome_calendar(outcomes,official.sessions)
+        research_outcomes, research_invalid = check_outcome_calendar(research_outcomes,official.sessions)
+        calendar_invalid = close_invalid + research_invalid
+        # Only observation maturity consumes these synthetic date markers;
+        # performance continues to use persisted, independently checked prices.
+        benchmark = [{"date": str(d), "close": 1} for d in official.sessions]
     report = observation_report(candidates, outcomes, windows, as_of_date=as_of_date,
                                 benchmark_prices=benchmark if calendar_usable else None)
     comparisons = pool_comparisons(candidates, outcomes, windows,
@@ -138,6 +159,7 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     return DailyRadarValidationResponse(
         diagnostic_version=OBSERVATION_DIAGNOSTIC_VERSION, as_of_date=as_of_date,
         sample_start_date=start, sample_end_date=as_of_date, lookback_days=lookback_days,
-        calendar_through_date=calendar_through if calendar_usable else None,
+        calendar_through_date=calendar_through if calendar_usable or official is not None else None,
         last_evaluated_date=max(evaluated_dates, default=None), default_cohort_id=default_id, cohorts=cohorts,
+        calendar_invalid_windows=calendar_invalid,
     )

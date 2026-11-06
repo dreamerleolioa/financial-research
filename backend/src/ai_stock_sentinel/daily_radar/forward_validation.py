@@ -65,6 +65,7 @@ def build_forward_validation_report(
     hit_threshold_pct: float = DEFAULT_HIT_THRESHOLD_PCT,
     windows_by_candidate: Mapping[str, Sequence[int]] | None = None,
     aggregation_scope: str = "evaluation_batch",
+    trading_calendar: Sequence[date] | None = None,
 ) -> ForwardValidationEvaluation:
     active_windows = _ordered_positive_values(windows)
     candidate_list = [dict(candidate) for candidate in candidates]
@@ -79,14 +80,17 @@ def build_forward_validation_report(
         validation_version=validation_version,
         hit_threshold_pct=hit_threshold_pct,
         windows_by_candidate=windows_by_candidate,
+        trading_calendar=trading_calendar,
     )
     diagnosed_outcomes = _with_market_lifecycle_diagnostics(
         evaluation.outcomes, price_series_by_symbol=price_series_by_symbol,
-        benchmark_prices=benchmark_prices, as_of_date=as_of_date,
+        benchmark_prices=benchmark_prices, as_of_date=as_of_date, trading_calendar=trading_calendar,
     )
+    diagnostic_benchmark = benchmark_prices if trading_calendar is None else [
+        {"date": day.isoformat(), "close": 1} for day in trading_calendar]
     outcomes = _with_observation_diagnostics(
         candidate_list, diagnosed_outcomes, price_series_by_symbol=price_series_by_symbol,
-        benchmark_prices=benchmark_prices, as_of_date=as_of_date,
+        benchmark_prices=diagnostic_benchmark, as_of_date=as_of_date,
     )
 
     report = _build_report_from_outcomes(
@@ -100,7 +104,7 @@ def build_forward_validation_report(
         validation_version=validation_version,
         hit_threshold_pct=hit_threshold_pct,
         aggregation_scope=aggregation_scope,
-        benchmark_prices=benchmark_prices,
+        benchmark_prices=diagnostic_benchmark,
     )
     report.update(current_run_validation_diagnostics(outcomes))
     return ForwardValidationEvaluation(report=report, outcomes=outcomes)
@@ -119,10 +123,17 @@ def build_forward_validation_report_from_outcomes(
     hit_threshold_pct: float = DEFAULT_HIT_THRESHOLD_PCT,
     aggregation_scope: str = "persisted_fixed_date_cohort",
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
+    trading_calendar: Sequence[date] | None = None,
 ) -> dict[str, Any]:
-    return _build_report_from_outcomes(
+    saved_outcomes = [dict(outcome) for outcome in outcomes]
+    invalid = []
+    if trading_calendar is not None:
+        from ai_stock_sentinel.daily_radar.trading_calendar import check_outcome_calendar
+        saved_outcomes, invalid = check_outcome_calendar(saved_outcomes,trading_calendar)
+        benchmark_prices = [{"date": str(day), "close": 1} for day in trading_calendar]
+    report = _build_report_from_outcomes(
         [dict(candidate) for candidate in candidates],
-        [dict(outcome) for outcome in outcomes],
+        saved_outcomes,
         market=market,
         sample_source=sample_source,
         as_of_date=as_of_date,
@@ -133,6 +144,9 @@ def build_forward_validation_report_from_outcomes(
         aggregation_scope=aggregation_scope,
         benchmark_prices=benchmark_prices,
     )
+
+    report["calendar_invalid_windows"] = invalid
+    return report
 
 
 def _build_report_from_outcomes(
@@ -256,8 +270,10 @@ def evaluate_forward_window(
     )[0]
 
 
-def _with_market_lifecycle_diagnostics(outcomes, *, price_series_by_symbol, benchmark_prices, as_of_date):
+def _with_market_lifecycle_diagnostics(outcomes, *, price_series_by_symbol, benchmark_prices, as_of_date, trading_calendar=None):
     calendar = shared_forward_validation.normalize_price_series(benchmark_prices)
+    if trading_calendar is not None:
+        calendar = {day: {"close": 1} for day in trading_calendar}
     normalized = {}
     diagnosed = []
     for original in outcomes:
@@ -282,7 +298,8 @@ def _with_market_lifecycle_diagnostics(outcomes, *, price_series_by_symbol, benc
             row["skip_reason"] = "trading_terminated_in_window"
             row["target_date"] = target.isoformat()
             payload["market_lifecycle"] = evidence.payload()
-        payload.update(missing_dates=missing, expected_target_date=target.isoformat() if target else None)
+        payload.update(missing_dates=payload.get("missing_dates", missing),
+                       expected_target_date=target.isoformat() if target else None)
         row["outcome"] = payload
         diagnosed.append(row)
     return diagnosed
@@ -565,10 +582,13 @@ def upsert_forward_validation_results(
             DailyRadarForwardValidationResult.window_days == int(outcome["window_days"]),
             DailyRadarForwardValidationResult.validation_version == str(outcome["validation_version"]),
         )
-        if research_window:
-            # Shared lock order protects recovered evidence from stale concurrent evaluations.
-            statement = statement.with_for_update().execution_options(populate_existing=True)
+        # Recheck ownership under a row lock, including signal-close writes.
+        # A request prepared before repair or a range/CLI writer must not remove
+        # reviewed history after the discovery-time exclusion has already run.
+        statement = statement.with_for_update().execution_options(populate_existing=True)
         existing = session.execute(statement).scalar_one_or_none()
+        if existing is not None and _mapping(existing.outcome).get("historical_repair"):
+            continue
         payload = dict(_mapping(outcome.get("outcome")))
         if (research_window and existing is not None and existing.status == "skipped"
                 and existing.skip_reason in corporate_actions.TERMINAL_REASONS
@@ -827,6 +847,7 @@ def exclude_persisted_daily_radar_windows(
             ))
             and (
                 row["status"] == "validated"
+                or bool(_mapping(row["outcome"]).get("historical_repair"))
                 or (
                     row["status"] == "skipped"
                     and row["evaluation_as_of_date"] is not None

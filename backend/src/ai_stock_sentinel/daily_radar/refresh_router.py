@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.daily_radar.market_session import MarketSessionProvider, require_open_session
+from ai_stock_sentinel.daily_radar.trading_calendar import SESSION_STEP
 from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import BackgroundChipContextProvider
@@ -107,9 +109,11 @@ def prepare_daily_radar_universe_endpoint(
     payload: DailyRadarPreparedRunRequest | None = None,
     db: Session = Depends(get_db),
     universe_provider: DailyRadarUniverseProvider = Depends(get_daily_radar_universe_provider),
+    market_session_provider: MarketSessionProvider = Depends(dependencies.get_daily_radar_market_session_provider),
 ) -> DailyRadarPreparedRunResponse:
     request = payload or DailyRadarPreparedRunRequest()
     run_date = request.run_date or dependencies._backend_today()
+    session_proof = require_open_session(market_session_provider, run_date=run_date, market=request.market)
     institutional_archive = _required_institutional_archive_details(
         db,
         run_date=run_date,
@@ -177,6 +181,7 @@ def prepare_daily_radar_universe_endpoint(
         status="prepared",
         errors=[],
     )
+    prepared.step_statuses = dict(prepared.step_statuses or {}) | {SESSION_STEP: session_proof}
     update_daily_radar_prepared_step_status(
         db,
         prepared,

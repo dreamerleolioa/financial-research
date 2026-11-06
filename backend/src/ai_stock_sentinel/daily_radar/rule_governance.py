@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ai_stock_sentinel.daily_radar.repository import public_run_predicate
+
 import json
 import math
 from collections import Counter, defaultdict
@@ -339,7 +341,7 @@ def validation_rows_from_results(
         )
         .where(
             DailyRadarRun.market == market,
-            DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+            public_run_predicate(),
             date_predicate,
         )
         .subquery()
@@ -1037,7 +1039,7 @@ def _daily_radar_completeness_watermarks(
         )
         .where(
             DailyRadarRun.market == market,
-            DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+            public_run_predicate(),
             DailyRadarRun.run_date <= through_date,
         )
         .subquery()
@@ -1139,7 +1141,7 @@ def _daily_radar_completeness_watermarks(
         )
         .where(
             DailyRadarRun.market == market,
-            DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+            public_run_predicate(),
             DailyRadarRun.run_date <= through_date,
             DailyRadarRun.id.in_(latest_run_ids),
             DailyRadarCandidate.selection_status == "selected",
@@ -1531,7 +1533,7 @@ def _daily_radar_replay_workload_preflight(
         )
         .where(
             DailyRadarRun.market == market,
-            DailyRadarRun.status.in_(PUBLIC_RUN_STATUSES),
+            public_run_predicate(),
             date_predicate,
         )
         .subquery()

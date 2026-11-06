@@ -350,6 +350,7 @@ class DailyRadarValidationCohort(BaseModel):
 
 
 class DailyRadarValidationResponse(BaseModel):
+    calendar_invalid_windows: list[dict] = Field(default_factory=list)
     diagnostic_version: str
     as_of_date: date
     sample_start_date: date

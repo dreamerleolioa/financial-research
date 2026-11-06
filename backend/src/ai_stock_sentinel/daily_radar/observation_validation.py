@@ -1,4 +1,6 @@
 """Versioned, diagnostic-only observation events; original return outcomes stay intact."""
+from ai_stock_sentinel.daily_radar.repository import public_run_predicate
+
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import date
@@ -31,7 +33,7 @@ def canonical_radar_run_ids(*, market: str, start_date: date | None = None,
         DailyRadarRun.id.label("run_id"),
         func.row_number().over(partition_by=DailyRadarRun.run_date,
                                order_by=(DailyRadarRun.created_at.desc(), DailyRadarRun.id.desc())).label("revision"),
-    ).where(DailyRadarRun.market == market, DailyRadarRun.status.in_(statuses))
+    ).where(DailyRadarRun.market == market, public_run_predicate(statuses))
     if start_date is not None:
         query = query.where(DailyRadarRun.run_date >= start_date)
     if end_date is not None:
@@ -41,7 +43,7 @@ def canonical_radar_run_ids(*, market: str, start_date: date | None = None,
 
 
 def load_observation_origins(session: Any, candidates: Sequence[Mapping[str, Any]], *,
-                             market: str, through_date: date) -> dict[tuple[str, tuple[str, ...]], dict[str, Any]]:
+                             market: str, through_date: date, excluded_dates=()) -> dict[tuple[str, tuple[str, ...]], dict[str, Any]]:
     """Find first selected signals outside the requested evaluation range, without full snapshots.
 
     Select the canonical public run BEFORE filtering symbols or selected rows, so
@@ -56,6 +58,7 @@ def load_observation_origins(session: Any, candidates: Sequence[Mapping[str, Any
         DailyRadarCandidate.input_snapshot["selection_version"].as_string(),
     ).join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
       .where(DailyRadarRun.id.in_(canonical_radar_run_ids(market=market, end_date=through_date)),
+             ~DailyRadarRun.run_date.in_(excluded_dates),
              DailyRadarCandidate.selection_status == "selected",
              DailyRadarCandidate.symbol.in_(symbols))
       .order_by(DailyRadarRun.run_date, DailyRadarCandidate.id))
@@ -206,7 +209,12 @@ def _summarize(ranked, outcomes, window, calendar):
             missing[str(row.get("skip_reason") or "validation_not_available")] += 1
             continue
         diagnostic = (row.get("outcome") or {}).get("observation_diagnostic") or {}
-        if diagnostic.get("version") != OBSERVATION_DIAGNOSTIC_VERSION:
+        # The current first signal cannot reuse a diagnostic that was computed
+        # as a repeat of an older, now invalidated/superseded public origin.
+        if (diagnostic.get("version") != OBSERVATION_DIAGNOSTIC_VERSION
+                or diagnostic.get("status") == "not_first_observation"
+                or (diagnostic.get("first_seen_date") is not None
+                    and parse_date(diagnostic["first_seen_date"]) != first)):
             missing_diagnostics += 1
             continue
         statuses[str(diagnostic.get("status"))] += 1

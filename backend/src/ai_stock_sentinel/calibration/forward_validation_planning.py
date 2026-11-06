@@ -69,6 +69,7 @@ def prepare_due_forward_validation(
     as_of_date: date,
     price_start_date: date,
     fetch_prices: ForwardPriceFetcher,
+    trading_calendar: Sequence[date] | None = None,
 ) -> PreparedForwardValidation:
     candidate_list = list(candidates)
     seeded_prices = dict(price_series_by_symbol)
@@ -82,6 +83,7 @@ def prepare_due_forward_validation(
         windows_by_candidate=pending_windows_by_candidate,
         benchmark_prices=current_benchmark,
         as_of_date=as_of_date,
+        trading_calendar=trading_calendar,
     ):
         fetched_prices = _fetch_prices_in_batches(
             fetch_prices,
@@ -98,6 +100,7 @@ def prepare_due_forward_validation(
         price_series_by_symbol=price_series,
         benchmark_prices=current_benchmark,
         as_of_date=as_of_date,
+        trading_calendar=trading_calendar,
     )
     if refresh_symbols:
         fetched_prices = _fetch_prices_in_batches(

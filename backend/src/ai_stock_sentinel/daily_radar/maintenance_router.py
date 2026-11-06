@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 import logging
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from ai_stock_sentinel.calibration.price_provider import (
     get_forward_price_provider,
     get_research_price_provider,
 )
+from ai_stock_sentinel.daily_radar.trading_calendar import get_trading_calendar_provider, save_calendar, require_calendar, CalendarUnavailableError
 from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
@@ -327,12 +329,15 @@ def run_daily_radar_forward_validation_endpoint(
     db: Session = Depends(get_db),
     price_provider: ForwardPriceProvider = Depends(get_forward_price_provider),
     research_price_provider: ForwardPriceProvider = Depends(get_research_price_provider),
+    calendar_provider = Depends(get_trading_calendar_provider),
 ) -> DailyRadarForwardValidationRunResponse:
     request = payload or DailyRadarForwardValidationRunRequest()
     as_of_date = request.as_of_date or dependencies._backend_today()
     if request.return_basis == "next_open":
         try:
-            result = run_research_validation(db, request, as_of_date=as_of_date, price_provider=research_price_provider)
+            result = run_research_validation(db, request, as_of_date=as_of_date, price_provider=research_price_provider, calendar_provider=calendar_provider)
+        except CalendarUnavailableError as exc:
+            raise HTTPException(status_code=503, detail={"code": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         db.commit()
@@ -385,6 +390,16 @@ def run_daily_radar_forward_validation_endpoint(
                 as_of_date=as_of_date,
             )
 
+    # All loaded inputs are plain dictionaries. End the read transaction before
+    # official/provider HTTP, then start a short write transaction at persistence.
+    db.rollback()
+    calendar = None
+    if candidates and request.market == "TW" and request.benchmark_symbol == "TAIEX":
+        try:
+            calendar = require_calendar(calendar_provider,start_date=price_start_date,end_date=as_of_date)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail={"code": "official_trading_calendar_unavailable"}) from exc
+
     def fetch_prices(symbols, *, start_date, end_date):
         with metrics.stage("fetch_prices", batch_symbol_count=len(symbols)):
             return price_provider.fetch(symbols, start_date=start_date, end_date=end_date)
@@ -399,6 +414,10 @@ def run_daily_radar_forward_validation_endpoint(
                 price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
                 benchmark_prices=benchmark_prices,
             )
+        if calendar is not None:
+            windows_by_candidate = {f"id:{c['candidate_id']}": [w for w in request.windows
+                if sum(date.fromisoformat(c["record_date"]) < d <= as_of_date for d in calendar.sessions) >= w]
+                for c in candidates}
         with metrics.stage("exclude_persisted_windows"):
             windows_by_candidate = exclude_persisted_daily_radar_windows(
                 db,
@@ -417,11 +436,13 @@ def run_daily_radar_forward_validation_endpoint(
                 as_of_date=as_of_date,
                 price_start_date=price_start_date,
                 fetch_prices=fetch_prices,
+                trading_calendar=calendar.sessions if calendar else None,
             )
         metrics.counts["price_rows"] = sum(len(rows) for rows in preparation.price_series_by_symbol.values())
         price_series = preparation.price_series_by_symbol
         benchmark_prices = preparation.benchmark_prices
-        windows_by_candidate = preparation.evaluation_windows_by_candidate
+        if calendar is None:
+            windows_by_candidate = preparation.evaluation_windows_by_candidate
     with metrics.stage("evaluate"):
         evaluation = build_forward_validation_report(
             candidates,
@@ -433,9 +454,12 @@ def run_daily_radar_forward_validation_endpoint(
             windows=request.windows,
             benchmark_symbol=request.benchmark_symbol,
             windows_by_candidate=windows_by_candidate,
+            trading_calendar=calendar.sessions if calendar else None,
         )
     with metrics.stage("upsert"):
         write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
+        if calendar is not None:
+            save_calendar(db, calendar)
         metrics.counts["records_written"] = write_summary["records_written"]
     with metrics.stage("read_persisted"):
         persisted_outcomes = persisted_forward_validation_outcomes(
@@ -455,6 +479,7 @@ def run_daily_radar_forward_validation_endpoint(
             benchmark_symbol=request.benchmark_symbol,
             aggregation_scope="persisted_fixed_date_cohort",
             benchmark_prices=benchmark_prices,
+            trading_calendar=calendar.sessions if calendar else None,
         )
         report.update({key: evaluation.report[key] for key in ("current_run_skip_reasons", "current_run_gaps")})
     with metrics.stage("commit"):

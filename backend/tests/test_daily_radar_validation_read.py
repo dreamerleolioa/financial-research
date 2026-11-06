@@ -438,3 +438,79 @@ def test_latest_empty_revision_shadow_failed_other_market_and_future_are_exclude
 @pytest.mark.parametrize("query", ["lookback_days=0", "lookback_days=1096", "lookback_days=bad"])
 def test_read_bounds_sample_size(storage, query):
     assert storage[1].get("/daily-radar/validation?" + query).status_code == 422
+
+
+def test_official_calendar_is_not_disabled_by_one_bad_historical_window(storage):
+    from ai_stock_sentinel.daily_radar.trading_calendar import TradingCalendar,CALENDAR_STEP
+    session,client,_=storage
+    bad=add_candidate(session,add_run(session,date(2026,6,1)))
+    add_result(session,bad)
+    result=session.scalar(select(DailyRadarForwardValidationResult))
+    result.target_date=date(2026,6,9)
+    add_candidate(session,add_run(session,date(2026,6,29)),symbol="2317.TW")
+    add_calendar(session)
+    prepared=session.scalar(select(DailyRadarPreparedRun))
+    days=tuple(date(2026,6,1)+timedelta(days=i) for i in range(30)
+               if (date(2026,6,1)+timedelta(days=i)).weekday()<5)
+    proof=TradingCalendar(date(2026,6,1),date(2026,6,30),days,({"month":"2026-06",
+        "source_url":"https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=20260601",
+        "snapshot_sha256":"a"*64,"captured_at":"2026-06-30T16:00:00+00:00"},))
+    prepared.step_statuses={CALENDAR_STEP:proof.payload()};session.commit()
+    response=client.get("/daily-radar/validation?lookback_days=90")
+    assert response.status_code==200
+    body=response.json();stats=groups(body)["all_selected"]
+    assert body["calendar_through_date"]=="2026-06-30"
+    assert stats["immature_observation_count"]==1
+    assert stats["skipped_validation_count"]==1
+    assert len(body["calendar_invalid_windows"])==1
+    assert body["calendar_invalid_windows"][0]["reason"]=="historical_window_calendar_mismatch"
+
+
+def test_calendar_ending_before_as_of_cannot_prove_immaturity(storage):
+    from tests.radar_calendar_support import calendar
+    from ai_stock_sentinel.daily_radar.trading_calendar import CALENDAR_STEP
+    session,client,_=storage
+    add_candidate(session,add_run(session,date(2026,6,23)))
+    session.add(DailyRadarPreparedRun(run_date=date(2026,6,29),market="TW",selected_symbols=[],
+        universe=[],step_statuses={CALENDAR_STEP:calendar(date(2026,6,1),date(2026,6,29)).payload()}))
+    session.commit()
+    body=client.get("/daily-radar/validation?lookback_days=90").json()
+    stats=groups(body)["all_selected"]
+    assert stats["immature_observation_count"]==0
+    assert stats["missing_outcome_count"]==1
+    assert stats["coverage_complete"] is False
+
+
+def test_promoted_first_observation_reports_stale_diagnostic_as_missing(storage):
+    session,client,_=storage
+    c=add_candidate(session,add_run(session))
+    add_result(session,c,status="not_first_observation")
+    row=session.scalar(select(DailyRadarForwardValidationResult))
+    row.outcome=dict(row.outcome)|{"observation_diagnostic":{
+        "version":"daily-radar-observation-v1","status":"not_first_observation",
+        "first_seen_date":"2026-05-29","origin_scope":"available_public_history"}}
+    add_calendar(session);session.commit()
+    stats=groups(client.get("/daily-radar/validation?lookback_days=90").json())["all_selected"]
+    assert stats["missing_diagnostic_count"]==1
+    assert stats["coverage_complete"] is False
+
+
+def test_partial_fallback_calendar_cannot_hide_missing_mature_windows(storage):
+    from tests.radar_calendar_support import calendar
+    from ai_stock_sentinel.daily_radar.trading_calendar import CALENDAR_STEP
+    session,client,_=storage
+    c=add_candidate(session,add_run(session))
+    add_result(session,c)
+    proof=calendar(date(2026,6,1),date(2026,6,5))
+    session.add(DailyRadarPreparedRun(run_date=date(2026,6,5),market="TW",selected_symbols=[],universe=[],
+        step_statuses={CALENDAR_STEP:proof.payload()}))
+    days=calendar(date(2026,6,1),date(2026,6,8)).sessions
+    session.add(DailyRadarPreparedRun(run_date=date(2026,6,8),market="TW",selected_symbols=[],universe=[],
+        step_statuses={},market_context={"benchmark":{"symbol":"TAIEX","price_history":[
+            {"date":str(day),"close":1000} for day in days]}}))
+    session.commit()
+    body=client.get("/daily-radar/validation?lookback_days=90").json()
+    stats=groups(body,"10")["all_selected"]
+    assert stats["immature_observation_count"]==0
+    assert stats["missing_outcome_count"]==1
+    assert stats["coverage_complete"] is False

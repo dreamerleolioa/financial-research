@@ -636,8 +636,9 @@ def _market_context() -> dict[str, Any]:
     }
 
 
-def _completed_segmented_step_statuses() -> dict[str, dict[str, Any]]:
+def _completed_segmented_step_statuses(run_date=date(2026,6,1)) -> dict[str, dict[str, Any]]:
     return {
+        "market-session": {"status":"open","market":"TW","run_date":str(run_date),"provider":"twse","dataset":"MI_INDEX"},
         "refresh-institutional-flows": {"status": "completed"},
         "refresh-avwap": {"status": "completed"},
         "refresh-lending": {"status": "completed"},
@@ -645,7 +646,6 @@ def _completed_segmented_step_statuses() -> dict[str, dict[str, Any]]:
         "refresh-ohlcv": {"status": "completed"},
         "refresh-market-context": {"status": "completed"},
     }
-
 
 def _persist_raw_data(
     session: Session,
@@ -2525,6 +2525,7 @@ def test_current_short_history_reaches_prefilter_without_blocking_healthy_symbol
         step_statuses={step: {'status': 'completed'}
                        for step in dependencies.DAILY_RADAR_REQUIRED_REFRESH_STEPS},
     )
+    prepared.step_statuses["market-session"] = {"status":"open","market":"TW","run_date":str(run_date),"provider":"twse","dataset":"MI_INDEX"}
     daily_radar_db_session.add(prepared)
     daily_radar_db_session.commit()
     short = _build_technical_payload('3718.TWO', _recovery_frame(periods=9), run_date=run_date)
@@ -3053,6 +3054,7 @@ def test_daily_radar_run_scoring_requires_completed_refresh_steps(
         step_statuses={
             "refresh-avwap": {"status": "completed"},
             "refresh-market-context": {"status": "completed"},
+            "market-session": {"status":"open","market":"TW","run_date":"2026-06-01","provider":"twse","dataset":"MI_INDEX"},
         },
     )
     daily_radar_db_session.add(prepared)
@@ -3107,6 +3109,7 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
             "refresh-full-margin": {"status": "completed"},
             "refresh-ohlcv": {"status": "completed"},
             "refresh-market-context": {"status": "completed"},
+            "market-session": {"status":"open","market":"TW","run_date":"2026-06-01","provider":"twse","dataset":"MI_INDEX"},
         },
     )
     daily_radar_db_session.add(prepared)
@@ -3138,6 +3141,7 @@ def test_daily_radar_scoring_attaches_prepared_discovery_audit(monkeypatch, dail
     steps = {step: {"status": "completed"} for step in (
         "refresh-institutional-flows", "refresh-lending", "refresh-full-margin", "refresh-ohlcv", "refresh-market-context",
     )}
+    steps["market-session"] = {"status":"open","market":"TW","run_date":str(day),"provider":"twse","dataset":"MI_INDEX"}
     steps["prepare-universe"] = {"status": "completed", "market_exploration": audit}
     daily_radar_db_session.add(DailyRadarPreparedRun(
         run_date=day, market="TW", selected_symbols=["2330.TW"], universe=[], symbol_count=1,
@@ -4322,3 +4326,34 @@ def test_public_daily_radar_no_data_cases_are_explicit_and_do_not_require_intern
     assert date_response.json() == {"detail": "No public Daily Radar run is available for 2026-06-01."}
     assert history_response.status_code == 200
     assert history_response.json() == []
+
+
+def test_closed_session_blocks_both_prepare_and_legacy_run(monkeypatch, daily_radar_db_session):
+    provider = FakeMarketSessionProvider(status="closed")
+    client = _api_client(monkeypatch,daily_radar_db_session,market_session_provider=provider)
+    try:
+        for endpoint in ("prepare-universe","run"):
+            response=client.post("/internal/daily-radar/"+endpoint,
+                json={"run_date":"2026-06-19","market":"TW"},
+                headers={"Authorization":"Bearer test-token"})
+            assert response.status_code==409
+        assert not client.captured_daily_radar_call
+    finally:
+        _clear_daily_radar_api_overrides()
+
+
+def test_scoring_rejects_missing_session_proof_without_provider_call(monkeypatch,daily_radar_db_session):
+    steps=_completed_segmented_step_statuses();steps.pop("market-session")
+    daily_radar_db_session.add(DailyRadarPreparedRun(run_date=date(2026,6,1),market="TW",
+        selected_symbols=["2330.TW"],universe=[],step_statuses=steps,market_context=_market_context()))
+    daily_radar_db_session.commit()
+    provider=RaisingMarketSessionProvider()
+    client=_api_client(monkeypatch,daily_radar_db_session,market_session_provider=provider)
+    try:
+        response=client.post("/internal/daily-radar/run-scoring",json={"run_date":"2026-06-01"},
+                            headers={"Authorization":"Bearer test-token"})
+        assert response.status_code==409
+        assert response.json()["detail"]["code"]=="market_session_evidence_missing_or_invalid"
+        assert not client.captured_daily_radar_call
+    finally:
+        _clear_daily_radar_api_overrides()

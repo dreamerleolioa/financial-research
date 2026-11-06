@@ -48,6 +48,7 @@ def evaluate_forward_validation(
     validation_version: str,
     hit_threshold_pct: float = DEFAULT_HIT_THRESHOLD_PCT,
     windows_by_candidate: Mapping[str, Sequence[int]] | None = None,
+    trading_calendar: Sequence[date] | None = None,
 ) -> ForwardValidationEvaluation:
     active_windows = ordered_positive_values(windows)
     candidate_list = [dict(candidate) for candidate in candidates]
@@ -70,6 +71,7 @@ def evaluate_forward_validation(
                 benchmark_symbol=benchmark_symbol,
                 validation_version=validation_version,
                 hit_threshold_pct=hit_threshold_pct,
+                trading_calendar=trading_calendar,
             )
             outcomes.append(outcome)
             if outcome["status"] == "skipped":
@@ -94,6 +96,7 @@ def evaluate_forward_window(
     benchmark_symbol: str,
     validation_version: str,
     hit_threshold_pct: float,
+    trading_calendar: Sequence[date] | None = None,
 ) -> dict[str, Any]:
     signal_date = parse_date(candidate.get("record_date"))
     symbol = str(candidate.get("symbol") or "")
@@ -114,8 +117,32 @@ def evaluate_forward_window(
     if adapter.freshness_status(candidate) == "stale":
         return _skip(base, "stale_candidate_price")
 
+    expected_days = None
+    if trading_calendar is not None:
+        calendar = sorted(set(trading_calendar))
+        if signal_date not in calendar:
+            return _skip(base, "non_trading_signal_date")
+        expected_days = [day for day in calendar if signal_date < day
+                         and (as_of_date is None or day <= as_of_date)][:window_days]
+        if len(expected_days) < window_days:
+            return _skip(base, "window_not_mature")
+
     candidate_prices = normalize_price_series(price_series)
     benchmark_by_date = normalize_price_series(benchmark_prices)
+    if expected_days is not None:
+        for series, reason, required in (
+            (benchmark_by_date, "missing_benchmark", [signal_date, *expected_days]),
+            (candidate_prices, "missing_future_price", expected_days),
+        ):
+            missing = [day.isoformat() for day in required if day not in series]
+            if missing:
+                return _skip(base, reason) | {"outcome": {
+                    "expected_target_date": expected_days[-1].isoformat(), "missing_dates": missing}}
+        # Prices are evidence for fixed sessions, never a substitute calendar.
+        candidate_prices = {day: row for day, row in candidate_prices.items()
+                            if day == signal_date or day in expected_days}
+        benchmark_by_date = {day: row for day, row in benchmark_by_date.items()
+                             if day == signal_date or day in expected_days}
     entry_price = adapter.entry_price(candidate, candidate_prices, signal_date)
     if entry_price is None:
         return _skip(base, "missing_candidate_entry_price")
@@ -255,6 +282,7 @@ def symbols_requiring_forward_price_refresh(
     price_series_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]],
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
     as_of_date: date,
+    trading_calendar: Sequence[date] | None = None,
 ) -> list[str]:
     required: set[str] = set()
     benchmark_by_date = normalize_price_series(benchmark_prices or [])
@@ -279,6 +307,9 @@ def symbols_requiring_forward_price_refresh(
                 as_of_date,
             )[:max_window]
         ]
+        if trading_calendar is not None:
+            benchmark_dates = [day for day in sorted(set(trading_calendar))
+                               if signal_date < day <= as_of_date][:max_window]
         if available_rows < max_window or any(
             row_date not in candidate_by_date
             for row_date in benchmark_dates
@@ -293,6 +324,7 @@ def benchmark_requires_forward_price_refresh(
     windows_by_candidate: Mapping[str, Sequence[int]],
     benchmark_prices: Sequence[Mapping[str, Any]],
     as_of_date: date,
+    trading_calendar: Sequence[date] | None = None,
 ) -> bool:
     benchmark_by_date = normalize_price_series(benchmark_prices)
     for candidate in candidates:
@@ -305,6 +337,11 @@ def benchmark_requires_forward_price_refresh(
         available_rows = len(
             future_price_rows(benchmark_by_date, signal_date, as_of_date)
         )
+        if trading_calendar is not None:
+            required = [day for day in sorted(set(trading_calendar))
+                        if signal_date < day <= as_of_date][:max(pending_windows)]
+            if any(day not in benchmark_by_date for day in required):
+                return True
         if available_rows < max(int(window) for window in pending_windows):
             return True
     return False

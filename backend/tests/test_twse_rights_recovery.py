@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -134,6 +134,11 @@ def scenario(monkeypatch):
     app = FastAPI()
     app.include_router(maintenance_router.router)
     app.dependency_overrides[get_db] = lambda: Session(engine)
+    from tests.radar_calendar_support import FixtureCalendarProvider
+    from ai_stock_sentinel.daily_radar.trading_calendar import get_trading_calendar_provider
+    day_set = set(DAYS)
+    closed = {SIGNAL+timedelta(days=i) for i in range((TARGET-SIGNAL).days+1)} - day_set
+    app.dependency_overrides[get_trading_calendar_provider] = lambda: FixtureCalendarProvider(closed)
     app.dependency_overrides[get_research_price_provider] = lambda: provider
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "rights-test")
     with TestClient(app) as client:

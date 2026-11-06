@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ai_stock_sentinel.daily_radar.repository import public_run_predicate
+
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -109,7 +111,7 @@ def calibration_candidates_from_runs(
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
         .where(
             DailyRadarRun.market == market,
-            DailyRadarRun.status.in_(statuses),
+            public_run_predicate(statuses),
             DailyRadarCandidate.selection_status == "selected",
         )
     )

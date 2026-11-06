@@ -12,6 +12,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.daily_radar.market_session import MarketSessionProvider, require_open_session, require_prepared_open_session
 from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
@@ -82,6 +83,7 @@ def run_daily_radar_scoring_endpoint(
     run_date = request.run_date or dependencies._backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
     _raise_if_required_refresh_steps_missing(prepared)
+    require_prepared_open_session(prepared)
     if not prepared.market_context:
         raise HTTPException(
             status_code=409,
@@ -129,12 +131,14 @@ def run_daily_radar_endpoint(
     market_context_provider: MarketIndexContextProvider = Depends(get_daily_radar_market_context_provider),
     background_context_provider: BackgroundChipContextProvider = Depends(get_daily_radar_background_chip_context_provider),
     phase1_avwap_provider: DailyPriceProvider = Depends(get_phase1_avwap_daily_price_provider),
+    market_session_provider: MarketSessionProvider = Depends(dependencies.get_daily_radar_market_session_provider),
 ) -> DailyRadarRunTriggerResponse:
     failure_stage = "request_initialization"
     try:
         request = payload or DailyRadarRunRequest()
         run_date = request.run_date or dependencies._backend_today()
         market = request.market
+        require_open_session(market_session_provider, run_date=run_date, market=market)
         failure_stage = "universe_selection"
         existing_technical_rows = get_final_raw_data_rows_for_date(db, run_date=run_date)
         universe = select_daily_radar_universe(

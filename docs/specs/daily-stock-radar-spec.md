@@ -756,3 +756,9 @@ TAIEX 官方歷史補取遇到非 JSON、暫時性 HTTP 或連線失敗時，最
 Workflow 對每種 return basis 各保留 15 分鐘預算，單次完整 HTTP request 最多 300 秒。`signal_close` 最多兩次；`next_open` 最多六次，依已提交結果續跑剩餘 retryable 視窗，剩餘數不再下降即停止。連續 transport 失敗最多兩次。每輪保留原始診斷 artifact、固定 `as_of_date`、剩餘數與停止原因；任一 basis 未完成仍回傳失敗，另一 basis 獨立執行。
 
 `next_open` 即使 Yahoo 已補齊所需日期，仍比對該窗口可用的官方 final 歸檔；來源 OHLC 衝突保留原值與衝突標記，不覆寫成成功。已知窗口衝突優先回報 `conflicting_price_records`，同時保留缺少日期。`source_recovery_summary` 統計全部恢復診斷及錯誤原因，`source_recovery` 的 64 筆樣本優先保留錯誤並標明是否截斷；價格衝突提供有界的日期、欄位與兩側價格，預算耗盡另區分 request limit 與 deadline。Workflow 摘要列出錯誤樣本；舊後端缺少彙總時保留 `null`，不宣稱取得完整統計。
+
+### 歷史驗證與交易日證據
+
+Daily Radar production validation 以正式 TWSE 日曆固定窗口，缺少價格時不得順延目標日。prepare 保存市場開休市證明，DB-only scoring 拒絕缺少或日期不符的證明。休市日失效 run 及同日其他 revision 不進入公開候選、驗證、規則報告或首次觀察起點。
+
+可信日曆與歷史結果一致性分開檢查；異常窗口以 `calendar_invalid_windows` 揭露並排除於有效績效，不能使其他窗口的成熟度判定整體失效。修補必須使用限定 IDs、不可覆寫的前後值 manifest、明確雜湊確認及可回復交易，診斷不足仍列缺口。操作與授權邊界見 [歷史驗證補修手冊](../daily-radar-history-repair-runbook.md)。

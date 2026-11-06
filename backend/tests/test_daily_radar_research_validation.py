@@ -210,6 +210,10 @@ def test_api_keeps_legacy_results_and_research_retry_is_idempotent(monkeypatch):
     app.include_router(maintenance_router.router)
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "research-test")
     app.dependency_overrides[get_db] = lambda: Session(engine)
+    from ai_stock_sentinel.daily_radar.trading_calendar import get_trading_calendar_provider
+    from tests.radar_calendar_support import calendar as fake_calendar
+    app.dependency_overrides[get_trading_calendar_provider] = lambda: type("CalendarProvider",(),{
+        "fetch": lambda self, *, start_date, end_date: fake_calendar(start_date,end_date)})()
     app.dependency_overrides[get_research_price_provider] = lambda: provider
     try:
         with TestClient(app) as client:
