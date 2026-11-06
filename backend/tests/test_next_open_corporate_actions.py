@@ -119,7 +119,7 @@ def replay(monkeypatch):
             _mark_conflicts({row["date"]: row for row in series}, official)
         return result
 
-    def run(symbol, signal, window, *, seed=False, extra_symbols=()):
+    def run(symbol, signal, window, *, seed=False, extra_symbols=(), target=TARGET):
         if seed:
             with Session(engine) as db:
                 saved_run = _add_run(db, run_date=signal)
@@ -127,16 +127,16 @@ def replay(monkeypatch):
                     candidate = _add_candidate(db, saved_run, symbol=ticker)
                     db.add(Result(candidate_id=candidate.id, window_days=window,
                                   validation_version=RESEARCH_VALIDATION_VERSION, status="skipped",
-                                  signal_date=signal, benchmark_symbol="TAIEX", evaluation_as_of_date=TARGET,
-                                  skip_reason="conflicting_price_records", outcome={"expected_target_date": str(TARGET)}))
+                                  signal_date=signal, benchmark_symbol="TAIEX", evaluation_as_of_date=target,
+                                  skip_reason="conflicting_price_records", outcome={"expected_target_date": str(target)}))
                 db.commit()
         provider = RecoveringResearchPriceProvider(official_getter=official_get)
         monkeypatch.setattr(provider, "fetch", yahoo)
         monkeypatch.setattr(provider, "repair", mark_archived_conflicts)
-        request = DailyRadarForwardValidationRunRequest(return_basis="next_open", as_of_date=TARGET,
+        request = DailyRadarForwardValidationRunRequest(return_basis="next_open", as_of_date=target,
                                                        start_date=signal, end_date=signal, windows=[window])
         with Session(engine) as db:
-            result = run_research_validation(db, request, as_of_date=TARGET, price_provider=provider)
+            result = run_research_validation(db, request, as_of_date=target, price_provider=provider)
             db.commit()
             return result
 

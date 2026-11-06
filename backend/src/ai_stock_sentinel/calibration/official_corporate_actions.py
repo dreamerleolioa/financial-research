@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from html.parser import HTMLParser
 from math import isclose
 import re
@@ -18,6 +19,19 @@ EVIDENCE_VERSION = "next-open-official-corporate-action-v1"
 TPEX_DISTRIBUTIONS = "/www/zh-tw/bulletin/exDailyQ"
 TPEX_REDUCTIONS = "/www/zh-tw/bulletin/revivt"
 TWSE_REDUCTION_DETAIL = "/rwd/zh/reducation/TWTAVUDetail"
+PRECISION_VERSION = "bounded-distribution-decimals-v1"
+# A displayed 0.1 share per thousand can round by at most 0.05 share.
+# Cap the 7/6-decimal precision observed in Yahoo ratios/dividends;
+# a coarser representation must not widen these bounds.
+MAX_OFFICIAL_SHARE_ROUNDING = Decimal("0.05")
+MAX_PROVIDER_RATIO_ROUNDING = Decimal("0.00000005")
+MAX_CASH_ROUNDING = Decimal("0.0000005")
+
+
+@dataclass(frozen=True)
+class DistributionTerms:
+    shares_per_thousand: str
+    cash_per_share: str
 
 
 @dataclass(frozen=True)
@@ -28,6 +42,7 @@ class Action:
     cash_per_share: float
     previous_close: float
     halt_start: date | None = None
+    distribution_terms: DistributionTerms | None = None
 
 
 def _numeric(value):
@@ -35,6 +50,41 @@ def _numeric(value):
     if parsed is None or parsed < 0:
         raise ValueError("official_corporate_action_invalid_terms")
     return parsed
+
+
+def _decimal_text(value, unit=None):
+    text = str(value).strip()
+    if unit is not None:
+        rights._amount(text, unit)
+        text = text[:-len(unit)].strip()
+    text = text.replace(",", "")
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+        raise ValueError("official_corporate_action_invalid_terms")
+    _numeric(text)
+    return text
+
+
+def _distribution(day, shares, cash, previous_close, *, units=False):
+    terms = DistributionTerms(_decimal_text(shares, "股" if units else None),
+                              _decimal_text(cash, "元／股" if units else None))
+    return Action(STOCK_DISTRIBUTION, day, float(1 + Decimal(terms.shares_per_thousand) / 1000),
+                  float(terms.cash_per_share), _numeric(previous_close), distribution_terms=terms)
+
+
+def _rounding_radius(text, cap):
+    value = Decimal(text)
+    # Integer/zero values do not justify widening an exact event (e.g. no cash).
+    if value == 0 or value.as_tuple().exponent >= 0:
+        return Decimal(0)
+    return min(Decimal(1).scaleb(value.as_tuple().exponent) / 2, cap)
+
+
+def _distribution_match(observed, official, official_radius, provider_cap):
+    value = Decimal(str(observed))
+    if official == 0:
+        return value == 0, Decimal(0)
+    tolerance = official_radius + _rounding_radius(str(observed), provider_cap)
+    return abs(value - official) <= tolerance, tolerance
 
 
 def _twse_action(symbol, sessions, capture):
@@ -80,9 +130,7 @@ def _twse_action(symbol, sessions, capture):
     shares = rights._amount(row[free], "股")
     if not shares or any(rights._amount(row[field], unit) for field, unit in other.items()):
         return None, []
-    return Action(STOCK_DISTRIBUTION, day, 1 + shares / 1000,
-                  rights._amount(row[dividend], "元／股"),
-                  _numeric(notice["除權息前收盤價"])), [*sources, detail_source]
+    return _distribution(day, row[free], row[dividend], notice["除權息前收盤價"], units=True), [*sources, detail_source]
 
 
 def _twse_reduction(code, resume, notice, capture):
@@ -186,8 +234,7 @@ def _tpex_action(symbol, sessions, capture):
         shares = _numeric(row["每仟股無償配股"])
         if row["權/息"] not in {"除權", "除權息"} or not shares or any(_numeric(row[f]) for f in cash_issue):
             return None, []
-        return Action(STOCK_DISTRIBUTION, day, 1 + shares / 1000,
-                      _numeric(row["現金股利"]), _numeric(row["除權息前收盤價"])), sources
+        return _distribution(day, row["每仟股無償配股"], row["現金股利"], row["除權息前收盤價"]), sources
 
     resume, row = reductions[0]
     if row["減資原因"] != "現金減資":
@@ -255,7 +302,17 @@ def prove_window(symbol, signal, window_days, as_of_date, *, yahoo_rows, benchma
     if not isclose(official_stock[previous]["close"], action.previous_close, rel_tol=0, abs_tol=0.005):
         raise ValueError("official_corporate_action_reference_close_mismatch")
     adjusted = []
-    factor = 1 / action.share_ratio
+    precision = None
+    if action.distribution_terms is not None:
+        terms = action.distribution_terms
+        official_ratio = 1 + Decimal(terms.shares_per_thousand) / 1000
+        ratio_radius = _rounding_radius(terms.shares_per_thousand, MAX_OFFICIAL_SHARE_ROUNDING) / 1000
+        cash_radius = _rounding_radius(terms.cash_per_share, MAX_CASH_ROUNDING)
+        precision = {"policy_version": PRECISION_VERSION,
+                     "official_terms": {"shares_per_thousand": terms.shares_per_thousand,
+                                        "cash_per_share": terms.cash_per_share},
+                     "provider_share_ratio": None, "provider_cash_per_share": None,
+                     "share_ratio_tolerance": None, "cash_per_share_tolerance": None}
     event_days = {event_date}
     if action.halt_start:
         event_days.add(str(action.halt_start))
@@ -269,13 +326,31 @@ def prove_window(symbol, signal, window_days, as_of_date, *, yahoo_rows, benchma
                 raise ValueError("official_corporate_action_unverified_market_session")
             continue
         has_split, has_cash = split not in (0, 1), cash != 0
+        split_matches = split is not None and isclose(split, action.share_ratio)
+        cash_matches = cash is not None and isclose(cash, action.cash_per_share)
+        if precision is not None:
+            if has_split and split is not None:
+                split_matches, tolerance = _distribution_match(split, official_ratio, ratio_radius,
+                                                               MAX_PROVIDER_RATIO_ROUNDING)
+                precision.update(provider_share_ratio=split, share_ratio_tolerance=str(tolerance))
+                precision["provider_cash_per_share"] = cash
+            if has_cash and cash is not None:
+                cash_matches, tolerance = _distribution_match(cash, Decimal(terms.cash_per_share), cash_radius,
+                                                              MAX_CASH_ROUNDING)
+                precision.update(provider_cash_per_share=cash, cash_per_share_tolerance=str(tolerance))
         if (has_split and (day not in event_days or split_seen or split is None
-                           or not isclose(split, action.share_ratio))
+                           or not split_matches)
                 or has_cash and (day not in event_days or cash_seen or cash is None
-                                 or not isclose(cash, action.cash_per_share))):
+                                 or not cash_matches)):
             raise ValueError("official_corporate_action_provider_event_mismatch")
         split_seen |= has_split
         cash_seen |= has_cash
+    if action.reason == STOCK_DISTRIBUTION and not split_seen:
+        raise ValueError("official_corporate_action_provider_event_mismatch")
+    price_ratio = precision["provider_share_ratio"] if precision is not None else action.share_ratio
+    factor = 1 / price_ratio
+    if precision is not None:
+        precision["price_share_ratio"] = price_ratio
     for day, observed in sorted(yahoo.items()):
         raw = official_stock[day]
         if observed.get("volume") == 0:
@@ -305,4 +380,5 @@ def prove_window(symbol, signal, window_days, as_of_date, *, yahoo_rows, benchma
         "session_dates": [str(day) for day in sessions],
         "halt_dates": sorted(halt),
         "yahoo_adjusted_dates": adjusted,
+        **({"distribution_precision": precision} if precision is not None else {}),
     }
