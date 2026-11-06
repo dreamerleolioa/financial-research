@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from copy import deepcopy
 import logging
 import os
 
@@ -34,7 +35,8 @@ from ai_stock_sentinel.daily_radar.institutional_payloads import (
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
     InstitutionalUniverseProviderError,
 )
-from ai_stock_sentinel.daily_radar.market_bar_provider import OfficialTaiwanMarketBarProvider
+from ai_stock_sentinel.daily_radar.market_bar_provider import OfficialTaiwanMarketBarProvider, OfficialMarketBarProviderError
+from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.market_bar_service import refresh_taiwan_market_bars
 from ai_stock_sentinel.daily_radar.market_context import (
     MarketIndexContextProvider,
@@ -54,6 +56,7 @@ from ai_stock_sentinel.daily_radar.pipeline_support import (
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
+    fetch_daily_radar_raw_payloads,
     insufficient_history_daily_radar_raw_rows,
     reusable_daily_radar_raw_rows,
 )
@@ -408,6 +411,34 @@ def refresh_daily_radar_ohlcv_endpoint(
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    snapshot = (prepared.id, deepcopy(prepared.selected_symbols), deepcopy(prepared.universe))
+    selected_symbols, _ = _supported_daily_radar_symbols(snapshot[1])
+    db.rollback()
+    try:
+        market_bars = []
+        if (os.getenv("DAILY_RADAR_TW_OHLCV_PROVIDER_MODE", "yfinance_only") != "yfinance_only"
+                and run_date.weekday() < 5):
+            for market in ("TW", "TWO"):
+                try:
+                    market_bars.extend(market_bar_provider.fetch_market(market=market, trade_date=run_date))
+                except OfficialMarketBarProviderError as exc:
+                    logger.warning("OHLCV official archive refresh failed market=%s code=%s", market, exc.code)
+        fetched_payloads = fetch_daily_radar_raw_payloads(
+            db, run_date, selected_symbols, technical_fetcher=technical_fetcher, official_bars=market_bars,
+        )
+        return _persist_ohlcv_refresh(db, request=request, run_date=run_date, snapshot=snapshot,
+            technical_fetcher=technical_fetcher, fetched_payloads=fetched_payloads, market_bars=market_bars)
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher, fetched_payloads, market_bars):
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    db.refresh(prepared, with_for_update=True)
+    if (prepared.id, prepared.selected_symbols, prepared.universe) != snapshot:
+        raise HTTPException(status_code=409, detail={"code": "daily_radar_prepared_run_changed",
+            "message": "Prepared inputs changed during OHLCV fetch; retry with the current universe."})
     universe = _prepared_universe_entries(prepared.universe)
     selected_symbols, skipped_symbol_reasons = _supported_daily_radar_symbols(prepared.selected_symbols)
     if skipped_symbol_reasons:
@@ -415,19 +446,15 @@ def refresh_daily_radar_ohlcv_endpoint(
         universe = [entry for entry in universe if entry.symbol not in skipped_symbols]
         prepared.selected_symbols = selected_symbols
         prepared.symbol_count = len(selected_symbols)
-    if os.getenv("DAILY_RADAR_TW_OHLCV_PROVIDER_MODE", "yfinance_only") != "yfinance_only":
-        refresh_taiwan_market_bars(
-            db,
-            start_date=run_date,
-            end_date=run_date,
-            provider=market_bar_provider,
-        )
+    if market_bars:
+        upsert_taiwan_daily_bars(db, market_bars)
         db.flush()
     rows = ensure_daily_radar_raw_rows(
         db,
         run_date,
         selected_symbols,
         technical_fetcher=technical_fetcher,
+        fetched_payloads=fetched_payloads,
         institutional_payloads_by_symbol=_institutional_payloads_by_symbol(universe, run_date=run_date),
         margin_contexts_by_symbol=_full_margin_contexts_by_symbol(
             db,

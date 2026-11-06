@@ -30,11 +30,15 @@ def run(*, base_url, token, run_date, output_dir, request=post, clock=time.monot
                     response = request(f"{base_url.rstrip('/')}/internal/daily-radar/{step}",
                                        token, payload, min(300, remaining))
                 except HTTPError as exc:
+                    response_error_type = None
                     try:
                         detail = _read_json(exc)
-                    except (ValueError, OSError, HTTPException):
+                    except (ValueError, OSError, HTTPException) as parse_error:
                         detail = None
+                        response_error_type = type(parse_error).__name__
                     response = {"http_status": exc.code, "error_type": "HTTPError", "response": detail}
+                    if response_error_type:
+                        response["response_error_type"] = response_error_type
             if clock() > deadline:
                 raise TimeoutError("raw_refresh_budget_exhausted")
         except (OSError, ValueError, HTTPException) as exc:
@@ -49,6 +53,8 @@ def run(*, base_url, token, run_date, output_dir, request=post, clock=time.monot
                      and response["missing_record_count"] == 0 and response.get("error_codes") == [])
         if not ready:
             failures.append(step)
+            if isinstance(response, dict) and response.get("error_type"):
+                print(diagnostic_json({"step": step, **response}, token, indent=None))
             if isinstance(response, dict) and response.get("symbol_diagnostics"):
                 print(diagnostic_json({"step": step, "symbol_diagnostics": response["symbol_diagnostics"]},
                                       token, indent=None))

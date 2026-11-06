@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import asdict
 from datetime import date, timedelta
 import logging
 import math
@@ -18,7 +19,8 @@ from ai_stock_sentinel.daily_radar.data_quality import (
     technical_data_dates_match_record_date,
 )
 from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
-from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
+from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
+from ai_stock_sentinel.daily_radar.market_bar_repository import DEFAULT_MARKET_BAR_DATASET, get_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.daily_radar.technical_repair import (
     TechnicalRepairRejected,
@@ -261,12 +263,39 @@ class LocalFirstBatchTechnicalFetcher:
             raise ValueError("invalid DAILY_RADAR_TW_OHLCV_PROVIDER_MODE")
         self._min_trading_bars = max(1, min_trading_bars)
         self._name_resolver = name_resolver
+        self._snapshot_date: date | None = None
+        self._snapshot_symbols: set[str] = set()
+        self._official_snapshot: dict[str, TaiwanDailyBar] = {}
+        self._adjusted_snapshot: list[TaiwanDailyBar] = []
+
+    def prepare_fetch(self, symbols: Sequence[str], *, run_date: date,
+                      official_bars: Sequence[MarketDailyBar] = ()) -> None:
+        """Materialize archive inputs before the caller releases its read transaction."""
+        def snapshot(row):
+            return TaiwanDailyBar(**{column.key: getattr(row, column.key)
+                                     for column in TaiwanDailyBar.__table__.columns})
+        self._official_snapshot = {row.symbol: snapshot(row) for row in get_taiwan_daily_bars(
+            self._session, symbols=symbols, start_date=run_date, end_date=run_date,
+        )}
+        self._official_snapshot.update({bar.symbol: TaiwanDailyBar(**asdict(bar),
+            dataset=DEFAULT_MARKET_BAR_DATASET, adjustment_mode="unadjusted") for bar in official_bars})
+        self._adjusted_snapshot = []
+        if self._provider_mode != "yfinance_only":
+            self._adjusted_snapshot = [snapshot(row) for row in get_taiwan_daily_bars(
+                self._session, symbols=symbols, start_date=run_date - timedelta(days=120),
+                end_date=run_date, adjustment_mode=REQUIRED_TECHNICAL_ADJUSTMENT_MODE,
+            )]
+        self._snapshot_date = run_date
+        self._snapshot_symbols = set(symbols)
 
     @property
     def diagnostics(self) -> Mapping[str, Any]:
         return getattr(self._fallback_fetcher, "diagnostics", {})
 
     def _load_official_bars(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, TaiwanDailyBar]:
+        if self._snapshot_date is not None:
+            self._require_snapshot(symbols, run_date)
+            return {symbol: self._official_snapshot[symbol] for symbol in symbols if symbol in self._official_snapshot}
         return {row.symbol: row for row in get_taiwan_daily_bars(
             self._session, symbols=symbols, start_date=run_date, end_date=run_date,
         )}
@@ -275,11 +304,13 @@ class LocalFirstBatchTechnicalFetcher:
         ordered_symbols = _ordered_unique_symbols(symbols)
         if not ordered_symbols:
             return {}
+        if self._snapshot_date is not None:
+            self._require_snapshot(ordered_symbols, run_date)
         if self._provider_mode == "yfinance_only":
             return self._fallback_fetcher.fetch(ordered_symbols, run_date=run_date)
 
         supported_symbols = [symbol for symbol in ordered_symbols if _is_supported_local_bar_symbol(symbol)]
-        rows = get_taiwan_daily_bars(
+        rows = self._adjusted_snapshot if self._snapshot_date is not None else get_taiwan_daily_bars(
             self._session,
             symbols=supported_symbols,
             start_date=run_date - timedelta(days=120),
@@ -314,11 +345,33 @@ class LocalFirstBatchTechnicalFetcher:
                 payloads.update(self._fallback_fetcher.fetch(fallback_symbols, run_date=run_date))
         return payloads
 
+    def _require_snapshot(self, symbols: Sequence[str], run_date: date) -> None:
+        if run_date != self._snapshot_date or not set(symbols).issubset(self._snapshot_symbols):
+            raise ValueError("technical_fetch_snapshot_mismatch")
+
     def _safe_resolve_name(self, symbol: str) -> str | None:
         try:
             return self._name_resolver(symbol)
         except Exception:
             return None
+
+
+def fetch_daily_radar_raw_payloads(
+    session: Session, run_date: date, symbols: Iterable[str], *,
+    technical_fetcher: BatchTechnicalFetcher,
+    official_bars: Sequence[MarketDailyBar] = (),
+) -> Mapping[str, Mapping[str, Any]]:
+    """Read-only collection phase; no pending writes may be discarded by rollback."""
+    if session.new or session.dirty or session.deleted:
+        raise ValueError("raw_refresh_requires_clean_read_transaction")
+    ordered = _ordered_unique_symbols(symbols)
+    existing = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered)
+    reusable = {row.symbol for row in current_daily_radar_raw_rows(existing, run_date=run_date)}
+    missing = [symbol for symbol in ordered if symbol not in reusable]
+    if missing and isinstance(technical_fetcher, LocalFirstBatchTechnicalFetcher):
+        technical_fetcher.prepare_fetch(missing, run_date=run_date, official_bars=official_bars)
+    session.rollback()
+    return technical_fetcher.fetch(missing, run_date=run_date) if missing else {}
 
 
 def ensure_daily_radar_raw_rows(
@@ -329,6 +382,7 @@ def ensure_daily_radar_raw_rows(
     technical_fetcher: BatchTechnicalFetcher | None = None,
     institutional_payloads_by_symbol: Mapping[str, Mapping[str, Any]] | None = None,
     margin_contexts_by_symbol: Mapping[str, Mapping[str, Any]] | None = None,
+    fetched_payloads: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[StockRawData]:
     ordered_symbols = _ordered_unique_symbols(symbols)
     if not ordered_symbols:
@@ -342,8 +396,9 @@ def ensure_daily_radar_raw_rows(
     }
     missing_symbols = [symbol for symbol in ordered_symbols if symbol not in reusable_final_symbols]
     if missing_symbols:
-        fetcher = technical_fetcher or YFinanceBatchTechnicalFetcher()
-        fetched_payloads = fetcher.fetch(missing_symbols, run_date=run_date)
+        if fetched_payloads is None:
+            fetcher = technical_fetcher or YFinanceBatchTechnicalFetcher()
+            fetched_payloads = fetcher.fetch(missing_symbols, run_date=run_date)
         _store_missing_rows(
             session,
             run_date=run_date,

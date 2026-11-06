@@ -92,17 +92,53 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
     def _request(self, getter, url, *, params):
         if self.deadline is None:
             self.deadline = self.clock() + self.total_timeout
-        remaining = self.deadline - self.clock()
-        if remaining <= 0 or self.request_count >= self.max_requests:
-            self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
-            raise TimeoutError("research_recovery_budget_exhausted")
-        self.request_count += 1
-        kwargs = {"params": params, "timeout": min(8, remaining)}
-        if getter is self.official_getter and getter is official_request_get:
-            kwargs["max_attempts"] = 1
-        if getter is requests.get:
-            kwargs["impersonate"] = "chrome"
-        return _json(getter(url, **kwargs))
+        # Only the shared index dependency gets one retry; every attempt uses
+        # the same request/deadline budget as stock and corporate-action recovery.
+        attempts = 2 if url == INDEX_URL and getter is self.official_getter else 1
+        for attempt in range(1, attempts + 1):
+            remaining = self.deadline - self.clock()
+            if remaining <= 0 or self.request_count >= self.max_requests:
+                self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
+                raise TimeoutError("research_recovery_budget_exhausted")
+            self.request_count += 1
+            kwargs = {"params": params, "timeout": min(8, remaining)}
+            if getter is self.official_getter and getter is official_request_get:
+                kwargs["max_attempts"] = 1
+            if getter is requests.get:
+                kwargs["impersonate"] = "chrome"
+            response = None
+            try:
+                response = getter(url, **kwargs)
+                payload = _json(response)
+            except (ValueError, requests.exceptions.RequestException, OSError) as exc:
+                status = getattr(response, "status_code", None)
+                headers = getattr(response, "headers", {})
+                if isinstance(exc, ValueError):
+                    reason = "research_source_invalid_json"
+                    retryable = True
+                elif status is not None:
+                    reason = "research_source_http_error"
+                    retryable = status in {408, 425, 429} or 500 <= status < 600
+                else:
+                    reason = "research_source_transport_error"
+                    retryable = isinstance(exc, (requests.exceptions.Timeout,
+                        requests.exceptions.ConnectionError, OSError))
+                will_retry = (retryable and attempt < attempts and self.clock() < self.deadline
+                              and self.request_count < self.max_requests)
+                self.diagnostics.append({"stage": "source_request", "source_url": url,
+                    "http_status": status, "content_type": headers.get("content-type"),
+                    "attempt": attempt, "will_retry": will_retry,
+                    "error_type": type(exc).__name__, "reason": reason})
+                if will_retry:
+                    continue
+                if retryable and attempt < attempts:
+                    self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
+                    raise TimeoutError("research_recovery_budget_exhausted") from exc
+                raise ValueError(reason) from exc
+            if self.clock() > self.deadline:
+                self.budget_limit = "deadline"
+                raise TimeoutError("research_recovery_budget_exhausted")
+            return payload
 
     def _official_month(self, symbol, month):
         key = ("prices", symbol, month)

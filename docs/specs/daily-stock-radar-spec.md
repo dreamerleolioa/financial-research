@@ -733,6 +733,8 @@ scoring required steps、候選範圍與排名規則保留；單股分析、AVWA
 
 ### 同日 OHLCV 有界恢復
 
+OHLCV 與 managed raw-data refresh 先讀取缺漏標的及所需官方行情快照，再釋放讀取交易；外部行情與名稱補取期間不持有 DB 交易。OHLCV 寫入前重新鎖定 prepared run，核對同一 run、selected symbols 與 universe；輸入已變動則回傳 `daily_radar_prepared_run_changed`（409），不寫入舊批次結果。Raw rows、technical tracks 與 step 狀態在同一交易提交，失敗時一起回滾。Nightly runner 將 HTTP 狀態及回應解析錯誤同步寫入日誌與 artifact，保留 token 遮罩，不輸出無法解析的原始回應內容。
+
 一般 adjusted batch 後僅對落後標的補抓一次；仍落後且有同日官方 final bar 時，先獨立驗證一次 Yahoo 原始還原依據，失敗才嘗試一次 repair。全部歷史、當日單位與因子連續性通過後只追加官方當日資料，原始歷史不變；歷史 fallback 共用同次原始回應。短歷史只在同日 final 證據完整時交給 prefilter 排除。`symbol_diagnostics` 同步保存至 refresh 回應及 prepared step，保留逐檔日期、final、缺欄位、恢復階段與拒絕原因，成功恢復亦保留診斷。未知缺口仍阻擋 scoring。
 
 ### 有官方證據的市場生命週期例外
@@ -746,6 +748,8 @@ AVWAP 只在官方上櫃證據已可見、掛牌日起至截止日的已保存�
 兩種 validation 的本次 skip 與累積 skip 分開。`signal_close` 的 `current_run_gaps` 保存 candidate、標的、訊號日、窗口、目標日、缺少日期及 retryable 分類；workflow 遇舊版未提供這些欄位時顯示 `null` 並標記診斷不可用，不把缺少診斷解讀為空缺口。
 
 ### Validation 有界續跑與來源衝突
+
+TAIEX 官方歷史補取遇到非 JSON、暫時性 HTTP 或連線失敗時，最多額外嘗試一次，仍共用單輪 64 requests／60 秒預算；保留來源 URL、HTTP 狀態、content type、嘗試次數與是否重試。有效 JSON 的日期／欄位／價格契約錯誤不以重試或寬鬆解析放行，失敗結果繼續在單輪快取，避免不同窗口反覆請求同一來源。
 
 Workflow 對每種 return basis 各保留 15 分鐘預算，單次完整 HTTP request 最多 300 秒。`signal_close` 最多兩次；`next_open` 最多六次，依已提交結果續跑剩餘 retryable 視窗，剩餘數不再下降即停止。連續 transport 失敗最多兩次。每輪保留原始診斷 artifact、固定 `as_of_date`、剩餘數與停止原因；任一 basis 未完成仍回傳失敗，另一 basis 獨立執行。
 
