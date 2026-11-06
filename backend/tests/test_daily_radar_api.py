@@ -2271,6 +2271,129 @@ def test_daily_radar_refresh_full_margin_rejects_incomplete_same_day_payload(
     assert scoring.json()["detail"]["incomplete_steps"] == ["refresh-full-margin"]
 
 
+def test_managed_raw_fetch_does_not_hold_a_read_transaction(monkeypatch, daily_radar_db_session):
+    session = daily_radar_db_session
+    session.add(StockAnalysisCache(symbol="2330.TW", record_date=date(2026, 6, 1),
+                                   analysis_type="general", analysis_is_final=True))
+    session.commit()
+    class Fetcher(FakeBatchTechnicalFetcher):
+        def fetch(self, symbols, *, run_date):
+            assert not session.in_transaction()
+            return super().fetch(symbols, run_date=run_date)
+    client = _api_client(monkeypatch, session, technical_fetcher=Fetcher())
+    try:
+        response = client.post("/internal/daily-radar/refresh-managed-raw-data",
+            json={"run_date": "2026-06-01"}, headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.json()["status"] == "completed"
+    assert response.json()["records_written"] == 1
+    assert response.json()["missing_record_count"] == 0
+
+
+@pytest.mark.parametrize("mode", ["official_first", "official_only"])
+def test_ohlcv_official_market_fetch_does_not_hold_transaction(monkeypatch, daily_radar_db_session, mode):
+    session = daily_radar_db_session
+    session.add(DailyRadarPreparedRun(run_date=date(2026, 6, 1), market="TW",
+        selected_symbols=["2330.TW"], universe=[], symbol_count=1))
+    session.commit()
+    calls = []
+    class MarketProvider:
+        def fetch_market(self, *, market, trade_date):
+            assert not session.in_transaction()
+            calls.append((market, trade_date))
+            return []
+    monkeypatch.setenv("DAILY_RADAR_TW_OHLCV_PROVIDER_MODE", mode)
+    client = _api_client(monkeypatch, session)
+    api.app.dependency_overrides[dependencies.get_taiwan_market_bar_provider] = lambda: MarketProvider()
+    try:
+        response = client.post("/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": "2026-06-01"}, headers={"Authorization": "Bearer test-token"})
+    finally:
+        api.app.dependency_overrides.pop(dependencies.get_taiwan_market_bar_provider, None)
+        _clear_daily_radar_api_overrides()
+    assert response.json()["status"] == "completed"
+    assert calls == [("TW", date(2026, 6, 1)), ("TWO", date(2026, 6, 1))]
+
+
+def test_ohlcv_fetch_releases_read_transaction_and_survives_lost_idle_connection(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'refresh.db'}", pool_pre_ping=True,
+                           connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    with Session(engine, autoflush=False) as session:
+        session.add(DailyRadarPreparedRun(run_date=date(2026, 6, 1), market="TW",
+            selected_symbols=["2330.TW"], universe=[], symbol_count=1))
+        session.commit()
+        old_connection = session.connection().connection.driver_connection
+
+        class Fetcher(FakeBatchTechnicalFetcher):
+            def fetch(self, symbols, *, run_date):
+                assert not session.in_transaction(), "network I/O must not retain a DB transaction"
+                old_connection.close()  # Simulate the connection disappearing during HTTP I/O.
+                return super().fetch(symbols, run_date=run_date)
+
+        client = _api_client(monkeypatch, session, technical_fetcher=Fetcher())
+        try:
+            response = client.post("/internal/daily-radar/refresh-ohlcv",
+                json={"run_date": "2026-06-01"}, headers={"Authorization": "Bearer test-token"})
+        finally:
+            _clear_daily_radar_api_overrides()
+        assert response.status_code == 200
+        assert response.json()["status"] == "completed"
+        assert session.scalar(select(StockRawData)).raw_data_is_final is True
+        assert session.scalar(select(DailyRadarPreparedRun)).step_statuses["refresh-ohlcv"]["status"] == "completed"
+    engine.dispose()
+
+
+@pytest.mark.parametrize("changed_field", ["selected_symbols", "universe"])
+def test_ohlcv_rejects_inputs_changed_during_fetch(monkeypatch, daily_radar_db_session, changed_field):
+    session = daily_radar_db_session
+    prepared = DailyRadarPreparedRun(run_date=date(2026, 6, 1), market="TW",
+        selected_symbols=["2330.TW"], universe=[], symbol_count=1)
+    session.add(prepared)
+    session.commit()
+
+    class Fetcher(FakeBatchTechnicalFetcher):
+        def fetch(self, symbols, *, run_date):
+            with Session(session.get_bind()) as concurrent:
+                row = concurrent.scalar(select(DailyRadarPreparedRun))
+                setattr(row, changed_field, ["2454.TW"] if changed_field == "selected_symbols"
+                        else [{"symbol": "2330.TW", "tracks": ["changed"]}])
+                concurrent.commit()
+            return super().fetch(symbols, run_date=run_date)
+
+    client = _api_client(monkeypatch, session, technical_fetcher=Fetcher())
+    try:
+        response = client.post("/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": "2026-06-01"}, headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "daily_radar_prepared_run_changed"
+    assert session.scalar(select(StockRawData)) is None
+    session.refresh(prepared)
+    assert "refresh-ohlcv" not in (prepared.step_statuses or {})
+
+
+def test_ohlcv_rolls_back_raw_rows_when_step_persistence_fails(monkeypatch, daily_radar_db_session):
+    from ai_stock_sentinel.daily_radar import refresh_router
+    session = daily_radar_db_session
+    session.add(DailyRadarPreparedRun(run_date=date(2026, 6, 1), market="TW",
+        selected_symbols=["2330.TW"], universe=[], symbol_count=1))
+    session.commit()
+    def fail(*args, **kwargs):
+        raise RuntimeError("step persistence failed")
+    monkeypatch.setattr(refresh_router, "update_daily_radar_prepared_step_status", fail)
+    client = _api_client(monkeypatch, session, raise_server_exceptions=False)
+    try:
+        response = client.post("/internal/daily-radar/refresh-ohlcv",
+            json={"run_date": "2026-06-01"}, headers={"Authorization": "Bearer test-token"})
+    finally:
+        _clear_daily_radar_api_overrides()
+    assert response.status_code == 500
+    assert session.scalar(select(StockRawData)) is None
+
+
 def test_daily_radar_refresh_ohlcv_updates_prepared_universe_technical_tracks(
     monkeypatch,
     daily_radar_db_session: Session,

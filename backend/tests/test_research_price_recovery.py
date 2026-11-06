@@ -29,6 +29,103 @@ def recover(provider, prices=None, symbol="2330.TW"):
     return provider.repair(prices or {}, required_dates_by_symbol={symbol: [DAY]}, as_of_date=DAY)
 
 
+@pytest.mark.parametrize("fault", ["json", "http", "transport"])
+def test_index_transient_source_failure_retries_once_with_diagnostics(fault):
+    import json
+    from curl_cffi import requests
+    calls = []
+    class Response:
+        status_code = 503 if fault == "http" else 200
+        headers = {"content-type": "text/html"}
+        def raise_for_status(self):
+            if fault == "http":
+                raise requests.exceptions.HTTPError("upstream unavailable")
+        def json(self):
+            raise json.JSONDecodeError("not JSON", "<html>", 0)
+    def get(url, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            if fault == "transport":
+                raise requests.exceptions.ConnectionError("connection lost")
+            return Response()
+        return official(url, **kwargs)
+    provider = RecoveringResearchPriceProvider(official_getter=get)
+    rows = recover(provider, symbol="TAIEX")["TAIEX"]
+    assert rows[0]["open"] == 100
+    assert rows[0]["source_date"] == str(DAY)
+    assert len(calls) == provider.request_count == 2
+    diagnostic = next(row for row in provider.diagnostics if row["stage"] == "source_request")
+    assert diagnostic["attempt"] == 1 and diagnostic["will_retry"] is True
+    assert diagnostic["source_url"].endswith("MI_5MINS_HIST")
+    if fault != "transport":
+        assert diagnostic["http_status"] == Response.status_code
+        assert diagnostic["content_type"] == "text/html"
+
+
+@pytest.mark.parametrize("limit", ["request", "deadline", "attempts"])
+def test_index_json_retry_never_exceeds_shared_budget_and_caches_failure(limit):
+    import json
+    elapsed = [0]
+    calls = []
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+        def json(self):
+            raise json.JSONDecodeError("not JSON", "<html>", 0)
+    def get(url, **kwargs):
+        calls.append(kwargs)
+        if limit == "deadline":
+            elapsed[0] += 61
+        return Response()
+    provider = RecoveringResearchPriceProvider(official_getter=get,
+        max_requests=1 if limit == "request" else 64, clock=lambda: elapsed[0])
+    assert recover(provider, symbol="TAIEX")["TAIEX"] == []
+    assert recover(provider, symbol="TAIEX")["TAIEX"] == []
+    assert len(calls) == (2 if limit == "attempts" else 1)
+    assert provider.request_count == len(calls)
+    assert provider.diagnostics[0]["http_status"] == 200
+    assert provider.diagnostics[0]["reason"] == "research_source_invalid_json"
+    if limit != "attempts":
+        assert any(row.get("budget_limit") == ("request_limit" if limit == "request" else "deadline")
+                   for row in provider.diagnostics)
+
+
+def test_index_auth_failure_is_not_retried():
+    from curl_cffi import requests
+    class Response:
+        status_code = 403
+        headers = {"content-type": "text/html"}
+        def raise_for_status(self):
+            raise requests.exceptions.HTTPError("denied")
+    provider = RecoveringResearchPriceProvider(official_getter=lambda *args, **kwargs: Response())
+    assert recover(provider, symbol="TAIEX")["TAIEX"] == []
+    assert provider.request_count == 1
+    assert provider.diagnostics[0]["http_status"] == 403
+    assert provider.diagnostics[0]["will_retry"] is False
+
+
+def test_index_late_success_cannot_exceed_deadline():
+    elapsed = [0]
+    def get(url, **kwargs):
+        elapsed[0] = 61
+        return official(url, **kwargs)
+    provider = RecoveringResearchPriceProvider(official_getter=get, clock=lambda: elapsed[0])
+    assert recover(provider, symbol="TAIEX")["TAIEX"] == []
+    assert provider.request_count == 1
+    assert provider.diagnostics[-1]["budget_limit"] == "deadline"
+
+
+def test_index_valid_json_contract_mismatch_is_not_retried():
+    calls = []
+    def get(url, **kwargs):
+        calls.append(url)
+        return official(url, **kwargs) | {"date": "20260901"}
+    provider = RecoveringResearchPriceProvider(official_getter=get)
+    assert recover(provider, symbol="TAIEX")["TAIEX"] == []
+    assert len(calls) == 1
+    assert provider.diagnostics[-1]["reason"] == "official_research_date_or_status_mismatch"
+
+
 def test_official_prices_and_independent_action_evidence_recover_missing_session():
     provider = RecoveringResearchPriceProvider(official_getter=official, actions_getter=actions)
     row = recover(provider)["2330.TW"][0]

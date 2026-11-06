@@ -12,6 +12,7 @@ from ai_stock_sentinel.daily_radar.raw_data import (
     LocalFirstBatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
+    fetch_daily_radar_raw_payloads,
 )
 from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
 from ai_stock_sentinel.db.session import Base
@@ -509,7 +510,8 @@ def _compile_jsonb_for_sqlite(type_, compiler, **kw):
 @pytest.mark.parametrize("valid", [True, False])
 @pytest.mark.parametrize("history_gap", [True, False])
 @pytest.mark.parametrize("raw_history_complete", [True, False])
-def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_repair(monkeypatch, valid, history_gap, raw_history_complete):
+@pytest.mark.parametrize("staged", [True, False])
+def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_repair(monkeypatch, valid, history_gap, raw_history_complete, staged):
     original, repaired, official = _repair_fixture()
     unrepaired = repaired.copy()
     gap_date = pd.Timestamp("2026-07-30")
@@ -525,16 +527,21 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
     try:
         with Session(engine, autoflush=False) as session:
             session.add(TaiwanDailyBar(**vars(official)))
-            session.flush()
+            session.commit()
 
             def download(symbols, **kwargs):
+                if staged:
+                    assert not session.in_transaction(), "archive repair must use its in-memory snapshot"
                 frame = repaired if kwargs.get("repair") else unrepaired if kwargs.get("auto_adjust") is False else original
                 return pd.concat({"2330.TW": frame}, axis=1)
 
             monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download", download)
+            fetcher = LocalFirstBatchTechnicalFetcher(session, name_resolver=lambda _: None)
+            payloads = fetch_daily_radar_raw_payloads(session, RUN_DATE, ["2330.TW"],
+                technical_fetcher=fetcher) if staged else None
             rows = ensure_daily_radar_raw_rows(
                 session, RUN_DATE, ["2330.TW"],
-                technical_fetcher=LocalFirstBatchTechnicalFetcher(session, name_resolver=lambda _: None),
+                technical_fetcher=fetcher, fetched_payloads=payloads,
             )
             stored = session.query(StockRawData).one()
             expected_final = valid and (not history_gap or raw_history_complete)

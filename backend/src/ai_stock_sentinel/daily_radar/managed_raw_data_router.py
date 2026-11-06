@@ -20,6 +20,7 @@ from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     current_daily_radar_raw_rows,
     ensure_daily_radar_raw_rows,
+    fetch_daily_radar_raw_payloads,
 )
 from ai_stock_sentinel.daily_radar.repository import (
     get_daily_radar_prepared_run,
@@ -74,11 +75,21 @@ def refresh_daily_radar_managed_raw_data_endpoint(
     db.rollback()
     industries_by_symbol = _industry_classifications_by_symbol(selection.symbols)
     try:
+        fetched_payloads = fetch_daily_radar_raw_payloads(
+            db, run_date, selection.symbols, technical_fetcher=technical_fetcher,
+        )
+        prepared = get_daily_radar_prepared_run(db, run_date=run_date, market=request.market)
+        if prepared is not None:
+            db.refresh(prepared, with_for_update=True)
+        selected_overlap_count = _managed_selected_overlap_count(
+            selection, prepared.selected_symbols if prepared is not None else (),
+        )
         refreshed_rows = ensure_daily_radar_raw_rows(
             db,
             run_date,
             selection.symbols,
             technical_fetcher=technical_fetcher,
+            fetched_payloads=fetched_payloads,
         )
         _materialize_industry_classifications(
             refreshed_rows,

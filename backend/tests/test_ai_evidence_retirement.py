@@ -130,6 +130,26 @@ def test_retained_report_jobs_cannot_be_resumed_as_maintenance():
     engine.dispose()
 
 
+def test_nightly_http_failure_is_visible_in_log_and_artifact_without_raw_body(tmp_path, capsys):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    def request(endpoint, token, payload, timeout):
+        if endpoint.endswith("refresh-ohlcv"):
+            raise HTTPError(endpoint, 500, "failure", {"content-type": "text/plain"},
+                            BytesIO(b"private backend exception"))
+        return {"status": "completed", "step": "refresh-managed-raw-data", "run_date": str(DAY),
+                "missing_record_count": 0, "error_codes": []}
+    assert runner().run(base_url="https://example.invalid", token="private",
+                        run_date=str(DAY), output_dir=tmp_path, request=request) == 1
+    output = capsys.readouterr().out
+    diagnostic = json.loads(output.splitlines()[0])
+    assert diagnostic["step"] == "refresh-ohlcv"
+    assert diagnostic["http_status"] == 500
+    assert diagnostic["response_error_type"] == "JSONDecodeError"
+    assert "backend exception" not in output
+    assert json.loads((tmp_path / "refresh-ohlcv.json").read_text())["response_error_type"] == "JSONDecodeError"
+
+
 def test_nightly_diagnostics_redact_upstream_token_echo(tmp_path, capsys):
     token = 'secret"\\value'
     def request(endpoint, supplied_token, payload, timeout):
