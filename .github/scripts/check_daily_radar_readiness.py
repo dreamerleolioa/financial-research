@@ -28,9 +28,13 @@ def run(*, endpoint, token, run_date, output_dir, scope="all", request=get):
         if not valid:
             raise ValueError("invalid_readiness_response")
         if scope == "publication":
+            provenance = result["publication"].get("input_manifest")
             ready = (valid and result.get("publication", {}).get("state") == "published"
                 and result.get("publication", {}).get("status") == "completed"
-                and result.get("scoring", {}).get("ready") is True)
+                and result["publication"].get("output_complete", True) is True
+                and result.get("scoring", {}).get("ready") is True
+                and (provenance is None or (provenance.get("state") == "recorded"
+                     and provenance.get("matches_current_inputs") is True)))
         elif scope == "all":
             ready = valid and result.get("data_ready") is True
         else:

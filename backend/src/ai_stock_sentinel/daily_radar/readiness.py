@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import date, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from ai_stock_sentinel.calibration.forward_validation import is_terminal_forward_validation_skip_reason, parse_date
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
@@ -26,7 +26,7 @@ from ai_stock_sentinel.daily_radar.research_validation import (
     RESEARCH_VALIDATION_VERSION, RESEARCH_TERMINAL_REASONS, RESEARCH_PRICE_BASIS,
 )
 from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
-from ai_stock_sentinel.db.models import DailyRadarRun
+from ai_stock_sentinel.db.models import DailyRadarRun, DailyRadarCandidate
 
 
 def recovery_action(reason):
@@ -149,6 +149,7 @@ def read_readiness(session, *, run_date: date, lookback_days=365):
     prepared = get_daily_radar_prepared_run(session, run_date=run_date, market="TW")
     steps = prepared.step_statuses if prepared else {}
     blockers = []
+    cache_rows = []
     if prepared is None:
         blockers.append({"reason": "prepared_run_missing", "next_action": "prepare_universe"})
     else:
@@ -161,7 +162,7 @@ def read_readiness(session, *, run_date: date, lookback_days=365):
                     "next_action": "resume"})
         try:
             require_prepared_open_session(prepared)
-            _require_complete_daily_radar_raw_rows(get_final_raw_data_rows_for_symbols(
+            cache_rows = _require_complete_daily_radar_raw_rows(get_final_raw_data_rows_for_symbols(
                 session, run_date=run_date, symbols=prepared.selected_symbols),
                 selected_symbols=prepared.selected_symbols, run_date=run_date)
         except HTTPException as exc:
@@ -172,17 +173,47 @@ def read_readiness(session, *, run_date: date, lookback_days=365):
             blockers.append({"reason": "market_context_missing", "next_action": "resume"})
     run = session.scalar(select(DailyRadarRun).where(DailyRadarRun.id.in_(canonical_radar_run_ids(
         market="TW", start_date=run_date, end_date=run_date))))
+    stored_selected_count = session.scalar(select(func.count()).select_from(DailyRadarCandidate).where(
+        DailyRadarCandidate.run_id == run.id, DailyRadarCandidate.selection_status == "selected")) if run else None
+    output_complete = bool(run and stored_selected_count == run.candidate_count)
     validation = validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days)
+    from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
+    input_summary = None
+    current_digest = None
+    if snapshots_enabled() and prepared is not None and not blockers:
+        from ai_stock_sentinel.daily_radar.input_manifests import (
+            collect_execution_inputs, prepared_input_context, manifest_envelope,
+        )
+        from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_cache_records
+        from ai_stock_sentinel.daily_radar.repository import get_shared_background_context_trace_by_symbol, BACKGROUND_CONTEXT_TYPES
+        from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+        contexts = get_shared_background_context_trace_by_symbol(session, symbols=prepared.selected_symbols,
+            context_types=BACKGROUND_CONTEXT_TYPES, reference_date=run_date, point_in_time=True)
+        current_inputs = collect_execution_inputs(session, run_date=run_date, market="TW",
+            records=load_daily_radar_cache_records(cache_rows), market_context=prepared.market_context,
+            background_contexts=contexts, input_context=prepared_input_context(prepared, cache_rows))
+        current_digest = fingerprint(manifest_envelope(run_date=run_date, market="TW", payload=current_inputs))
+    if run and snapshots_enabled():
+        from ai_stock_sentinel.daily_radar.input_manifests import published_input_summary
+        input_summary = published_input_summary(session, run)
+        input_summary["matches_current_inputs"] = bool(current_digest and input_summary.get("fingerprint") == current_digest)
+        if input_summary["state"] == "recorded":
+            output_complete = output_complete and input_summary["output_complete"]
     return {"version": "radar-readiness-v1", "market": "TW", "requested_run_date": str(run_date),
         "effective_run_date": str(run_date), "lookback_days": lookback_days,
         "sample_start_date": str(run_date - timedelta(days=lookback_days - 1)),
         "scoring": {"ready": not blockers, "blockers": blockers,
             "prepared_run_id": prepared.id if prepared else None,
+            "input_fingerprint": current_digest,
             "symbol_count": len(prepared.selected_symbols) if prepared else 0,
             "steps": {key: steps.get(key) for key in DAILY_RADAR_REQUIRED_REFRESH_STEPS}},
         "publication": {"state": "published" if run else "not_published", "run_id": run.id if run else None,
-            "status": run.status if run else None, "candidate_count": run.candidate_count if run else None},
+            "status": run.status if run else None, "candidate_count": run.candidate_count if run else None,
+            "stored_selected_count": stored_selected_count, "output_complete": output_complete,
+            "input_manifest": input_summary},
         "validation": validation,
         "auxiliary": {key: steps.get(key) for key in ("refresh-avwap", "refresh-managed-raw-data")},
-        "data_ready": bool(run and run.status == "completed" and not blockers
+        "data_ready": bool(run and run.status == "completed" and output_complete and not blockers
+                           and (input_summary is None or (input_summary["state"] == "recorded"
+                                and input_summary["matches_current_inputs"]))
                            and all(r["ready"] for r in validation.values()))}

@@ -43,3 +43,17 @@ def test_truncated_http_response_preserves_failure_artifact(tmp_path):
     artifact = (tmp_path / "readiness-all.json").read_text()
     assert "IncompleteRead" in artifact
     assert "private" not in artifact
+
+
+def test_published_older_inputs_do_not_satisfy_publication_readiness(tmp_path):
+    payload = response()
+    payload['publication']['input_manifest'] = {'state': 'recorded', 'matches_current_inputs': False}
+    assert run(endpoint='https://backend.invalid', token='private', run_date='2026-11-06', output_dir=tmp_path,
+        request=lambda *args: payload, scope='publication') == 1
+
+
+def test_missing_persisted_candidates_do_not_satisfy_publication_readiness(tmp_path):
+    payload = response()
+    payload['publication']['output_complete'] = False
+    assert run(endpoint='https://backend.invalid', token='private', run_date='2026-11-06', output_dir=tmp_path,
+        request=lambda *args: payload, scope='publication') == 1

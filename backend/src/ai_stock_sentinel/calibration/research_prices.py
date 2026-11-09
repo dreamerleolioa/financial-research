@@ -16,6 +16,7 @@ from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.phase1_avwap.provider import normalize_twse_stock_day_payload
 from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
+from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -66,7 +67,7 @@ def _json(response):
 
 class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
     def __init__(self, session=None, *, official_getter=None, actions_getter=None,
-                 total_timeout=60, max_requests=64, clock=monotonic):
+                 total_timeout=60, max_requests=64, clock=monotonic, source_store=None):
         self.session = session
         self.official_getter = official_getter or official_request_get
         self.actions_getter = actions_getter or requests.get
@@ -78,18 +79,46 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.cache = {}
         self.diagnostics = []
         self.budget_limit = None
+        self.source_store = source_store if source_store is not None else store_for_session(session)
 
     def fetch(self, symbols, *, start_date, end_date):
         supported = [s for s in symbols if s in {"TAIEX", "SPX"} or is_supported_taiwan_symbol(s)]
         if not supported:
             return {}
         try:
+            if self.source_store is not None:
+                self._release_read_transaction()
+                operation = "research-unadjusted-history"
+                params = {symbol: {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
+                    "auto_adjust": False, "actions": True} for symbol in supported}
+                captured = {symbol: self.source_store.lookup_sdk(operation=operation, params=params[symbol])
+                            for symbol in supported}
+                missing = [symbol for symbol, item in captured.items() if item is None]
+                try:
+                    fresh = super().fetch(missing, start_date=start_date, end_date=end_date) if missing else {}
+                except Exception as exc:
+                    self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": missing})
+                    fresh = {}
+                for symbol in missing:
+                    if fresh.get(symbol):
+                        captured[symbol] = self.source_store.capture_sdk(operation=operation, params=params[symbol],
+                            fetch=lambda symbol=symbol: {"rows": fresh[symbol]}, reuse=False)
+                return {symbol: [dict(row) | {"source_capture": proof} for row in payload["rows"]]
+                        for symbol, item in captured.items() if item is not None for payload, proof in [item]}
             return super().fetch(supported, start_date=start_date, end_date=end_date)
         except Exception as exc:
             self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": supported})
             return {}
 
+    def _release_read_transaction(self):
+        if self.session is not None:
+            if self.session.new or self.session.dirty or self.session.deleted:
+                raise ValueError("research_source_fetch_requires_clean_session")
+            self.session.rollback()
+
     def _request(self, getter, url, *, params):
+        if self.source_store is not None:
+            self._release_read_transaction()
         if self.deadline is None:
             self.deadline = self.clock() + self.total_timeout
         # Only the shared index dependency gets one retry; every attempt uses
@@ -228,6 +257,12 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         key = ("official_report", url, tuple(sorted(params.items())))
         if key not in self.cache:
             self.cache[key] = None
+            if self.source_store is not None:
+                self._release_read_transaction()
+                captured = self.source_store.capture(provider="twse" if origin == TWSE else "tpex",
+                    url=url, params=params, fetch=lambda: self._request(self.official_getter, url, params=params))
+                self.cache[key] = captured
+                return captured
             payload = self._request(self.official_getter, url, params=params)
             if not isinstance(payload, dict):
                 raise ValueError("twse_rights_invalid_report")
@@ -248,11 +283,17 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             return self.cache[key]
         self.cache[key] = None
         query_start = start - timedelta(days=7)
-        payload = self._request(self.actions_getter,
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-            params={"period1": int(datetime.combine(query_start, time.min, TAIPEI).timestamp()),
-                    "period2": int(datetime.combine(end + timedelta(days=1), time.min, TAIPEI).timestamp()),
-                    "interval": "1d", "events": "div,splits"})
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        params = {"period1": int(datetime.combine(query_start, time.min, TAIPEI).timestamp()),
+                  "period2": int(datetime.combine(end + timedelta(days=1), time.min, TAIPEI).timestamp()),
+                  "interval": "1d", "events": "div,splits"}
+        proof = None
+        if self.source_store is not None:
+            self._release_read_transaction()
+            payload, proof = self.source_store.capture(provider="yahoo_chart_events", url=url, params=params,
+                fetch=lambda: self._request(self.actions_getter, url, params=params))
+        else:
+            payload = self._request(self.actions_getter, url, params=params)
         chart = payload.get("chart", {})
         if chart.get("error") or len(chart.get("result") or []) != 1:
             raise ValueError("research_corporate_action_response_invalid")
@@ -281,6 +322,8 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                   "covered_dates": sorted({str(day) for day in covered_dates}),
                   "query_start_date": str(query_start),
                   "observed_at": observed.isoformat()}
+        if proof is not None:
+            result["source_capture"] = proof
         self.cache[key] = result
         return result
 

@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import re
 
+from fastapi import Depends
 from sqlalchemy import inspect, select
+from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun
+from ai_stock_sentinel.db.session import get_db
 
 VERSION = "twse-session-calendar-v1"
 CALENDAR_STEP = "validation-calendar"
@@ -57,9 +60,12 @@ class TradingCalendar:
 
 
 class OfficialTradingCalendarProvider:
+    def __init__(self, db=None):
+        self.db = db
+
     def fetch(self, *, start_date, end_date):
         from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
-        provider = RecoveringResearchPriceProvider(session=None)
+        provider = RecoveringResearchPriceProvider(session=self.db)
         # Start on the first day to retain each month's report provenance even
         # when the requested subrange contains only a holiday/weekend.
         rows = provider.official_research_history("TAIEX", start_date=start_date.replace(day=1), end_date=end_date)
@@ -89,8 +95,8 @@ def require_calendar(provider, *, start_date, end_date):
         raise CalendarUnavailableError("official_trading_calendar_unavailable") from exc
 
 
-def get_trading_calendar_provider():
-    return OfficialTradingCalendarProvider()
+def get_trading_calendar_provider(db: Session = Depends(get_db)):
+    return OfficialTradingCalendarProvider(db if isinstance(db, Session) else None)
 
 
 def save_calendar(session, calendar):

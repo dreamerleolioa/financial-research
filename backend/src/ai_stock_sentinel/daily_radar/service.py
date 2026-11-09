@@ -28,6 +28,7 @@ from ai_stock_sentinel.daily_radar.medium_term import build_medium_term_context,
 from ai_stock_sentinel.db.models import DailyRadarRun
 from ai_stock_sentinel.db.session import _get_session_local
 from ai_stock_sentinel.phase1_avwap.projection import read_phase1_avwap_contexts_for_daily_radar
+from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
 
 
 DEFAULT_CANDIDATE_LIMIT = 100
@@ -46,6 +47,7 @@ def run_daily_radar(
     history_candidates: Iterable[Mapping[str, Any]] | None = None,
     candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
     allow_fixture_fallback: bool = True,
+    input_context: Mapping[str, Any] | None = None,
 ) -> DailyRadarRun:
     if session is not None:
         return _run_daily_radar_with_session(
@@ -60,6 +62,7 @@ def run_daily_radar(
             history_candidates=history_candidates,
             candidate_limit=candidate_limit,
             allow_fixture_fallback=allow_fixture_fallback,
+            input_context=input_context,
         )
 
     with _managed_session() as managed_session:
@@ -75,6 +78,7 @@ def run_daily_radar(
             history_candidates=history_candidates,
             candidate_limit=candidate_limit,
             allow_fixture_fallback=allow_fixture_fallback,
+            input_context=input_context,
         )
         managed_session.commit()
         return run
@@ -93,7 +97,24 @@ def _run_daily_radar_with_session(
     history_candidates: Iterable[Mapping[str, Any]] | None,
     candidate_limit: int,
     allow_fixture_fallback: bool,
+    input_context: Mapping[str, Any] | None = None,
 ) -> DailyRadarRun:
+    manifest, phase1_contexts = None, None
+    if snapshots_enabled() and not allow_fixture_fallback:
+        from ai_stock_sentinel.daily_radar.input_manifests import (
+            freeze_execution_inputs, reusable_public_run, serialize_publication,
+        )
+        serialize_publication(session, market=market, run_date=run_date)
+        records = _load_records(records=records, cache_rows=cache_rows, fixture_dir=fixture_dir,
+                                allow_fixture_fallback=False)
+        manifest, frozen = freeze_execution_inputs(session, run_date=run_date, market=market, records=records,
+            market_context=market_context, background_contexts=background_contexts_by_symbol,
+            history_candidates=history_candidates, input_context=input_context, candidate_limit=candidate_limit)
+        if (existing := reusable_public_run(session, manifest)) is not None:
+            return existing
+        records, market_context = frozen["records"], frozen["market_context"]
+        background_contexts_by_symbol = frozen["background_contexts"]
+        history_candidates, phase1_contexts = frozen["history_candidates"], frozen["phase1_contexts"]
     run = create_daily_radar_run(session, run_date=run_date, market=market)
     errors: list[dict[str, Any]] = []
 
@@ -167,6 +188,7 @@ def _run_daily_radar_with_session(
             session,
             scored_candidates,
             run_date=run_date,
+            contexts=phase1_contexts,
         )
         history = list(history_candidates) if history_candidates is not None else _history_from_repository_or_fixture(
             session,
@@ -200,7 +222,7 @@ def _run_daily_radar_with_session(
             candidate_count=len(final_candidates),
             errors=errors,
         )
-        return update_daily_radar_run(
+        result = update_daily_radar_run(
             session,
             run,
             status=status,
@@ -209,6 +231,10 @@ def _run_daily_radar_with_session(
             candidate_count=len(final_candidates),
             errors=errors,
         )
+        if manifest is not None:
+            from ai_stock_sentinel.daily_radar.input_manifests import link_run_input
+            link_run_input(session, run_id=result.id, manifest=manifest)
+        return result
     except Exception as exc:
         errors.append({"code": "run_error", "message": str(exc)})
         return update_daily_radar_run(session, run, status="failed", errors=errors)
@@ -357,14 +383,12 @@ def _with_phase1_avwap_contexts(
     candidates: Iterable[Mapping[str, Any]],
     *,
     run_date: date,
+    contexts=None,
 ) -> list[dict[str, Any]]:
     candidate_rows = [dict(candidate) for candidate in candidates]
     symbols = [str(candidate.get("symbol") or "") for candidate in candidate_rows]
-    contexts = read_phase1_avwap_contexts_for_daily_radar(
-        session,
-        symbols=symbols,
-        data_date=run_date,
-    )
+    if contexts is None:
+        contexts = read_phase1_avwap_contexts_for_daily_radar(session, symbols=symbols, data_date=run_date)
 
     enriched: list[dict[str, Any]] = []
     for candidate in candidate_rows:

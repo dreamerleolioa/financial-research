@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary,
-    Numeric, String, Text, UniqueConstraint, text,
+    Numeric, String, Text, UniqueConstraint, text, Identity,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -1247,3 +1247,44 @@ class SharedBackgroundContext(Base):
     replay_key: Mapped[str] = mapped_column(String(240), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class RadarSourceSnapshot(Base):
+    __tablename__ = "radar_source_snapshots"
+    __table_args__ = (
+        Index("idx_radar_source_request_captured", "request_hash", "captured_at", "id"),
+        CheckConstraint("expires_at > captured_at", name="ck_radar_source_expiry"),
+        CheckConstraint("length(request_hash) = 64 AND length(payload_hash) = 64", name="ck_radar_source_hashes"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), Identity(), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RadarInputManifest(Base):
+    __tablename__ = "radar_input_manifests"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_radar_input_fingerprint"),
+        Index("idx_radar_input_date_market", "run_date", "market"),
+        CheckConstraint("length(fingerprint) = 64", name="ck_radar_input_hash"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), Identity(), primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RadarRunInput(Base):
+    __tablename__ = "radar_run_inputs"
+    __table_args__ = (Index("idx_radar_run_input_manifest", "manifest_id"),
+                     CheckConstraint("output_count >= 0", name="ck_radar_run_input_output_count"))
+    run_id: Mapped[int] = mapped_column(ForeignKey("daily_radar_runs.id", ondelete="RESTRICT"), primary_key=True)
+    manifest_id: Mapped[int] = mapped_column(ForeignKey("radar_input_manifests.id", ondelete="RESTRICT"), nullable=False)
+    output_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

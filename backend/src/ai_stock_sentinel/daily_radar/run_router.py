@@ -43,6 +43,7 @@ from ai_stock_sentinel.daily_radar.presenter import run_trigger_response
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
+    fetch_daily_radar_raw_payloads,
 )
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_TYPES,
@@ -56,6 +57,7 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarRunTriggerResponse,
 )
 from ai_stock_sentinel.daily_radar.service import run_daily_radar
+from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
 from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseProvider,
     select_daily_radar_universe,
@@ -81,7 +83,12 @@ def run_daily_radar_scoring_endpoint(
 ) -> DailyRadarRunTriggerResponse:
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
+    if snapshots_enabled():
+        from ai_stock_sentinel.daily_radar.input_manifests import serialize_publication
+        serialize_publication(db, market=request.market, run_date=run_date)
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    if snapshots_enabled():
+        db.refresh(prepared, with_for_update=True)
     _raise_if_required_refresh_steps_missing(prepared)
     require_prepared_open_session(prepared)
     if not prepared.market_context:
@@ -110,12 +117,18 @@ def run_daily_radar_scoring_endpoint(
         market_context=dict(prepared.market_context),
         background_contexts_by_symbol=background_contexts_by_symbol,
         allow_fixture_fallback=False,
+        input_context=_scoring_input_context(prepared, cache_rows),
     )
     prepared.status = "scored"
     freeze_discovery_summary(run, (prepared.step_statuses.get("prepare-universe") or {}).get("market_exploration"))
     db.add(prepared)
     db.commit()
     return run_trigger_response(run)
+
+
+def _scoring_input_context(prepared, rows):
+    from ai_stock_sentinel.daily_radar.input_manifests import prepared_input_context
+    return prepared_input_context(prepared, rows)
 
 
 @router.post(
@@ -162,6 +175,13 @@ def run_daily_radar_endpoint(
             )
 
         selected_symbols = [entry.symbol for entry in universe]
+        fetched_payloads = None
+        if snapshots_enabled():
+            # Collect before AVWAP/chip mutations. Evidence capture can use a
+            # one-slot pool and no rollback can discard those later writes.
+            failure_stage = "raw_data_backfill"
+            fetched_payloads = fetch_daily_radar_raw_payloads(
+                db, run_date, selected_symbols, technical_fetcher=technical_fetcher)
         _refresh_phase1_avwap_for_daily_radar(
             db,
             symbols=selected_symbols,
@@ -210,6 +230,7 @@ def run_daily_radar_endpoint(
             technical_fetcher=technical_fetcher,
             institutional_payloads_by_symbol=institutional_payloads_by_symbol,
             margin_contexts_by_symbol=margin_contexts_by_symbol,
+            fetched_payloads=fetched_payloads,
         )
         cache_rows = _require_complete_daily_radar_raw_rows(
             get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols),

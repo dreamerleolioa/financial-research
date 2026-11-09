@@ -9,6 +9,7 @@ import os
 from typing import Any, Protocol
 
 import yfinance as yf
+import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -50,10 +51,12 @@ class YFinanceBatchTechnicalFetcher:
         *,
         name_resolver: Callable[[str], str | None] = resolve_symbol_name,
         official_bar_loader: OfficialDailyBarLoader | None = None,
+        source_store=None,
     ) -> None:
         self._name_resolver = name_resolver
         self._official_bar_loader = official_bar_loader
         self.diagnostics: dict[str, dict[str, Any]] = {}
+        self.source_store = source_store
 
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ordered_symbols = _ordered_unique_symbols(symbols)
@@ -129,6 +132,17 @@ class YFinanceBatchTechnicalFetcher:
                 payload["refresh_diagnostics"] = self.diagnostics[symbol]
                 if symbol in provenance_by_symbol:
                     payload["source_provenance"] = provenance_by_symbol[symbol]
+                if self.source_store is not None:
+                    frame = frames[symbol]
+                    rows = [{"date": str(index.date()), **{
+                        str(key): None if pd.isna(value) else value.item() if hasattr(value, "item") else value
+                        for key, value in row.items()}} for index, row in frame.iterrows()]
+                    _, proof = self.source_store.capture_sdk(operation="technical-adjusted-history",
+                        params={"symbol": symbol, "run_date": str(run_date), "start_date": str(start_date),
+                                "stage": "accepted_after_existing_integrity_checks", "price_basis": "adjusted_price"},
+                        fetch=lambda: {"records": rows, "price_basis": "adjusted_price"}, reuse=False)
+                    payload["source_provenance"] = dict(payload.get("source_provenance") or {}) | {
+                        "accepted_adjusted_history": proof}
                 payloads[symbol] = payload
         return payloads
 
@@ -254,8 +268,10 @@ class LocalFirstBatchTechnicalFetcher:
         name_resolver: Callable[[str], str | None] = resolve_symbol_name,
     ) -> None:
         self._session = session
+        from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
         self._fallback_fetcher = fallback_fetcher or YFinanceBatchTechnicalFetcher(
             name_resolver=name_resolver, official_bar_loader=self._load_official_bars,
+            source_store=store_for_session(session),
         )
         self._provider_mode = provider_mode or os.getenv(
             "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE",
