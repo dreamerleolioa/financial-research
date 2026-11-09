@@ -102,7 +102,7 @@ def validation_candidate_revision(candidate):
     return fingerprint(values)
 
 
-def inventory_items(session, *, as_of_date, lookback_days=365):
+def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=None):
     """Yield every expected window, including absent outcomes and diagnostics.
 
     Scope is explicit. No price-derived fallback can prove a missing window is
@@ -110,7 +110,7 @@ def inventory_items(session, *, as_of_date, lookback_days=365):
     """
     start = as_of_date - timedelta(days=lookback_days - 1)
     candidates = forward_validation_candidates_from_runs(
-        session, market="TW", start_date=start, end_date=as_of_date)
+        session, market="TW", start_date=start, end_date=as_of_date, candidate_ids=candidate_ids)
     first = min((date.fromisoformat(c["record_date"]) for c in candidates), default=as_of_date)
     calendar = load_calendar(session, start_date=first, as_of_date=as_of_date)
     calendar_ready = calendar is not None and calendar.through >= as_of_date

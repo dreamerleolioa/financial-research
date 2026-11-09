@@ -350,6 +350,29 @@ def _with_observation_diagnostics(candidates, outcomes, *, price_series_by_symbo
     return enriched
 
 
+def forward_validation_snapshot_columns():
+    """Shared input projection for snapshots and bounded-planner epochs."""
+    return (
+        DailyRadarCandidate.id.label("candidate_id"), DailyRadarCandidate.run_id,
+        DailyRadarRun.run_date, DailyRadarRun.candidate_count.label("daily_selected_pool_count"),
+        *[getattr(DailyRadarCandidate, field) for field in (
+            "symbol", "name", "primary_bucket", "secondary_buckets", "observation_score",
+            "bucket_scores", "risk_labels", "matched_rules", "repeat_status",
+            "data_dates", "selection_status", "prefilter_status", "prefilter_reasons", "shadow_cohort",
+        )],
+        DailyRadarCandidate.input_snapshot["ohlcv"]["close"].as_json().label("close"),
+        *[DailyRadarCandidate.input_snapshot["indicators"][field].as_json().label(field)
+          for field in ("support_level", "resistance_level", "ma20", "ma60")],
+        DailyRadarCandidate.input_snapshot["versions"].as_json().label("versions"),
+        DailyRadarCandidate.input_snapshot["selection_version"].as_json().label("selection_version"),
+        DailyRadarCandidate.input_snapshot["market_context"]["regime"].as_json().label("market_regime"),
+        _candidate_benchmark_column().label("candidate_benchmark"),
+        DailyRadarCandidate.score_breakdown["relative_strength"]["freshness"].as_json().label("relative_freshness"),
+        DailyRadarCandidate.score_breakdown["relative_strength"]["relative_value"].as_json().label("relative_value"),
+        DailyRadarCandidate.score_breakdown["market_context"]["details"]["regime"].as_json().label("score_market_regime"),
+    )
+
+
 def forward_validation_candidates_from_runs(
     session: Session,
     *,
@@ -359,27 +382,10 @@ def forward_validation_candidates_from_runs(
     statuses: tuple[str, ...] = PUBLIC_RUN_STATUSES,
     include_candidate_ids: Sequence[int] = (),
     symbols: Sequence[str] | None = None,
+    candidate_ids: Sequence[int] | None = None,
 ) -> list[dict[str, Any]]:
     query = (
-        select(
-            DailyRadarCandidate.id.label("candidate_id"), DailyRadarCandidate.run_id,
-            DailyRadarRun.run_date, DailyRadarRun.candidate_count.label("daily_selected_pool_count"),
-            *[getattr(DailyRadarCandidate, field) for field in (
-                "symbol", "name", "primary_bucket", "secondary_buckets", "observation_score",
-                "bucket_scores", "risk_labels", "matched_rules", "repeat_status",
-                "data_dates", "selection_status", "prefilter_status", "prefilter_reasons", "shadow_cohort",
-            )],
-            DailyRadarCandidate.input_snapshot["ohlcv"]["close"].as_json().label("close"),
-            *[DailyRadarCandidate.input_snapshot["indicators"][field].as_json().label(field)
-              for field in ("support_level", "resistance_level", "ma20", "ma60")],
-            DailyRadarCandidate.input_snapshot["versions"].as_json().label("versions"),
-            DailyRadarCandidate.input_snapshot["selection_version"].as_json().label("selection_version"),
-            DailyRadarCandidate.input_snapshot["market_context"]["regime"].as_json().label("market_regime"),
-            _candidate_benchmark_column().label("candidate_benchmark"),
-            DailyRadarCandidate.score_breakdown["relative_strength"]["freshness"].as_json().label("relative_freshness"),
-            DailyRadarCandidate.score_breakdown["relative_strength"]["relative_value"].as_json().label("relative_value"),
-            DailyRadarCandidate.score_breakdown["market_context"]["details"]["regime"].as_json().label("score_market_regime"),
-        )
+        select(*forward_validation_snapshot_columns())
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
         .where(or_(DailyRadarRun.id.in_(canonical_radar_run_ids(
             market=market, start_date=start_date, end_date=end_date, statuses=statuses,
@@ -390,6 +396,8 @@ def forward_validation_candidates_from_runs(
         query = query.where(taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
     if symbols is not None:
         query = query.where(DailyRadarCandidate.symbol.in_(symbols))
+    if candidate_ids is not None:
+        query = query.where(DailyRadarCandidate.id.in_(candidate_ids))
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),

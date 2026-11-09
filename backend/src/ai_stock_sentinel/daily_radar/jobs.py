@@ -54,28 +54,43 @@ def unit(db, job, stage, *, generation=None, scope=None, deps=(), lane='publicat
     return member(db, job, work, required=required)
 
 
-def plan_windows(db, job, scope, *, now):
-    from ai_stock_sentinel.daily_radar.observation_validation import canonical_radar_run_ids
+WINDOW_PLAN_CANDIDATES = 5
+
+
+def plan_windows(db, job, scope, *, now, calendar_work=None):
     from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
-    from ai_stock_sentinel.daily_radar.readiness import inventory_items, validation_candidate_revision
-    from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
-    from ai_stock_sentinel.db.models import DailyRadarRun
+    from ai_stock_sentinel.daily_radar.readiness import inventory_items
+    from ai_stock_sentinel.daily_radar.planning_inventory import inventory_input_revision, candidate_page
     start = job.run_date - timedelta(days=364)
     calendar = load_calendar(db, start_date=start, as_of_date=job.run_date)
     if calendar is None or calendar.through < job.run_date:
         scope.pop('window_plan', None)
+        scope['window_planning'] = {'state': 'waiting_calendar', 'complete': False}
+        db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
+            RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'window'))).values(active=False))
+        if calendar_work is not None and calendar_work.state == 'ready':
+            db.execute(update(RadarWorkItem).where(RadarWorkItem.id == calendar_work.id,
+                RadarWorkItem.state == 'ready', RadarWorkItem.lease_token.is_(None)).values(
+                    state='pending', reason='official_calendar_unavailable', retry_at=now)
+                    .execution_options(synchronize_session='fetch'))
         return
-    runs = list(db.scalars(select(DailyRadarRun.id).where(DailyRadarRun.id.in_(canonical_radar_run_ids(
-        market='TW', start_date=start, end_date=job.run_date))).order_by(DailyRadarRun.id)))
-    candidates = forward_validation_candidates_from_runs(db, market='TW', start_date=start, end_date=job.run_date)
-    plan = fingerprint({'version': 'radar-window-plan-v2', 'runs': runs,
-        'candidates': [validation_candidate_revision(c) for c in candidates],
+    inputs = inventory_input_revision(db, as_of_date=job.run_date)
+    plan = fingerprint({'version': 'radar-window-plan-v3', 'run_date': str(job.run_date),
+        'inputs': inputs,
         'calendar': calendar.payload(), 'lanes': job.lanes})
-    if scope.get('window_plan') == plan:
+    progress = deepcopy(scope.get('window_planning') or {})
+    if progress.get('revision') == plan and progress.get('complete') and scope.get('window_plan') == plan:
         return
-    db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
-        RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'window'))).values(active=False))
-    for item in inventory_items(db, as_of_date=job.run_date):
+    if progress.get('revision') != plan or progress.get('complete') or progress.get('state') != 'planning':
+        db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
+            RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'window'))).values(active=False))
+        progress = {'state': 'planning', 'revision': plan, 'cursor': None, 'complete': False,
+                    'processed_candidates': 0, 'started_at': now.isoformat()}
+        scope.pop('window_plan', None)
+    ids = candidate_page(db, start_date=start, as_of_date=job.run_date,
+        after=progress['cursor'], limit=WINDOW_PLAN_CANDIDATES)
+    page = ids[:WINDOW_PLAN_CANDIDATES]
+    for item in inventory_items(db, as_of_date=job.run_date, candidate_ids=page):
         if item['return_basis'] not in job.lanes or item['state'] == 'immature':
             continue
         identity = {k: item[k] for k in ('candidate_id', 'candidate_revision', 'calendar_revision', 'return_basis', 'validation_version', 'window_days', 'expected_target_date')}
@@ -97,8 +112,34 @@ def plan_windows(db, job, scope, *, now):
             elif work.state in {'ready', 'terminal', 'superseded'}:
                 work.state, work.reason, work.retry_at = 'pending', item['reason'], now
         member(db, job, work)
-    scope['window_plan'] = plan
-    scope['window_inventory_audited_at'] = now.isoformat()
+    latest_calendar = load_calendar(db, start_date=start, as_of_date=job.run_date)
+    if (inventory_input_revision(db, as_of_date=job.run_date) != inputs or latest_calendar is None
+            or latest_calendar.payload() != calendar.payload()):
+        # A page must not certify mixed input epochs. Keep work/attempt history,
+        # retire this intent's memberships, and restart within the next budget.
+        db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
+            RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'window'))).values(active=False))
+        scope.pop('window_plan', None)
+        scope['window_planning'] = {'state': 'planning', 'revision': None, 'cursor': None,
+                                   'complete': False, 'processed_candidates': 0}
+        return
+    if page:
+        progress['cursor'] = page[-1]
+    progress['processed_candidates'] += len(page)
+    progress['complete'] = len(ids) <= WINDOW_PLAN_CANDIDATES
+    progress['state'] = 'complete' if progress['complete'] else 'planning'
+    scope['window_planning'] = progress
+    if progress['complete']:
+        scope['window_plan'] = plan
+        # Result writes do not change the input epoch. Date the full pass from
+        # its oldest page so repaired early outcomes are not delayed again.
+        scope['window_inventory_audited_at'] = progress.get('started_at', now.isoformat())
+
+
+def planning_remaining(job, scope):
+    progress = scope.get('window_planning') or {}
+    return bool(set(job.lanes) & {'signal_close', 'next_open'} and progress.get('state') == 'planning'
+                and not progress.get('complete'))
 
 
 def invalidate_prerequisites(db, members, *, steps, blockers, now):
@@ -224,8 +265,11 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
     superseded = db.scalar(select(RadarWorkItem.id).join(RadarJobWork).where(
         RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True), RadarWorkItem.stage == 'window',
         RadarWorkItem.state == 'superseded').limit(1))
-    if audited is None or now - aware(audited) >= timedelta(minutes=50) or superseded is not None:
+    progress = scope.get('window_planning') or {}
+    if (not progress or (progress.get('complete') and (audited is None or now - aware(audited) >= timedelta(minutes=50)))
+            or superseded is not None):
         scope.pop('window_plan', None)
+        scope.pop('window_planning', None)
     session = unit(db, job, 'market-session', now=now)
     closed = session.state == 'terminal' and (session.result or {}).get('status') == 'closed'
     if closed:
@@ -288,7 +332,7 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
         db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
             RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'calendar',
                 RadarWorkItem.id != calendar_work.id))).values(active=False))
-        plan_windows(db, job, scope, now=now)
+        plan_windows(db, job, scope, now=now, calendar_work=calendar_work)
     db.flush()
     review_windows = db.scalars(select(RadarWorkItem).join(RadarJobWork).where(
         RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True), RadarWorkItem.stage == 'window',
@@ -312,7 +356,10 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
     for work, _ in members:
         if work.state == 'pending' and work.retry_at is None:
             work.retry_at = now
-    required_done = all(w.state in {'ready', 'terminal'} for w, required in members if required)
+    progress = scope.get('window_planning') or {}
+    plan_complete = (not set(job.lanes) & {'signal_close', 'next_open'} or (
+        progress.get('complete') and scope.get('window_plan') == progress.get('revision')))
+    required_done = bool(plan_complete and all(w.state in {'ready', 'terminal'} for w, required in members if required))
     if audit and required_done:
         from ai_stock_sentinel.daily_radar.readiness import read_readiness
         report = read_readiness(db, run_date=job.run_date)
@@ -352,6 +399,8 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
                  else 'needs_review' if counts['needs_review'] else 'pending')
     due = [max(aware(w.retry_at), aware(w.not_before)) for w, _ in members if w.state in {'pending', 'waiting_provider'} and w.retry_at]
     due += [aware(w.lease_expires_at) for w, _ in members if w.state == 'running']
+    if planning_remaining(job, scope):
+        due.append(now)
     job.next_attempt_at = min(due) if due else now + timedelta(hours=1)
     job.last_advanced_at = now
     db.commit()
@@ -377,9 +426,12 @@ def job_status(db, job_id):
     runnable = any((w.state in {'pending', 'waiting_provider'} and w.retry_at is not None
         and aware(w.retry_at) <= now and aware(w.not_before) <= now)
         or (w.state == 'running' and aware(w.lease_expires_at) <= now) for w, _ in members)
+    runnable = runnable or planning_remaining(job, scope)
     return {'job_id': job.id, 'requested_run_date': str(job.run_date), 'effective_run_date': str(job.run_date),
         'run_date': str(job.run_date), 'state': job.state, 'data_ready': bool(scope.get('audit_ready')),
         'intent_complete': bool(scope.get('intent_complete')),
+        'planning': {k: (scope.get('window_planning') or {}).get(k)
+            for k in ('state', 'complete', 'processed_candidates')},
         'runnable_now': runnable,
         'next_attempt_at': job.next_attempt_at.isoformat() if job.next_attempt_at else None,
         'publication': {'state': 'closed' if closed else (scope.get('audit') or {}).get('publication', {}).get('state', 'pending')},
