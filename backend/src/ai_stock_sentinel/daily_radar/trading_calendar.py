@@ -75,12 +75,13 @@ class TradingCalendar:
 
 
 class OfficialTradingCalendarProvider:
-    def __init__(self, db=None):
+    def __init__(self, db=None, *, source_store=None):
         self.db = db
+        self.source_store = source_store
 
     def fetch(self, *, start_date, end_date):
         from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
-        provider = RecoveringResearchPriceProvider(session=self.db)
+        provider = RecoveringResearchPriceProvider(session=self.db, source_store=self.source_store)
         reports = []
         sessions = set()
         def collect(month):

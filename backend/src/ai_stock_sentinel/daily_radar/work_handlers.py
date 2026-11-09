@@ -234,7 +234,8 @@ class WorkHandlers:
         calendar = load_calendar(self.db, start_date=start, as_of_date=claim.run_date)
         if calendar is None or calendar.through < claim.run_date:
             self.db.rollback()
-            calendar = require_calendar(OfficialTradingCalendarProvider(self.db), start_date=start, end_date=claim.run_date)
+            calendar = require_calendar(OfficialTradingCalendarProvider(self.db, source_store=self.store),
+                start_date=start, end_date=claim.run_date)
         def apply(db):
             save_calendar(db, calendar)
             return {'state': 'ready', 'result': {'calendar': calendar.payload()}}
