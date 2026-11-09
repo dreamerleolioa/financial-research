@@ -1,6 +1,8 @@
 """One bounded claim/collect/accept cycle. No background work after HTTP return."""
 from datetime import timedelta
 from sqlalchemy import select
+from sqlalchemy.orm import Session
+from ai_stock_sentinel.daily_radar.collection_transactions import read_only_collection, CollectionMutationError
 from ai_stock_sentinel.db.models import RadarWorkItem, RadarSourceSnapshot
 from ai_stock_sentinel.daily_radar.work_queue import claim_work, fence, finish_work, LostLease, database_now, retry_delay, ensure_work
 from ai_stock_sentinel.daily_radar.jobs import reconcile_job, prepared_generation, job_status
@@ -54,12 +56,13 @@ def advance_job(db, job_id, *, handlers=None, now=None):
     if claim is None:
         reconcile_job(db, job_id, now=now, audit=True)
         return job_status(db, job_id) | {'advanced_count': 0}
-    handlers = handlers or WorkHandlers(db)
     try:
-        collected = handlers.collect(claim)
-        if db.new or db.dirty or db.deleted:
-            raise ValueError('radar_collection_mutated_domain')
-        db.rollback()
+        # Domain acceptance owns db. Default collectors get a separate reader;
+        # custom handlers using db remain subject to the same read-only guard.
+        with Session(db.get_bind(), autoflush=False, close_resets_only=False) as reader:
+            handlers = handlers or WorkHandlers(reader)
+            with read_only_collection(db), read_only_collection(reader):
+                collected = handlers.collect(claim)
         # Same relation order as reviewed historical repair. Source network has
         # already completed; domain effects and lease completion are atomic.
         reserve_validation_commit(db)
@@ -108,7 +111,7 @@ def advance_job(db, job_id, *, handlers=None, now=None):
     except Exception as exc:
         db.rollback()
         reason = _reason(exc)
-        internal = isinstance(exc, (TypeError, AttributeError, ImportError, AssertionError))
+        internal = isinstance(exc, (CollectionMutationError, TypeError, AttributeError, ImportError, AssertionError))
         state = 'failed_internal' if internal else 'needs_review' if recovery_action(reason) == 'needs_review' else 'waiting_provider'
         try:
             work = fence(db, claim, now=now)
