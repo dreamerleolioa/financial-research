@@ -13,6 +13,15 @@ class _NoRedirect(HTTPRedirectHandler):
         raise HTTPError(req.full_url, code, "evidence_redirect_rejected", headers, fp)
 
 
+def get(endpoint, token, timeout=120):
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "https" or parsed.username or parsed.password:
+        raise ValueError("evidence_endpoint_requires_https")
+    request = Request(endpoint, method="GET", headers={"Authorization": f"Bearer {token}"})
+    with build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
+        return _read_json(response)
+
+
 def post(endpoint, token, payload, timeout=300):
     parsed = urlsplit(endpoint)
     if parsed.scheme != "https" or parsed.username or parsed.password:

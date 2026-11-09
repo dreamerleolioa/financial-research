@@ -21,6 +21,20 @@ from ai_stock_sentinel.db.session import Base
 RUN_DATE = date(2026, 9, 15)
 
 
+def test_history_conflict_retains_reason_and_specific_price_evidence():
+    from ai_stock_sentinel.daily_radar.technical_repair import verified_repaired_frame, TechnicalRepairRejected
+    original, raw, official = _repair_fixture()
+    raw = raw.loc[raw.index <= pd.Timestamp(RUN_DATE)].copy()
+    day = original.index[0]
+    raw.loc[day, "Adj Close"] *= 1.1
+    with pytest.raises(TechnicalRepairRejected, match="^adjusted_history_changed$") as error:
+        verified_repaired_frame(original, raw, official, symbol="2330.TW", run_date=RUN_DATE)
+    conflict = error.value.details["conflict"]
+    assert conflict["date"] == day.date().isoformat()
+    assert conflict["field"] in {"Open", "High", "Low", "Close"}
+    assert conflict["accepted"] != conflict["observed"]
+
+
 @pytest.mark.parametrize("factor", [0.05, 0.5, 0.95, 1.0])
 def test_independent_raw_adjustment_preserves_history_without_repair_heuristics(monkeypatch, factor):
     original, raw, official = _repair_fixture(factor=factor)

@@ -1133,7 +1133,7 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 13
     assert (
         text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
-        == 13
+        == 16
     )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text

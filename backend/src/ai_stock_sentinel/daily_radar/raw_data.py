@@ -136,6 +136,8 @@ class YFinanceBatchTechnicalFetcher:
         detail = {"stage": stage, "reason": reason}
         if exc is not None:
             detail["error_type"] = type(exc).__name__
+            if isinstance(exc, TechnicalRepairRejected) and exc.details:
+                detail["evidence"] = exc.details
         self.diagnostics[symbol]["attempts"].append(detail)
         logger.info("Daily Radar technical recovery symbol=%s stage=%s reason=%s", symbol, stage, reason)
 
@@ -181,7 +183,7 @@ class YFinanceBatchTechnicalFetcher:
                         run_date=run_date, adjustment_from_repaired_data=False,
                     )
                 except TechnicalRepairRejected as exc:
-                    self._record_attempt(symbol, "raw_adjustment", str(exc))
+                    self._record_attempt(symbol, "raw_adjustment", str(exc), exc)
                     continue
                 frames[symbol], provenance[symbol] = frame, source
                 self._record_attempt(symbol, "raw_adjustment", "accepted")
@@ -221,7 +223,7 @@ class YFinanceBatchTechnicalFetcher:
                         symbol=symbol, run_date=run_date, unrepaired_history=raw_frames[symbol],
                     )
             except TechnicalRepairRejected as exc:
-                self._record_attempt(symbol, "repaired_adjustment", str(exc))
+                self._record_attempt(symbol, "repaired_adjustment", str(exc), exc)
                 continue
             except Exception as exc:
                 self._record_attempt(symbol, "repaired_adjustment", "yahoo_repair_validation_unavailable", exc)

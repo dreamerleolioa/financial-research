@@ -11,15 +11,19 @@ from daily_radar_http import post, request_deadline, _NoRedirect, diagnostic_jso
 
 
 def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep,
-        attempts=6, basis_timeout=900, clock=time.monotonic):
+        attempts=6, basis_timeout=900, clock=time.monotonic,
+        return_bases=("signal_close", "next_open")):
     if date.fromisoformat(run_date).isoformat() != run_date:
         raise ValueError("invalid_validation_date")
     if type(attempts) is not int or attempts < 1 or basis_timeout <= 0:
         raise ValueError("invalid_validation_budget")
+    if not return_bases or len(set(return_bases)) != len(return_bases) or any(
+            basis not in {"signal_close", "next_open"} for basis in return_bases):
+        raise ValueError("invalid_return_bases")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     failed = []
-    for basis in ("signal_close", "next_open"):
+    for basis in return_bases:
         payload = {"mode": "due", "market": "TW", "as_of_date": run_date,
                    "windows": [5, 10, 20, 40, 60], "return_basis": basis, "benchmark_symbol": "TAIEX"}
         ready = False
@@ -111,9 +115,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-date", type=date.fromisoformat, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--return-basis", choices=("both", "signal_close", "next_open"), default="both")
     args = parser.parse_args()
     return run(endpoint=os.environ["ZEABUR_BACKEND_URL"].rstrip("/") + "/internal/daily-radar/forward-validation/run",
-               token=os.environ["DAILY_RADAR_INTERNAL_TOKEN"], run_date=str(args.run_date), output_dir=args.output_dir)
+               token=os.environ["DAILY_RADAR_INTERNAL_TOKEN"], run_date=str(args.run_date), output_dir=args.output_dir,
+               return_bases=("signal_close", "next_open") if args.return_basis == "both" else (args.return_basis,))
 
 
 if __name__ == "__main__":

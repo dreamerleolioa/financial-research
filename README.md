@@ -196,6 +196,8 @@ Daily Radar 的 live 資料載入有 request budget：法人 universe 只讀已�
 
 CI/CD 與排程現況以 `.github/workflows/` 與 `docs/specs/ai-stock-sentinel-architecture-spec.md` 的 workflow 地圖為準。
 
+Radar 的唯讀 readiness 查詢、兩種 validation 完整度及分階段續跑契約見 [完整度與續跑說明](docs/daily-radar-reliability.md)。正式 migration、部署與歷史補修仍分別授權。
+
 ---
 
 ## 環境需求

@@ -11,6 +11,17 @@ def runner():
     return module
 
 
+def test_one_basis_can_run_without_executing_the_other(tmp_path):
+    calls = []
+    def post(endpoint, token, payload):
+        calls.append(payload["return_basis"])
+        return {"status": "completed", "as_of_date": "2026-11-06",
+            "retryable_skipped_count": 0, "report": {"remaining_retryable_window_count": 0}}
+    assert runner().run(endpoint="test", token="private", run_date="2026-11-06",
+        output_dir=tmp_path, request=post, return_bases=("next_open",)) == 0
+    assert calls == ["next_open"]
+
+
 def test_first_basis_failure_does_not_prevent_second_basis_and_dates_never_change(tmp_path):
     calls = []
     def post(endpoint, token, payload):
