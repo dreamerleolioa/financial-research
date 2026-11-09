@@ -94,6 +94,14 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar):
     return state, reason, target
 
 
+def validation_candidate_revision(candidate):
+    """Names and unused shadow origins do not change validation semantics."""
+    values = {k: v for k, v in candidate.items() if k != 'name'}
+    if candidate.get('selection_status') == 'shadow':
+        values.pop('observation_origin', None)
+    return fingerprint(values)
+
+
 def inventory_items(session, *, as_of_date, lookback_days=365):
     """Yield every expected window, including absent outcomes and diagnostics.
 
@@ -122,7 +130,7 @@ def inventory_items(session, *, as_of_date, lookback_days=365):
                 state, reason, target = classify_window(candidate, row, basis=basis, window=window,
                     as_of_date=as_of_date, calendar=calendar)
                 yield {"candidate_id": candidate["candidate_id"], "symbol": candidate["symbol"],
-                    "candidate_revision": fingerprint(candidate),
+                    "candidate_revision": validation_candidate_revision(candidate),
                     "calendar_revision": fingerprint([str(d) for d in calendar.sessions if signal <= d <= target]) if target else None,
                     "signal_date": str(signal), "return_basis": basis, "validation_version": version,
                     "window_days": window, "expected_target_date": str(target) if target else None,

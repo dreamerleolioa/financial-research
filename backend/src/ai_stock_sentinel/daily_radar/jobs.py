@@ -57,7 +57,8 @@ def unit(db, job, stage, *, generation=None, scope=None, deps=(), lane='publicat
 def plan_windows(db, job, scope, *, now):
     from ai_stock_sentinel.daily_radar.observation_validation import canonical_radar_run_ids
     from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
-    from ai_stock_sentinel.daily_radar.readiness import inventory_items
+    from ai_stock_sentinel.daily_radar.readiness import inventory_items, validation_candidate_revision
+    from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
     from ai_stock_sentinel.db.models import DailyRadarRun
     start = job.run_date - timedelta(days=364)
     calendar = load_calendar(db, start_date=start, as_of_date=job.run_date)
@@ -66,7 +67,10 @@ def plan_windows(db, job, scope, *, now):
         return
     runs = list(db.scalars(select(DailyRadarRun.id).where(DailyRadarRun.id.in_(canonical_radar_run_ids(
         market='TW', start_date=start, end_date=job.run_date))).order_by(DailyRadarRun.id)))
-    plan = fingerprint({'runs': runs, 'calendar': calendar.payload(), 'lanes': job.lanes})
+    candidates = forward_validation_candidates_from_runs(db, market='TW', start_date=start, end_date=job.run_date)
+    plan = fingerprint({'version': 'radar-window-plan-v2', 'runs': runs,
+        'candidates': [validation_candidate_revision(c) for c in candidates],
+        'calendar': calendar.payload(), 'lanes': job.lanes})
     if scope.get('window_plan') == plan:
         return
     db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
@@ -90,10 +94,11 @@ def plan_windows(db, job, scope, *, now):
                 work.state, work.reason, work.retry_at = 'ready', None, None
             elif manual:
                 work.state, work.reason, work.retry_at = 'needs_review', item['reason'], None
-            elif work.state in {'ready', 'terminal'}:
+            elif work.state in {'ready', 'terminal', 'superseded'}:
                 work.state, work.reason, work.retry_at = 'pending', item['reason'], now
         member(db, job, work)
     scope['window_plan'] = plan
+    scope['window_inventory_audited_at'] = now.isoformat()
 
 
 def invalidate_prerequisites(db, members, *, steps, blockers, now):
@@ -214,8 +219,13 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
     if job is None:
         raise ValueError('radar_job_not_found')
     scope = deepcopy(job.scope or {})
-    if job.last_advanced_at and now - aware(job.last_advanced_at) >= timedelta(minutes=50):
-        scope.pop('window_plan', None)  # Observe reviewed/manual repairs on bounded revisits.
+    audited = scope.get('window_inventory_audited_at')
+    audited = datetime.fromisoformat(audited) if audited else None
+    superseded = db.scalar(select(RadarWorkItem.id).join(RadarJobWork).where(
+        RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True), RadarWorkItem.stage == 'window',
+        RadarWorkItem.state == 'superseded').limit(1))
+    if audited is None or now - aware(audited) >= timedelta(minutes=50) or superseded is not None:
+        scope.pop('window_plan', None)
     session = unit(db, job, 'market-session', now=now)
     closed = session.state == 'terminal' and (session.result or {}).get('status') == 'closed'
     if closed:

@@ -247,7 +247,7 @@ class WorkHandlers:
         from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar, save_calendar
         from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs, upsert_forward_validation_results, persisted_forward_validation_outcomes, forward_validation_result_revision
         from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
-        from ai_stock_sentinel.daily_radar.readiness import classify_window, recovery_action
+        from ai_stock_sentinel.daily_radar.readiness import classify_window, recovery_action, validation_candidate_revision
         scope = claim.scope
         signal, asof = date.fromisoformat(scope['signal_date']), date.fromisoformat(scope['as_of_date'])
         calendar = load_calendar(self.db, start_date=signal, as_of_date=asof)
@@ -257,6 +257,11 @@ class WorkHandlers:
         target = future[scope['window_days'] - 1] if len(future) >= scope['window_days'] else None
         calendar_revision = fingerprint([str(d) for d in calendar.sessions if signal <= d <= target]) if target else None
         if scope.get('calendar_revision') is not None and scope['calendar_revision'] != calendar_revision:
+            raise LostLease('radar_window_inputs_changed')
+        candidates = forward_validation_candidates_from_runs(self.db, market='TW', start_date=signal, end_date=signal)
+        candidates = [c for c in candidates if c['candidate_id'] == scope['candidate_id']]
+        if (len(candidates) != 1 or (scope.get('candidate_revision') is not None
+                and validation_candidate_revision(candidates[0]) != scope['candidate_revision'])):
             raise LostLease('radar_window_inputs_changed')
         request = DailyRadarForwardValidationRunRequest(mode='due', as_of_date=asof, start_date=signal,
             end_date=signal, windows=[scope['window_days']], return_basis=scope['return_basis'])
@@ -273,7 +278,7 @@ class WorkHandlers:
         execute = run_signal_close_validation if scope['return_basis'] == 'signal_close' else run_research_validation
         bundle = execute(self.db, request, as_of_date=asof, price_provider=provider,
             calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar), candidate_ids=[scope['candidate_id']], prepare_only=True)
-        revision = fingerprint(bundle.candidates)
+        revision = [validation_candidate_revision(c) for c in bundle.candidates]
         def apply(db):
             from ai_stock_sentinel.daily_radar.input_manifests import serialize_publication
             serialize_publication(db, market='TW', run_date=signal)
@@ -281,7 +286,7 @@ class WorkHandlers:
             current = [c for c in current if c['candidate_id'] == scope['candidate_id']]
             latest = load_calendar(db, start_date=signal, as_of_date=asof)
             latest_revision = fingerprint([str(d) for d in latest.sessions if signal <= d <= target]) if latest and target else None
-            if fingerprint(current) != revision or latest is None or latest.through < asof or latest_revision != calendar_revision:
+            if [validation_candidate_revision(c) for c in current] != revision or latest is None or latest.through < asof or latest_revision != calendar_revision:
                 raise LostLease('radar_window_inputs_changed')
             existing = result_row(db)
             if existing is not None and existing.evaluation_as_of_date and existing.evaluation_as_of_date > asof:
