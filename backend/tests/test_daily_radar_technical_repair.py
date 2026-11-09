@@ -12,7 +12,7 @@ from ai_stock_sentinel.daily_radar.raw_data import (
     LocalFirstBatchTechnicalFetcher,
     YFinanceBatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
-    fetch_daily_radar_raw_payloads,
+    prepare_daily_radar_raw_payloads,
 )
 from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
 from ai_stock_sentinel.db.session import Base
@@ -551,8 +551,12 @@ def test_production_fetcher_loads_official_archive_and_only_finalizes_verified_r
 
             monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download", download)
             fetcher = LocalFirstBatchTechnicalFetcher(session, name_resolver=lambda _: None)
-            payloads = fetch_daily_radar_raw_payloads(session, RUN_DATE, ["2330.TW"],
-                technical_fetcher=fetcher) if staged else None
+            payloads = None
+            if staged:
+                collection = prepare_daily_radar_raw_payloads(session, RUN_DATE, ["2330.TW"],
+                    technical_fetcher=fetcher)
+                session.rollback()
+                payloads = collection.fetch()
             rows = ensure_daily_radar_raw_rows(
                 session, RUN_DATE, ["2330.TW"],
                 technical_fetcher=fetcher, fetched_payloads=payloads,

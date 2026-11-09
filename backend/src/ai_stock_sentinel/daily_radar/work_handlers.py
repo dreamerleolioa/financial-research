@@ -162,14 +162,16 @@ class WorkHandlers:
         return self._collect_context(claim, 'full_margin')
 
     def collect_ohlcv(self, claim):
-        from ai_stock_sentinel.daily_radar.raw_data import fetch_daily_radar_raw_payloads
+        from ai_stock_sentinel.daily_radar.raw_data import prepare_daily_radar_raw_payloads
         from ai_stock_sentinel.daily_radar.refresh_router import _persist_ohlcv_refresh
         prepared(self.db, claim.run_date)
         fetcher = providers.get_daily_radar_technical_fetcher(self.db)
+        collection = prepare_daily_radar_raw_payloads(self.db, claim.run_date,
+            [claim.scope['symbol']], technical_fetcher=fetcher)
         self.db.rollback()
         payloads, _ = self.store.capture_operation(operation='technical-refresh-payload',
             params={'symbol': claim.scope['symbol'], 'run_date': str(claim.run_date)},
-            fetch=lambda: {'payloads': fetch_daily_radar_raw_payloads(self.db, claim.run_date, [claim.scope['symbol']], technical_fetcher=fetcher)})
+            fetch=lambda: {'payloads': collection.fetch()})
         payloads = payloads['payloads']
         def apply(db):
             latest = prepared(db, claim.run_date)
@@ -341,16 +343,18 @@ class WorkHandlers:
         return Collected(apply)
 
     def collect_managed_raw(self, claim):
-        from ai_stock_sentinel.daily_radar.raw_data import fetch_daily_radar_raw_payloads, ensure_daily_radar_raw_rows, current_daily_radar_raw_rows
+        from ai_stock_sentinel.daily_radar.raw_data import prepare_daily_radar_raw_payloads, ensure_daily_radar_raw_rows, current_daily_radar_raw_rows
         from ai_stock_sentinel.daily_radar.pipeline_support import _industry_classifications_by_symbol, _materialize_industry_classifications, _finish_managed_raw_data_refresh
         from ai_stock_sentinel.daily_radar.managed_raw_data import ManagedRawDataSelection
         symbol, symbols = claim.scope['symbol'], claim.scope['managed_symbols']
         fetcher = providers.get_daily_radar_technical_fetcher(self.db)
         self.db.rollback()
         industries = _industry_classifications_by_symbol([symbol])
+        collection = prepare_daily_radar_raw_payloads(self.db, claim.run_date, [symbol], technical_fetcher=fetcher)
+        self.db.rollback()
         captured, _ = self.store.capture_operation(operation='technical-refresh-payload',
             params={'symbol': symbol, 'run_date': str(claim.run_date)},
-            fetch=lambda: {'payloads': fetch_daily_radar_raw_payloads(self.db, claim.run_date, [symbol], technical_fetcher=fetcher)})
+            fetch=lambda: {'payloads': collection.fetch()})
         payloads = captured['payloads']
         def apply(db):
             rows = ensure_daily_radar_raw_rows(db, claim.run_date, [symbol], technical_fetcher=fetcher, fetched_payloads=payloads)

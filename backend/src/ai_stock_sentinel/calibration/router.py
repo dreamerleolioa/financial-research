@@ -139,6 +139,11 @@ def run_general_analysis_forward_validation(
             as_of_date=as_of_date,
         )
     windows_by_sample = None
+    def fetch_prices(symbols, *, start_date, end_date):
+        # Inputs above are plain values; this endpoint owns the read transaction.
+        db.rollback()
+        return price_provider.fetch(symbols, start_date=start_date, end_date=end_date)
+
     if request.mode == "due":
         windows_by_sample = discover_due_windows_by_candidate(
             samples,
@@ -164,7 +169,7 @@ def run_general_analysis_forward_validation(
             benchmark_symbol=request.benchmark_symbol,
             as_of_date=as_of_date,
             price_start_date=price_start_date,
-            fetch_prices=price_provider.fetch,
+            fetch_prices=fetch_prices,
         )
         price_series = preparation.price_series_by_symbol
         benchmark_prices = preparation.benchmark_prices

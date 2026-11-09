@@ -11,13 +11,10 @@ class CachedForwardPrices:
     def __init__(self, db, *, store, provider=None):
         if store is None:
             raise ValueError("radar_source_snapshots_required")
-        self.db, self.source_store = db, store
+        self.source_store = store
         self.provider = provider or YFinanceForwardPriceProvider()
 
     def fetch(self, symbols, *, start_date, end_date):
-        if self.db.new or self.db.dirty or self.db.deleted:
-            raise ValueError("radar_network_with_pending_writes")
-        self.db.rollback()
         result = {}
         for symbol in sorted(set(symbols)):
             params = {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),

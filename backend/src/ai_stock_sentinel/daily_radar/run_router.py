@@ -43,7 +43,7 @@ from ai_stock_sentinel.daily_radar.presenter import run_trigger_response
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
-    fetch_daily_radar_raw_payloads,
+    prepare_daily_radar_raw_payloads,
 )
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_TYPES,
@@ -192,8 +192,10 @@ def run_daily_radar_endpoint(
             # Collect before AVWAP/chip mutations. Evidence capture can use a
             # one-slot pool and no rollback can discard those later writes.
             failure_stage = "raw_data_backfill"
-            fetched_payloads = fetch_daily_radar_raw_payloads(
+            collection = prepare_daily_radar_raw_payloads(
                 db, run_date, selected_symbols, technical_fetcher=technical_fetcher)
+            db.rollback()
+            fetched_payloads = collection.fetch()
         _refresh_phase1_avwap_for_daily_radar(
             db,
             symbols=selected_symbols,

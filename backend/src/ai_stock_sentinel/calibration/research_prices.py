@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
+from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.price_provider import YFinanceResearchPriceProvider
 from ai_stock_sentinel.calibration.official_corporate_actions import tpex_report_rows
@@ -99,7 +100,6 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             return {}
         try:
             if self.source_store is not None:
-                self._release_read_transaction()
                 from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
                 if durable_enabled():
                     return self._fetch_source_units(supported, start_date=start_date, end_date=end_date)
@@ -148,15 +148,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                 self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": [symbol]})
         return result
 
-    def _release_read_transaction(self):
-        if self.session is not None:
-            if self.session.new or self.session.dirty or self.session.deleted:
-                raise ValueError("research_source_fetch_requires_clean_session")
-            self.session.rollback()
-
     def _request(self, getter, url, *, params):
-        if self.source_store is not None:
-            self._release_read_transaction()
         if self.deadline is None:
             self.deadline = self.clock() + self.total_timeout
         # Only the shared index dependency gets one retry; every attempt uses
@@ -297,7 +289,6 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         if key not in self.cache:
             self.cache[key] = None
             if self.source_store is not None:
-                self._release_read_transaction()
                 captured = self.source_store.capture(provider="twse" if origin == TWSE else "tpex",
                     url=url, params=params, fetch=lambda: self._request(self.official_getter, url, params=params))
                 self.cache[key] = captured
@@ -328,7 +319,6 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                   "interval": "1d", "events": "div,splits"}
         proof = None
         if self.source_store is not None:
-            self._release_read_transaction()
             payload, proof = self.source_store.capture(provider="yahoo_chart_events", url=url, params=params,
                 fetch=lambda: self._request(self.actions_getter, url, params=params))
         else:
@@ -366,6 +356,21 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.cache[key] = result
         return result
 
+    def _archive_prices(self, symbol, required):
+        def load(reader):
+            return {str(row.trade_date): {"date": str(row.trade_date),
+                **{f: float(getattr(row, f)) for f in OHLC_FIELDS},
+                "price_source": row.source_dataset}
+                for row in get_taiwan_daily_bars(reader, symbols=[symbol],
+                    start_date=min(required), end_date=max(required), final_only=True)}
+
+        # An idle caller has no transaction to share. Own and close this archive
+        # read before HTTP; never release an active transaction belonging to it.
+        if isinstance(self.session, Session) and not self.session.in_transaction():
+            with Session(self.session.get_bind()) as reader:
+                return load(reader)
+        return load(self.session)
+
     def repair(self, prices_by_symbol, *, required_dates_by_symbol, as_of_date):
         result = {s: [dict(row) for row in rows] for s, rows in prices_by_symbol.items()}
         for symbol, requested in required_dates_by_symbol.items():
@@ -385,11 +390,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             try:
                 official = {}
                 if self.session is not None and symbol != "TAIEX":
-                    for row in get_taiwan_daily_bars(self.session, symbols=[symbol],
-                            start_date=min(required), end_date=max(required), final_only=True):
-                        official[str(row.trade_date)] = {"date": str(row.trade_date),
-                            **{f: float(getattr(row, f)) for f in ("open", "high", "low", "close")},
-                            "price_source": row.source_dataset}
+                    official = self._archive_prices(symbol, required)
                 # Archived overlaps are authoritative even if a different date
                 # requires a remote request that fails or overlaps the archive.
                 conflict_date_count, conflicting_prices = _mark_conflicts(original, official)

@@ -58,7 +58,7 @@ from ai_stock_sentinel.daily_radar.pipeline_support import (
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
-    fetch_daily_radar_raw_payloads,
+    prepare_daily_radar_raw_payloads,
     insufficient_history_daily_radar_raw_rows,
     reusable_daily_radar_raw_rows,
 )
@@ -438,9 +438,11 @@ def refresh_daily_radar_ohlcv_endpoint(
                     market_bars.extend(market_bar_provider.fetch_market(market=market, trade_date=run_date))
                 except OfficialMarketBarProviderError as exc:
                     logger.warning("OHLCV official archive refresh failed market=%s code=%s", market, exc.code)
-        fetched_payloads = fetch_daily_radar_raw_payloads(
+        collection = prepare_daily_radar_raw_payloads(
             db, run_date, selected_symbols, technical_fetcher=technical_fetcher, official_bars=market_bars,
         )
+        db.rollback()
+        fetched_payloads = collection.fetch()
         return _persist_ohlcv_refresh(db, request=request, run_date=run_date, snapshot=snapshot,
             technical_fetcher=technical_fetcher, fetched_payloads=fetched_payloads, market_bars=market_bars)
     except Exception:

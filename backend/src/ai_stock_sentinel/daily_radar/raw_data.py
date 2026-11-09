@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 import logging
 import math
@@ -374,22 +374,42 @@ class LocalFirstBatchTechnicalFetcher:
             return None
 
 
-def fetch_daily_radar_raw_payloads(
+@dataclass(frozen=True)
+class RawPayloadCollection:
+    run_date: date
+    symbols: tuple[str, ...]
+    technical_fetcher: BatchTechnicalFetcher
+
+    def fetch(self) -> Mapping[str, Mapping[str, Any]]:
+        return self.technical_fetcher.fetch(list(self.symbols), run_date=self.run_date) if self.symbols else {}
+
+
+def prepare_daily_radar_raw_payloads(
     session: Session, run_date: date, symbols: Iterable[str], *,
     technical_fetcher: BatchTechnicalFetcher,
     official_bars: Sequence[MarketDailyBar] = (),
-) -> Mapping[str, Mapping[str, Any]]:
-    """Read-only collection phase; no pending writes may be discarded by rollback."""
-    if session.new or session.dirty or session.deleted:
-        raise ValueError("raw_refresh_requires_clean_read_transaction")
+) -> RawPayloadCollection:
+    """Freeze archive inputs; the caller owns release of its read transaction."""
     ordered = _ordered_unique_symbols(symbols)
     existing = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered)
     reusable = {row.symbol for row in current_daily_radar_raw_rows(existing, run_date=run_date)}
     missing = [symbol for symbol in ordered if symbol not in reusable]
     if missing and isinstance(technical_fetcher, LocalFirstBatchTechnicalFetcher):
         technical_fetcher.prepare_fetch(missing, run_date=run_date, official_bars=official_bars)
-    session.rollback()
-    return technical_fetcher.fetch(missing, run_date=run_date) if missing else {}
+    return RawPayloadCollection(run_date, tuple(missing), technical_fetcher)
+
+
+def fetch_daily_radar_raw_payloads(
+    session: Session, run_date: date, symbols: Iterable[str], *,
+    technical_fetcher: BatchTechnicalFetcher,
+    official_bars: Sequence[MarketDailyBar] = (),
+) -> Mapping[str, Mapping[str, Any]]:
+    """Compatibility collector; never commit or roll back the caller's work.
+
+    Network owners should prepare, release their read transaction, then fetch.
+    """
+    return prepare_daily_radar_raw_payloads(session, run_date, symbols,
+        technical_fetcher=technical_fetcher, official_bars=official_bars).fetch()
 
 
 def ensure_daily_radar_raw_rows(
