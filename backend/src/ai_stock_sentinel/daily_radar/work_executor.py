@@ -44,7 +44,7 @@ def _reason(exc):
         'market_bar_identity_or_coverage_invalid', 'background_context_identity_invalid',
         'market_session_evidence_missing_or_invalid', 'research_recovery_budget_exhausted',
         'forward_price_provider_returned_no_data', 'radar_source_reference_invalid',
-        'radar_source_recheck_not_supported'}:
+        'radar_source_recheck_not_supported', 'calendar_evidence_conflict'}:
         return value
     return 'radar_provider_unavailable'
 

@@ -8,13 +8,13 @@ from datetime import date, timedelta
 import re
 
 from fastapi import Depends
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun
 from ai_stock_sentinel.db.session import get_db
 
-VERSION = "twse-session-calendar-v1"
+VERSION = "twse-session-calendar-v2"
 CALENDAR_STEP = "validation-calendar"
 SESSION_STEP = "market-session"
 
@@ -48,14 +48,29 @@ class TradingCalendar:
         if start > end or list(days) != sorted(set(days)) or any(not start <= d <= end for d in days):
             raise ValueError("calendar_evidence_dates_invalid")
         wanted = {m.strftime("%Y-%m") for m in months(start, end)}
-        if {r.get("month") for r in reports} != wanted or len(reports) != len(wanted):
+        following = (end.replace(day=28) + timedelta(days=4)).strftime("%Y-%m")
+        supplied = {r.get("month") for r in reports}
+        if not wanted <= supplied or supplied - wanted - {following} or len(reports) != len(supplied):
             raise ValueError("calendar_evidence_month_gap")
+        reported_days = set()
         for report in reports:
             month = date.fromisoformat(report["month"] + "-01")
             if (report.get("source_url") != "https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=" + month.strftime("%Y%m%d")
                     or not re.fullmatch(r"[0-9a-f]{64}", str(report.get("snapshot_sha256", "")))
                     or not report.get("captured_at")):
                 raise ValueError("calendar_evidence_source_invalid")
+            full_dates = [date.fromisoformat(d) for d in report["session_dates"]]
+            if not full_dates or full_dates != sorted(set(full_dates)) or any(d.strftime("%Y-%m") != report["month"] for d in full_dates):
+                raise ValueError("calendar_evidence_report_dates_invalid")
+            reported_days.update(full_dates)
+        # The report's query month and capture time do not prove publication
+        # through the cutoff. Retain unfiltered dates, including a later month's
+        # positive publication witness for a closed month end. Until then the
+        # tail is unknown, rather than silently treating absent rows as closure.
+        if not reported_days or max(reported_days) < end:
+            raise ValueError("calendar_evidence_publication_incomplete")
+        if set(days) != {d for d in reported_days if start <= d <= end}:
+            raise ValueError("calendar_evidence_sessions_mismatch")
         return cls(start, end, days, reports)
 
 
@@ -66,19 +81,30 @@ class OfficialTradingCalendarProvider:
     def fetch(self, *, start_date, end_date):
         from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
         provider = RecoveringResearchPriceProvider(session=self.db)
-        # Start on the first day to retain each month's report provenance even
-        # when the requested subrange contains only a holiday/weekend.
-        rows = provider.official_research_history("TAIEX", start_date=start_date.replace(day=1), end_date=end_date)
-        reports = {}
+        reports = []
         sessions = set()
-        for row in rows:
-            day = date.fromisoformat(row["date"])
-            proof = row["official_price_report"]
-            reports[day.strftime("%Y-%m")] = {"month": day.strftime("%Y-%m"), **proof}
-            if start_date <= day <= end_date:
-                sessions.add(day)
+        def collect(month):
+            payload, proof = provider.capture_twse_report("/indicesReport/MI_5MINS_HIST", {
+                "response": "json", "date": month.strftime("%Y%m%d")})
+            rows = payload.get("data")
+            if (payload.get("stat") != "OK" or str(payload.get("date", ""))[:6] != month.strftime("%Y%m")
+                    or not isinstance(rows, list) or not rows or ("total" in payload and (
+                        type(payload["total"]) is not int or payload["total"] != len(rows)))):
+                raise ValueError("calendar_evidence_report_incomplete")
+            index = payload["fields"].index("日期")
+            dates = []
+            for row in rows:
+                y, m, d = map(int, str(row[index]).split("/"))
+                dates.append(date(y + 1911, m, d))
+            reports.append({**proof, "month": month.strftime("%Y-%m"),
+                            "session_dates": [str(d) for d in dates]})
+            sessions.update(d for d in dates if start_date <= d <= end_date)
+        for month in months(start_date, end_date):
+            collect(month)
+        if not any(d >= str(end_date) for r in reports for d in r["session_dates"]):
+            collect((end_date.replace(day=28) + timedelta(days=4)).replace(day=1))
         return TradingCalendar.parse(TradingCalendar(start_date, end_date, tuple(sorted(sessions)),
-                                                       tuple(reports.values())).payload())
+                                                       tuple(reports)).payload())
 
 
 class CalendarUnavailableError(RuntimeError):
@@ -103,6 +129,11 @@ def save_calendar(session, calendar):
     calendar = TradingCalendar.parse(calendar.payload())
     if not inspect(session.connection()).has_table(DailyRadarPreparedRun.__tablename__):
         return
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SELECT pg_advisory_xact_lock(904240106)"))
+    for previous in stored_calendars(session):
+        if calendars_conflict(previous, calendar):
+            raise ValueError("calendar_evidence_conflict")
     prepared = session.execute(select(DailyRadarPreparedRun).where(
         DailyRadarPreparedRun.market == "TW", DailyRadarPreparedRun.run_date == calendar.through)
         .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
@@ -122,34 +153,48 @@ def save_calendar(session, calendar):
         prepared.step_statuses = dict(prepared.step_statuses or {}) | {CALENDAR_STEP: calendar.payload()}
 
 
-def load_calendar(session, *, start_date, as_of_date):
+def stored_calendars(session, *, as_of_date=None):
     if not inspect(session.connection()).has_table(DailyRadarPreparedRun.__tablename__):
-        return None
-    payloads = session.execute(select(DailyRadarPreparedRun.step_statuses[CALENDAR_STEP].as_json()).where(
-        DailyRadarPreparedRun.market == "TW", DailyRadarPreparedRun.run_date <= as_of_date)).scalars()
+        return []
+    query = select(DailyRadarPreparedRun.run_date, DailyRadarPreparedRun.step_statuses[CALENDAR_STEP].as_json()).where(DailyRadarPreparedRun.market == "TW")
+    if as_of_date is not None:
+        query = query.where(DailyRadarPreparedRun.run_date <= as_of_date)
+    payloads = session.execute(query)
     evidence = []
-    for payload in payloads:
+    for source_date, payload in payloads:
         if not isinstance(payload, dict):
             continue
         try:
             calendar = TradingCalendar.parse(payload)
         except (ValueError, KeyError, TypeError):
             continue
-        if calendar.through <= as_of_date:
+        if calendar.through <= source_date and (as_of_date is None or calendar.through <= as_of_date):
             evidence.append(calendar)
     from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
     if durable_enabled():
         from ai_stock_sentinel.db.models import RadarWorkItem
         if inspect(session.connection()).has_table(RadarWorkItem.__tablename__):
-            saved = session.scalars(select(RadarWorkItem.result).where(RadarWorkItem.stage == 'calendar',
-                RadarWorkItem.state == 'ready', RadarWorkItem.run_date <= as_of_date))
-            for result in saved:
+            query = select(RadarWorkItem.run_date, RadarWorkItem.result).where(RadarWorkItem.stage == 'calendar', RadarWorkItem.state == 'ready')
+            if as_of_date is not None:
+                query = query.where(RadarWorkItem.run_date <= as_of_date)
+            saved = session.execute(query)
+            for source_date, result in saved:
                 try:
                     calendar = TradingCalendar.parse(result['calendar'])
-                    if calendar.through <= as_of_date:
+                    if source_date is not None and calendar.through <= source_date and (as_of_date is None or calendar.through <= as_of_date):
                         evidence.append(calendar)
                 except (ValueError, TypeError, KeyError):
                     continue
+    return evidence
+
+
+def calendars_conflict(left, right):
+    lo, hi = max(left.start, right.start), min(left.through, right.through)
+    return lo <= hi and {d for d in left.sessions if lo <= d <= hi} != {d for d in right.sessions if lo <= d <= hi}
+
+
+def load_calendar(session, *, start_date, as_of_date):
+    evidence = stored_calendars(session, as_of_date=as_of_date)
     # A single complete proof is preferable to an unprovable union of sparse
     # price histories. Overlapping contradictory proofs remain unavailable.
     covering = [c for c in evidence if c.start <= start_date <= c.through]
@@ -157,8 +202,7 @@ def load_calendar(session, *, start_date, as_of_date):
         return None
     best = max(covering, key=lambda c: c.through)
     for other in evidence:
-        lo, hi = max(best.start, other.start), min(best.through, other.through)
-        if lo <= hi and {d for d in best.sessions if lo <= d <= hi} != {d for d in other.sessions if lo <= d <= hi}:
+        if calendars_conflict(best, other):
             return None
     return best
 

@@ -160,7 +160,12 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
                         'managed_symbols': scope['managed_symbols'], 'deferred': scope['managed_deferred']},
                         deps=[prep], lane='auxiliary', required=False, now=now)
     if set(job.lanes) & {'signal_close', 'next_open'}:
-        unit(db, job, 'calendar', scope={'start_date': str(job.run_date - timedelta(days=364))}, lane='validation', now=now)
+        from ai_stock_sentinel.daily_radar.trading_calendar import VERSION as CALENDAR_VERSION
+        calendar_work = unit(db, job, 'calendar', scope={'start_date': str(job.run_date - timedelta(days=364)),
+            'calendar_version': CALENDAR_VERSION}, lane='validation', now=now)
+        db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
+            RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'calendar',
+                RadarWorkItem.id != calendar_work.id))).values(active=False))
         plan_windows(db, job, scope, now=now)
     db.flush()
     review_windows = db.scalars(select(RadarWorkItem).join(RadarJobWork).where(

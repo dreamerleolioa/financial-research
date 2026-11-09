@@ -33,7 +33,7 @@ from ai_stock_sentinel.db.models import DailyRadarRun, DailyRadarCandidate
 def recovery_action(reason):
     """Stable classes consumed by reports and the durable executor."""
     if reason in {"conflicting_price_records", "adjusted_history_changed", "price_basis_mismatch",
-                  "research_basis_mismatch", "terminal_evidence_unverified"}:
+                  "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict"}:
         return "needs_review"
     if reason in {"research_recovery_budget_exhausted", "budget_exhausted"}:
         return "resume"

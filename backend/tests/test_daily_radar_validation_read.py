@@ -76,11 +76,33 @@ def add_result(session, row, *, status="confirmed", diagnostic=True, window=5, v
         evaluation_as_of_date=date(2026, 6, 8), outcome=payload))
 
 
+def test_rejected_calendar_never_falls_back_to_sparse_price_maturity(storage):
+    from radar_calendar_support import calendar
+    session, client, _ = storage
+    add_candidate(session, add_run(session, date(2026, 6, 23)))
+    legacy = calendar(date(2026, 6, 1), date(2026, 6, 29)).payload()
+    legacy['version'] = 'twse-session-calendar-v1'
+    session.add(DailyRadarPreparedRun(run_date=date(2026, 6, 30), market='TW', selected_symbols=[],
+        universe=[], symbol_count=0, step_statuses={'validation-calendar': legacy},
+        market_context={'benchmark': {'symbol': 'TAIEX', 'price_history': [
+            {'date': '2026-06-23', 'close': 100}, {'date': '2026-06-30', 'close': 101}]}}))
+    session.commit()
+    body = client.get('/daily-radar/validation?lookback_days=90').json()
+    stats = groups(body)['all_selected']
+    assert stats['immature_observation_count'] == 0
+    assert stats['coverage_complete'] is False
+    research = body['cohorts'][0]['research_pool_comparison']['5']['cost_scenarios']['0']['selected']
+    assert research['immature_count'] == 0
+    assert research['coverage_complete'] is False
+
+
 def add_calendar(session):
+    from radar_calendar_support import calendar
     days = [date(2026, 6, 1) + timedelta(days=i) for i in range(30)
             if (date(2026, 6, 1) + timedelta(days=i)).weekday() < 5]
     session.add(DailyRadarPreparedRun(run_date=date(2026, 6, 30), market="TW", status="prepared",
-        selected_symbols=[], universe=[], symbol_count=0, step_statuses={}, errors=[],
+        selected_symbols=[], universe=[], symbol_count=0,
+        step_statuses={'validation-calendar': calendar(date(2026, 6, 1), date(2026, 6, 30)).payload()}, errors=[],
         market_context={"benchmark": {"symbol": "TAIEX", "price_history": [
             {"date": day.isoformat(), "close": 1000} for day in days]}}))
 
@@ -91,6 +113,7 @@ def groups(body, window="5", cohort=0):
 
 def add_long_research_history(session, *, lookback, window, paired_count, gap=False):
     from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+    from radar_calendar_support import calendar as official_calendar
 
     end = date(2026, 6, 30)
     start = end - timedelta(days=lookback - 1)
@@ -117,7 +140,8 @@ def add_long_research_history(session, *, lookback, window, paired_count, gap=Fa
     for day in sorted(snapshot_dates):
         session.add(DailyRadarPreparedRun(
             run_date=day, market="TW", status="prepared", selected_symbols=[], universe=[],
-            symbol_count=0, step_statuses={}, errors=[],
+            symbol_count=0, step_statuses={'validation-calendar': official_calendar(start,end).payload()}
+                if day == end and not gap else {}, errors=[],
             market_context={"benchmark": {"symbol": "TAIEX", "price_history": [
                 {"date": d.isoformat(), "close": 1000}
                 for d in calendar if day - timedelta(days=120) <= d <= day and d != missing]}}))
@@ -164,7 +188,8 @@ def test_public_research_long_calendar_gap_still_blocks_confidence(storage):
     assert confidence["lower_pct"] is None and confidence["upper_pct"] is None
 
 
-def test_public_research_calendar_combines_prepared_and_final_raw_date_evidence(storage):
+def test_raw_dates_cannot_replace_official_calendar_evidence(storage):
+    from radar_calendar_support import calendar
     session, client, engine = storage
     end, missing = add_long_research_history(session, lookback=365, window=20, paired_count=200, gap=True)
     session.add(StockRawData(symbol="TAIEX", record_date=end, raw_data_is_final=True,
@@ -172,10 +197,16 @@ def test_public_research_calendar_combines_prepared_and_final_raw_date_evidence(
     session.commit()
     research = client.get("/daily-radar/validation?lookback_days=365").json()[
         "cohorts"][0]["research_pool_comparison"]["20"]
-    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "estimated"
+    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "calendar_missing"
+    prepared = session.scalar(select(DailyRadarPreparedRun).where(DailyRadarPreparedRun.run_date == end))
+    prepared.step_statuses = {'validation-calendar': calendar(end-timedelta(days=364),end).payload()}
+    session.commit()
+    research = client.get('/daily-radar/validation?lookback_days=365').json()[
+        'cohorts'][0]['research_pool_comparison']['20']
+    assert research['cost_scenarios']['0']['confidence']['status'] == 'estimated'
 
 
-def test_research_calendar_rejects_dates_after_the_source_run_without_changing_legacy(storage):
+def test_calendar_rejects_future_proof_but_preserves_saved_legacy_results(storage):
     from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
     session, client, engine = storage
     candidate = add_candidate(session, add_run(session))
@@ -192,7 +223,8 @@ def test_research_calendar_rejects_dates_after_the_source_run_without_changing_l
     body = client.get("/daily-radar/validation").json()
     research = body["cohorts"][0]["research_pool_comparison"]["5"]
     assert research["cost_scenarios"]["0"]["confidence"]["status"] == "calendar_missing"
-    assert body["calendar_through_date"] == "2026-06-30"
+    assert body["calendar_through_date"] is None
+    assert groups(body)['all_selected']['evaluated_observation_count'] == 1
 
 
 def test_public_validation_includes_medium_term_windows_and_longer_sample_period(storage):
@@ -454,7 +486,8 @@ def test_official_calendar_is_not_disabled_by_one_bad_historical_window(storage)
                if (date(2026,6,1)+timedelta(days=i)).weekday()<5)
     proof=TradingCalendar(date(2026,6,1),date(2026,6,30),days,({"month":"2026-06",
         "source_url":"https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=20260601",
-        "snapshot_sha256":"a"*64,"captured_at":"2026-06-30T16:00:00+00:00"},))
+        "snapshot_sha256":"a"*64,"captured_at":"2026-06-30T16:00:00+00:00",
+        "session_dates":[str(d) for d in days]},))
     prepared.step_statuses={CALENDAR_STEP:proof.payload()};session.commit()
     response=client.get("/daily-radar/validation?lookback_days=90")
     assert response.status_code==200
