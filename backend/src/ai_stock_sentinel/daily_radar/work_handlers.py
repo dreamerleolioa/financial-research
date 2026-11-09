@@ -46,22 +46,42 @@ class WorkHandlers:
         return method(claim)
 
     def collect_market_session(self, claim):
-        from ai_stock_sentinel.daily_radar.market_session import TwseMarketSessionProvider
+        from fastapi import HTTPException
+        from ai_stock_sentinel.daily_radar.market_session import TwseMarketSessionProvider, require_prepared_open_session
+        from ai_stock_sentinel.daily_radar.jobs import prepared_generation
+        def revision(row):
+            return (row.id, prepared_generation(row), fingerprint((row.step_statuses or {}).get('market-session'))) if row else None
+        expected = revision(get_daily_radar_prepared_run(self.db, run_date=claim.run_date, market='TW'))
         self.db.rollback()
         result = TwseMarketSessionProvider(request_get=self.getter).resolve(run_date=claim.run_date, market='TW')
         if result.run_date != claim.run_date or result.market != 'TW' or result.status not in {'open', 'closed'}:
             raise ValueError('market_session_identity_invalid')
         proof = {'status': result.status, 'run_date': str(result.run_date), 'market': result.market,
                  'provider': result.provider, 'dataset': result.dataset}
-        return Collected(lambda db: {'state': 'ready' if result.status == 'open' else 'terminal', 'result': proof})
+        def apply(db):
+            current = get_daily_radar_prepared_run(db, run_date=claim.run_date, market='TW')
+            if current is not None and result.status == 'open':
+                db.refresh(current, with_for_update=True)
+                if revision(current) == expected:
+                    current.step_statuses = dict(current.step_statuses or {}) | {'market-session': proof}
+                    require_prepared_open_session(current)
+                else:
+                    # Preserve a concurrent, valid preparation. An invalid new
+                    # revision must be recollected, not overwritten by this claim.
+                    try:
+                        require_prepared_open_session(current)
+                    except HTTPException as exc:
+                        raise ValueError('market_session_prepared_revision_changed') from exc
+            return {'state': 'ready' if result.status == 'open' else 'terminal', 'result': proof}
+        return Collected(apply)
 
     def collect_institutional(self, claim):
-        from ai_stock_sentinel.daily_radar.institutional_flow_repository import get_completed_institutional_snapshot, archive_institutional_report
+        from ai_stock_sentinel.daily_radar.institutional_flow_repository import get_completed_institutional_snapshot, archive_institutional_report, institutional_snapshot_is_complete
         from ai_stock_sentinel.daily_radar.institutional_flow_provider import OfficialTaiwanInstitutionalReportProvider
         from ai_stock_sentinel.daily_radar.institutional_flow_service import _validate_report_identity
         market = claim.scope['market']
         current = get_completed_institutional_snapshot(self.db, market=market, trade_date=claim.run_date)
-        if current and current.row_count > 0:
+        if institutional_snapshot_is_complete(current):
             return Collected(lambda db: {'state': 'ready', 'result': {'reused': True}})
         self.db.rollback()
         report = OfficialTaiwanInstitutionalReportProvider(request_get=self.getter, max_attempts=1).fetch_market(market=market, trade_date=claim.run_date)

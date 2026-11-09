@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import date, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import select, func, inspect
 
 from ai_stock_sentinel.calibration.forward_validation import is_terminal_forward_validation_skip_reason, parse_date
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
@@ -155,8 +155,9 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
     return reports
 
 
-def read_readiness(session, *, run_date: date, lookback_days=365):
-    """Caller holds a read-only/no-autoflush session; never fetches providers."""
+def scoring_prerequisite_inputs(session, *, run_date):
+    """Actual publication prerequisites without scanning validation history."""
+    from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
     prepared = get_daily_radar_prepared_run(session, run_date=run_date, market="TW")
     steps = prepared.step_statuses if prepared else {}
     blockers = []
@@ -171,7 +172,6 @@ def read_readiness(session, *, run_date: date, lookback_days=365):
                     "missing_symbols": data.get("missing_symbols", []),
                     "missing_symbol_reasons": data.get("missing_symbol_reasons", {}),
                     "next_action": "resume"})
-        from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
         if durable_enabled():
             from ai_stock_sentinel.daily_radar.integrity import background_gaps
             for step, missing in background_gaps(session, prepared).items():
@@ -189,6 +189,23 @@ def read_readiness(session, *, run_date: date, lookback_days=365):
                 "missing_symbols": detail.get("missing_symbols", []), "next_action": "resume"})
         if not prepared.market_context:
             blockers.append({"reason": "market_context_missing", "next_action": "resume"})
+    if durable_enabled():
+        from ai_stock_sentinel.daily_radar.pipeline_support import _required_institutional_archive_details
+        from ai_stock_sentinel.db.models import TaiwanInstitutionalReportSnapshot
+        try:
+            if not inspect(session.connection()).has_table(TaiwanInstitutionalReportSnapshot.__tablename__):
+                raise HTTPException(409, detail={'missing_markets': ['TW', 'TWO']})
+            _required_institutional_archive_details(session, run_date=run_date)
+        except HTTPException as exc:
+            blockers.append({'step': 'refresh-institutional-flows',
+                'reason': 'daily_radar_institutional_archive_incomplete',
+                'missing_markets': exc.detail.get('missing_markets', ['TW', 'TWO']), 'next_action': 'resume'})
+    return prepared, steps, blockers, cache_rows
+
+
+def read_readiness(session, *, run_date: date, lookback_days=365):
+    """Caller holds a read-only/no-autoflush session; never fetches providers."""
+    prepared, steps, blockers, cache_rows = scoring_prerequisite_inputs(session, run_date=run_date)
     run = session.scalar(select(DailyRadarRun).where(DailyRadarRun.id.in_(canonical_radar_run_ids(
         market="TW", start_date=run_date, end_date=run_date))))
     stored_selected_count = session.scalar(select(func.count()).select_from(DailyRadarCandidate).where(

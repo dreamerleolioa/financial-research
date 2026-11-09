@@ -28,4 +28,4 @@ def test_readiness_audit_requeues_deleted_raw_data_even_with_completed_status(db
     monkeypatch.setattr(readiness,'read_readiness',lambda *a,**k:report)
     reconcile_job(db,jid,now=NOW,audit=True)
     assert db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage=='ohlcv')).state=='pending'
-    assert db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage=='scoring')).state=='pending'
+    assert db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage=='scoring')).state=='waiting_dependency'

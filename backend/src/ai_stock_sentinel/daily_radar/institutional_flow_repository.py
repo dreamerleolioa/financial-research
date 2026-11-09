@@ -22,6 +22,15 @@ from ai_stock_sentinel.db.models import (
 DEFAULT_INSTITUTIONAL_FLOW_DATASET = "taiwan_institutional_flow"
 
 
+def institutional_snapshot_is_complete(snapshot: TaiwanInstitutionalReportSnapshot | None) -> bool:
+    """The same evidence contract governs readiness and collector cache reuse."""
+    return (snapshot is not None and snapshot.status == "completed" and snapshot.row_count > 0
+            and isinstance(snapshot.source_provider, str) and bool(snapshot.source_provider.strip())
+            and isinstance(snapshot.source_dataset, str) and bool(snapshot.source_dataset.strip())
+            and isinstance(snapshot.payload_hash, str) and len(snapshot.payload_hash) == 64
+            and all(c in "0123456789abcdef" for c in snapshot.payload_hash))
+
+
 class InstitutionalArchiveIntegrityError(RuntimeError):
     def __init__(self, code: str, *, market: str, trade_date: date) -> None:
         super().__init__(code)
@@ -407,6 +416,7 @@ def _is_postgresql(session: Session) -> bool:
 
 
 __all__ = [
+    "institutional_snapshot_is_complete",
     "DEFAULT_INSTITUTIONAL_FLOW_DATASET",
     "InstitutionalArchiveIntegrityError",
     "archive_institutional_report",

@@ -3,7 +3,7 @@ from collections import Counter
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
-from sqlalchemy import select, update, or_
+from sqlalchemy import select, update, or_, text
 from ai_stock_sentinel.db.models import RadarJob, RadarWorkItem, RadarJobWork, RadarWorkAttempt, DailyRadarPreparedRun
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 from ai_stock_sentinel.daily_radar.work_queue import ensure_work, insert, database_now, aware
@@ -96,8 +96,120 @@ def plan_windows(db, job, scope, *, now):
     scope['window_plan'] = plan
 
 
+def invalidate_prerequisites(db, members, *, steps, blockers, now):
+    """Requeue actual gaps with a CAS; never revoke another worker's lease."""
+    affected = []
+    for work, _ in sorted(members, key=lambda item: item[0].id):
+        stage = work.stage
+        if stage not in {'ohlcv', 'lending', 'full-margin', 'market-context', 'prepare', 'market-session', 'institutional'}:
+            continue
+        gap = any((b.get('step') == 'refresh-' + stage
+            or (stage == 'ohlcv' and b.get('reason') == 'daily_radar_raw_data_incomplete')
+            or (stage == 'market-context' and b.get('reason') == 'market_context_missing')
+            or (stage == 'prepare' and b.get('reason') in {'prepared_run_missing', 'market_session_evidence_missing_or_invalid'})
+            or (stage == 'prepare' and b.get('step') == 'refresh-institutional-flows')
+            or (stage == 'institutional' and b.get('reason') == 'daily_radar_institutional_archive_incomplete'
+                and (not b.get('missing_markets') or work.scope.get('market') in b['missing_markets']))
+            or (stage == 'market-session' and b.get('reason') == 'market_session_evidence_missing_or_invalid'))
+            and (not b.get('missing_symbols') or work.scope.get('symbol') in b['missing_symbols']) for b in blockers)
+        if stage in {'ohlcv', 'lending', 'full-margin', 'market-context'}:
+            step = steps.get('refresh-' + stage) or {}
+            missing = step.get('missing_symbols') or []
+            gap = gap or (step.get('status') != 'completed' and (
+                not missing or work.scope.get('symbol') in missing))
+        if not gap:
+            continue
+        if work.state != 'ready':
+            affected.append(work.work_key)
+            continue
+        changed = db.scalar(update(RadarWorkItem).where(RadarWorkItem.id == work.id,
+            RadarWorkItem.state == 'ready', RadarWorkItem.lease_token.is_(None)).values(
+                state='pending', reason='actual_data_gap', retry_at=now).returning(RadarWorkItem.id)
+                .execution_options(synchronize_session='fetch'))
+        if changed is not None:
+            affected.append(work.work_key)
+        else:
+            db.refresh(work)
+            if work.state != 'ready':
+                affected.append(work.work_key)
+    if not affected:
+        return
+    for work, _ in sorted(members, key=lambda item: item[0].id):
+        if work.stage != 'scoring' or work.state in {'running', 'superseded'}:
+            continue
+        db.execute(update(RadarWorkItem).where(RadarWorkItem.id == work.id,
+            RadarWorkItem.state == work.state, RadarWorkItem.lease_token.is_(None)).values(
+                state='waiting_dependency', reason='prerequisite_data_invalidated', retry_at=None,
+                dependencies=list(dict.fromkeys([*work.dependencies, *affected])))
+                .execution_options(synchronize_session='fetch'))
+
+
+def attach_shared_dependencies(db, job, members):
+    """An intent owns the retained dependency closure, including shared repairs."""
+    known = {w.work_key: (w, required) for w, required in members}
+    while True:
+        needed = {}
+        for work, required in known.values():
+            for key in work.dependencies:
+                if key not in known or (required and not known[key][1]):
+                    needed[key] = needed.get(key, False) or required
+        if not needed:
+            break
+        rows = db.scalars(select(RadarWorkItem).where(RadarWorkItem.work_key.in_(needed))
+            .order_by(RadarWorkItem.id).execution_options(populate_existing=True)).all()
+        if not rows:
+            break
+        for work in rows:
+            required = needed[work.work_key]
+            member(db, job, work, required=required)
+            known[work.work_key] = (work, required)
+    return sorted(known.values(), key=lambda item: item[0].id)
+
+
+def sync_dependencies(db, members):
+    keys = {w.work_key: w for w, _ in members}
+    for work, _ in sorted(members, key=lambda item: item[0].id):
+        values = {}
+        if work.state != 'running' and any(key not in keys for key in work.dependencies):
+            values = {'state': 'needs_review', 'reason': 'radar_dependency_missing', 'retry_at': None}
+        elif work.state == 'needs_review' and work.reason == 'radar_dependency_missing':
+            values = {'state': 'pending' if dependencies_ready(work, keys) else 'waiting_dependency',
+                      'reason': None, 'retry_at': None}
+        elif work.state in {'pending', 'waiting_dependency', 'waiting_provider'} and work.dependencies:
+            ready = dependencies_ready(work, keys)
+            if not ready:
+                values['state'] = 'waiting_dependency'
+            elif work.state != 'waiting_provider':
+                values['state'] = 'pending'
+        elif work.stage == 'scoring' and work.state in {'ready', 'terminal'} and work.dependencies:
+            if not dependencies_ready(work, keys):
+                values = {'state': 'waiting_dependency', 'reason': 'prerequisite_data_invalidated', 'retry_at': None}
+        if values and any(getattr(work, k) != v for k, v in values.items()):
+            changed = db.scalar(update(RadarWorkItem).where(RadarWorkItem.id == work.id,
+                RadarWorkItem.state == work.state, RadarWorkItem.lease_token.is_(None)).values(**values)
+                .returning(RadarWorkItem.id).execution_options(synchronize_session='fetch'))
+            if changed is None:
+                db.refresh(work)
+    return keys
+
+
+def dependencies_ready(work, keys, visiting=frozenset()):
+    if work.work_key in visiting:
+        return False
+    return all(key in keys and keys[key].state == 'ready' and dependencies_ready(
+        keys[key], keys, visiting | {work.work_key}) for key in work.dependencies)
+
+
 def reconcile_job(db, job_id, *, now=None, audit=False):
     now = database_now(db, now)
+    day = db.scalar(select(RadarJob.run_date).where(RadarJob.id == job_id))
+    if day is None:
+        raise ValueError('radar_job_not_found')
+    if db.get_bind().dialect.name == 'postgresql':
+        # Lanes share publication units. Serialize only reconciliation, before
+        # job/work row locks; provider collection/acceptance never takes this key.
+        key = int(fingerprint({'kind': 'radar-reconcile', 'market': 'TW', 'run_date': str(day)})[:15], 16)
+        db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': key})
     job = db.scalar(select(RadarJob).where(RadarJob.id == job_id).with_for_update().execution_options(populate_existing=True))
     if job is None:
         raise ValueError('radar_job_not_found')
@@ -184,14 +296,12 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
         if check.state == 'ready' and (check.result or {}).get('changed'):
             window.state, window.reason, window.retry_at = 'pending', 'source_revision_changed', now
     members = list(db.execute(select(RadarWorkItem, RadarJobWork.required).join(RadarJobWork).where(
-        RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True))).all())
-    keys = {w.work_key: w for w, _ in members}
+        RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True)).execution_options(populate_existing=True)).all())
+    members = attach_shared_dependencies(db, job, members)
+    sync_dependencies(db, members)
     for work, _ in members:
-        if work.state in {'pending', 'waiting_dependency'} and work.dependencies:
-            ready = all(key in keys and keys[key].state == 'ready' for key in work.dependencies)
-            work.state = 'pending' if ready else 'waiting_dependency'
-            if ready and work.retry_at is None:
-                work.retry_at = now
+        if work.state == 'pending' and work.retry_at is None:
+            work.retry_at = now
     required_done = all(w.state in {'ready', 'terminal'} for w, required in members if required)
     if audit and required_done:
         from ai_stock_sentinel.daily_radar.readiness import read_readiness
@@ -207,22 +317,25 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
             and all(report['validation'][lane]['ready'] for lane in ('signal_close', 'next_open') if lane in job.lanes))
         if not scope['intent_complete']:
             scope.pop('window_plan', None)
+            invalidate_prerequisites(db, members, steps=report['scoring']['steps'],
+                blockers=report['scoring']['blockers'], now=now)
             for work, _ in members:
                 if work.stage == 'scoring' and work.state == 'ready':
                     manifest = report['publication'].get('input_manifest') or {}
                     if not report['publication']['output_complete'] or not manifest.get('matches_current_inputs'):
                         work.state, work.retry_at = 'pending', now
-                if work.stage in {'ohlcv', 'lending', 'full-margin', 'market-context'} and work.state == 'ready':
-                    step = report['scoring']['steps'].get('refresh-' + work.stage) or {}
-                    actual_gap = any((b.get('step') == 'refresh-' + work.stage
-                        or (work.stage == 'ohlcv' and b.get('reason') == 'daily_radar_raw_data_incomplete'))
-                        and (not b.get('missing_symbols') or work.scope.get('symbol') in b['missing_symbols'])
-                        for b in report['scoring']['blockers'])
-                    if step.get('status') != 'completed' or actual_gap:
-                        work.state, work.retry_at = 'pending', now
     elif not required_done:
         scope['audit_ready'] = False
         scope['intent_complete'] = False
+    # Downstream failure must not suppress prerequisite repair. This cheaper
+    # audit is independent of validation/other lanes reaching completion.
+    if audit and not required_done and any(w.stage == 'scoring'
+            and w.state in {'ready', 'pending', 'waiting_dependency', 'waiting_provider', 'needs_review', 'failed_internal'}
+            for w, _ in members):
+        from ai_stock_sentinel.daily_radar.readiness import scoring_prerequisite_inputs
+        _, steps, blockers, _ = scoring_prerequisite_inputs(db, run_date=job.run_date)
+        invalidate_prerequisites(db, members, steps=steps, blockers=blockers, now=now)
+    sync_dependencies(db, members)
     job.scope = scope
     counts = Counter(w.state for w, _ in members)
     job.state = ('closed' if closed and scope.get('intent_complete') else 'ready' if scope.get('intent_complete')

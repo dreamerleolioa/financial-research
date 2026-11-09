@@ -26,6 +26,7 @@ from ai_stock_sentinel.daily_radar.institutional_archive_universe import (
 )
 from ai_stock_sentinel.daily_radar.institutional_flow_repository import (
     get_completed_institutional_snapshot,
+    institutional_snapshot_is_complete,
 )
 from ai_stock_sentinel.daily_radar.institutional_payloads import _institutional_payload, _mapping
 from ai_stock_sentinel.daily_radar.institutional_universe_provider import (
@@ -239,15 +240,7 @@ def _required_institutional_archive_details(
             trade_date=run_date,
         )
         payload_hash = snapshot.payload_hash if snapshot is not None else None
-        if (
-            snapshot is None
-            or snapshot.row_count <= 0
-            or not snapshot.source_provider.strip()
-            or not snapshot.source_dataset.strip()
-            or payload_hash is None
-            or len(payload_hash) != 64
-            or any(character not in "0123456789abcdef" for character in payload_hash)
-        ):
+        if not institutional_snapshot_is_complete(snapshot):
             missing_markets.append(market)
             continue
         snapshots[market] = {
