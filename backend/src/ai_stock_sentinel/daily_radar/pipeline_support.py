@@ -52,7 +52,9 @@ from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_indust
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun
 from ai_stock_sentinel.phase1_avwap.service import (
     DailyPriceProvider,
-    refresh_phase1_avwap_snapshots_for_symbols,
+    prepare_phase1_avwap_refresh_for_symbols,
+    collect_phase1_avwap_refresh,
+    persist_phase1_avwap_refresh,
 )
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_refresh_symbol_set
 
@@ -70,12 +72,14 @@ def _refresh_phase1_avwap_for_daily_radar(
     try:
         refresh_symbol_set = resolve_phase1_refresh_symbol_set(db, seed_symbols=symbols)
         refresh_symbols = refresh_symbol_set.symbols
-        result = refresh_phase1_avwap_snapshots_for_symbols(
+        preparation = prepare_phase1_avwap_refresh_for_symbols(
             db,
             symbols=refresh_symbols,
             data_date=run_date,
             provider=provider,
         )
+        db.rollback()
+        result = persist_phase1_avwap_refresh(db, collect_phase1_avwap_refresh(preparation))
         if result.missing_symbols:
             logger.warning(
                 "[DailyRadar] Phase 1 AVWAP refresh completed with missing snapshots run_date=%s missing_symbol_reasons=%s",

@@ -83,3 +83,11 @@ flowchart TD
 第三階段完整 gate 為 2,087 passed、1 skipped（44.47 秒），含隔離 PostgreSQL 17 的 migration、競爭領取、舊快照鎖、窗口續跑、CAS 與備份還原，以及真正 CLI 對 localhost HTTPS mock 的往返驗證。唯一未執行的是需要指定 exact runtime Docker image 的測試。完成自行 review 與一次完整獨立 review、兩次限定補審；核實並修正 6 項 findings，最後補審無 findings。
 
 返工包含補齊測試的 recovery 攔截、ORM／schema 替身，以及修正窗口 closure 的變數遮蔽。正式部署與歷史資料補修未執行；沒有可比較的任務基準，token usage 未取得，不據此宣稱整體效率提升。
+
+### AVWAP 批次的交易擁有者
+
+AVWAP provider 不 commit 或 rollback 呼叫者的 session；ORM 的 `new`／`dirty`／`deleted` 皆為空，仍可能存在已 flush 但未提交的寫入。批次 refresh 先準備全部 DB 證據與 fresh snapshot 身分，再收集全部行情與 missing／不適用診斷，最後才寫 snapshots。讀取到的 archive 結果轉為純資料，結束讀交易後不再因行情收集而查詢 DB。
+
+`refresh-avwap` 與單次 Radar 的 AVWAP 呼叫入口在已知只讀的 prepare phase 後明確結束交易；durable worker 同樣在取得來源 lease 前準備 archive inputs。共用 refresh 函式保留呼叫者已 flush 的寫入，持久化階段只 flush，commit／rollback 仍由呼叫者負責。回歸會在新 session 重讀已提交資料，核對整批 fresh、missing、reused 狀態與 API 計數，而非只檢查回應筆數。
+
+本次 AVWAP 修正驗證：原問題的 6 個回歸案例先失敗，修正後完整 gate 為 2,106 passed、1 skipped（48.12 秒），包含 PostgreSQL 提交後重讀與無 DB 連線的 fallback；唯一 skip 仍需指定 runtime Docker image。完成一輪乾淨自行 review 與一輪完整 Codex 獨立 review，無剩餘 findings。測試準備另修正 fixture 必填欄位與隔離 socket 路徑，未放寬檢查；production 未補跑，usage 與可比較的任務基準未取得。

@@ -233,8 +233,10 @@ class ArchiveFirstDailyPriceProvider:
             raise ValueError("invalid DAILY_RADAR_AVWAP_PROVIDER_MODE")
         self._min_trading_bars = max(1, min_trading_bars)
         self._archive_dates: dict[tuple[str, date, date], list[date]] = {}
+        self._prepared_results: dict[tuple[str, date, date], DailyPriceHistoryResult | Exception | None] | None = None
 
     def begin_refresh(self) -> None:
+        self._prepared_results = None
         self._archive_dates.clear()
         reset = getattr(self._fallback_provider, "begin_refresh", None)
         if callable(reset):
@@ -267,19 +269,39 @@ class ArchiveFirstDailyPriceProvider:
             end_date=end_date,
         ).bars
 
+    def prepare_fetch(self, symbols, *, start_date: date, end_date: date) -> None:
+        """Read all archive evidence before the owner ends its read transaction."""
+        self._prepared_results = None
+        self._archive_dates.clear()
+        captured = {}
+        for symbol in dict.fromkeys(symbols):
+            key = (symbol, start_date, end_date)
+            try:
+                captured[key] = self._archive_history_result(symbol, start_date=start_date, end_date=end_date)
+            except (DailyPriceProviderError, FinMindClientError, KeyError, ValueError) as exc:
+                captured[key] = exc
+        self._prepared_results = captured
+
     def fetch_history_result(
-        self,
-        symbol: str,
-        *,
-        start_date: date,
-        end_date: date,
+        self, symbol: str, *, start_date: date, end_date: date,
     ) -> DailyPriceHistoryResult:
+        if self._prepared_results is None:
+            result = self._archive_history_result(symbol, start_date=start_date, end_date=end_date)
+        else:
+            key = (symbol, start_date, end_date)
+            if key not in self._prepared_results:
+                raise DailyPriceProviderError("daily_price_history_scope_mismatch")
+            result = self._prepared_results[key]
+            if isinstance(result, Exception):
+                raise result
+        return result if result is not None else self._fallback_result(
+            symbol, start_date=start_date, end_date=end_date)
+
+    def _archive_history_result(
+        self, symbol: str, *, start_date: date, end_date: date,
+    ) -> DailyPriceHistoryResult | None:
         if self._provider_mode in {"yfinance_only", "remote_only"}:
-            return self._fallback_result(
-                symbol,
-                start_date=start_date,
-                end_date=end_date,
-            )
+            return None
         rows = get_taiwan_daily_bars(
             self._session,
             symbols=[symbol],
@@ -326,11 +348,7 @@ class ArchiveFirstDailyPriceProvider:
                 )
         self._check_short_listed_history(symbol, rows=rows, start_date=start_date, end_date=end_date)
         if self._provider_mode in {"official_first", "archive_first"}:
-            return self._fallback_result(
-                symbol,
-                start_date=start_date,
-                end_date=end_date,
-            )
+            return None
         return DailyPriceHistoryResult(
             bars=[],
             source_provider="taiwan_daily_bars",
@@ -382,11 +400,6 @@ class ArchiveFirstDailyPriceProvider:
         start_date: date,
         end_date: date,
     ) -> DailyPriceHistoryResult:
-        from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
-        if durable_enabled():
-            if self._session.new or self._session.dirty or self._session.deleted:
-                raise ValueError("radar_network_with_pending_writes")
-            self._session.rollback()
         evidence = listing_evidence(symbol, as_of_date=end_date)
         if evidence is not None:
             start_date = max(start_date, evidence.listing_date)

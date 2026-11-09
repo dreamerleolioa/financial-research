@@ -89,7 +89,9 @@ from ai_stock_sentinel.db.models import StockRawData
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.phase1_avwap.service import (
     DailyPriceProvider,
-    refresh_phase1_avwap_snapshots_for_symbols,
+    prepare_phase1_avwap_refresh_for_symbols,
+    collect_phase1_avwap_refresh,
+    persist_phase1_avwap_refresh,
 )
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_refresh_symbol_set
 
@@ -229,12 +231,14 @@ def refresh_daily_radar_avwap_endpoint(
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
     refresh_symbol_set = resolve_phase1_refresh_symbol_set(db, seed_symbols=list(prepared.selected_symbols))
     refresh_symbols = refresh_symbol_set.symbols
-    result = refresh_phase1_avwap_snapshots_for_symbols(
+    preparation = prepare_phase1_avwap_refresh_for_symbols(
         db,
         symbols=refresh_symbols,
         data_date=run_date,
         provider=provider,
     )
+    db.rollback()
+    result = persist_phase1_avwap_refresh(db, collect_phase1_avwap_refresh(preparation))
     status = "failed" if result.missing_symbols else "completed"
     missing_symbol_reasons = dict(result.missing_symbol_reasons)
     skipped_symbol_reasons = {**refresh_symbol_set.skipped_symbol_reasons, **result.skipped_symbol_reasons}

@@ -298,6 +298,8 @@ class WorkHandlers:
         reusable = existing is not None and existing.freshness == 'fresh'
         provider = ArchiveFirstDailyPriceProvider(self.db,
             fallback_provider=TwseDailyPriceProvider(request_get=self.getter, month_fetch_workers=1))
+        if not reusable:
+            provider.prepare_fetch([symbol], start_date=claim.run_date - timedelta(days=120), end_date=claim.run_date)
         self.db.rollback()
         history, terminal_error = None, None
         if not reusable:
