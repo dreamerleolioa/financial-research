@@ -111,7 +111,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
 
     def skip(reason, *, pending=False, missing_dates=(), target_date=None):
         return base | {"status": "pending" if pending else "skipped", "target_date": None,
-                       "skip_reason": reason, "outcome": {"missing_dates": [str(d) for d in missing_dates],
+                       "skip_reason": reason, "outcome": {"return_basis": "next_open", "price_basis": RESEARCH_PRICE_BASIS,
+                       "missing_dates": [str(d) for d in missing_dates],
                        "expected_target_date": str(target_date) if target_date else None}}
 
     if signal is None:
@@ -156,6 +157,7 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
         return skip("missing_entry_open")
     if benchmark_entry is None or benchmark_entry <= 0:
         return skip("missing_benchmark_entry_open")
+    split_event = None
     for series in (prices, benchmark):
         for day in days:
             row = series[day]
@@ -169,13 +171,21 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             if split is None or number(row.get("dividends")) is None:
                 return skip("corporate_action_provenance_missing")
             if split not in (0, 1):
-                return skip("stock_split_in_window")
+                split_event = {"date": str(day), "ratio": split,
+                    "symbol": candidate["symbol"] if series is prices else benchmark_symbol,
+                    "price_source": row["price_source"], "corporate_actions_checked": True,
+                    "corporate_action_source": row.get("corporate_action_source"),
+                    "corporate_action_coverage": row.get("corporate_action_coverage")}
             high, low, close = (number(row.get(key)) for key in ("high", "low", "close"))
             open_ = number(row.get("open"))
             if (high is None or low is None or close is None or min(high, low, close) <= 0
                     or low > close or high < close or low > high
                     or (open_ is not None and (open_ <= 0 or not low <= open_ <= high))):
                 return skip("invalid_research_ohlc")
+    if split_event is not None:
+        row = skip("stock_split_in_window", target_date=days[-1])
+        row["outcome"].update(session_dates=[str(d) for d in days], split_event=split_event)
+        return row
     target = prices[days[-1]]["close"]
     gross = pct_return(entry, target)
     benchmark_return = pct_return(benchmark_entry, benchmark[days[-1]]["close"])
@@ -274,7 +284,7 @@ def _classify_corporate_action(row, yahoo, marked, benchmark, *, as_of_date, pro
         evidence["prior_expected_target_date"] = str(target)
     if row["outcome"].get("missing_dates"):
         evidence["prior_missing_dates"] = row["outcome"]["missing_dates"]
-    return row | {"skip_reason": reason, "outcome": row["outcome"] | {
+    return row | {"skip_reason": reason, "target_date": verified_target, "outcome": row["outcome"] | {
         "expected_target_date": verified_target,
         "missing_dates": [],
         corporate_actions.PROVENANCE_KEY: evidence,

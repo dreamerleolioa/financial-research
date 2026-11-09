@@ -12,7 +12,7 @@ from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDO
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 from ai_stock_sentinel.daily_radar.dependencies import DAILY_RADAR_REQUIRED_REFRESH_STEPS
 from ai_stock_sentinel.daily_radar.forward_validation import (
-    FORWARD_VALIDATION_VERSION, forward_validation_candidates_from_runs, _proven_termination,
+    FORWARD_VALIDATION_VERSION, forward_validation_candidates_from_runs,
     persisted_forward_validation_outcomes,
 )
 from ai_stock_sentinel.daily_radar.market_session import require_prepared_open_session
@@ -27,6 +27,7 @@ from ai_stock_sentinel.daily_radar.research_validation import (
     RESEARCH_VALIDATION_VERSION, RESEARCH_TERMINAL_REASONS, RESEARCH_PRICE_BASIS,
 )
 from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
+from ai_stock_sentinel.daily_radar.terminal_integrity import terminal_evidence_matches
 from ai_stock_sentinel.db.models import DailyRadarRun, DailyRadarCandidate
 
 
@@ -71,10 +72,8 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar):
         reason = row["skip_reason"] or "validation_not_available"
         terminal = (reason in RESEARCH_TERMINAL_REASONS if basis == "next_open"
                     else is_terminal_forward_validation_skip_reason(reason))
-        if reason == "trading_terminated_in_window" and not (
-                parse_date(row["target_date"]) == target and _proven_termination(
-                    symbol=candidate["symbol"], signal_date=signal, target_date=target,
-                    evaluation_date=parse_date(row["evaluation_as_of_date"]), payload=row["outcome"])):
+        if terminal and not terminal_evidence_matches(candidate, row, basis=basis,
+                sessions=future[:window], as_of_date=as_of_date):
             terminal, reason = False, "terminal_evidence_unverified"
         state = "terminal" if terminal else "retryable"
     elif row["target_date"] != str(target):
