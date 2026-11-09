@@ -1253,6 +1253,7 @@ class RadarSourceSnapshot(Base):
     __tablename__ = "radar_source_snapshots"
     __table_args__ = (
         Index("idx_radar_source_request_captured", "request_hash", "captured_at", "id"),
+        Index("idx_radar_source_sdk_interval", "sdk_operation", "sdk_symbol", "sdk_start_date", "sdk_end_date", "captured_at"),
         CheckConstraint("expires_at > captured_at", name="ck_radar_source_expiry"),
         CheckConstraint("length(request_hash) = 64 AND length(payload_hash) = 64", name="ck_radar_source_hashes"),
     )
@@ -1260,9 +1261,13 @@ class RadarSourceSnapshot(Base):
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     request: Mapped[dict] = mapped_column(JSONB, nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict | list] = mapped_column(JSONB, nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sdk_operation: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    sdk_symbol: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    sdk_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    sdk_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
 class RadarInputManifest(Base):
@@ -1288,3 +1293,78 @@ class RadarRunInput(Base):
     manifest_id: Mapped[int] = mapped_column(ForeignKey("radar_input_manifests.id", ondelete="RESTRICT"), nullable=False)
     output_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RadarJob(Base):
+    __tablename__ = "radar_jobs"
+    __table_args__ = (UniqueConstraint("job_key", name="uq_radar_job_key"),
+                     Index("idx_radar_job_due", "next_attempt_at", "id"))
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), Identity(), primary_key=True)
+    job_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    lanes: Mapped[list] = mapped_column(JSONB, nullable=False)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_advanced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RadarWorkItem(Base):
+    __tablename__ = "radar_work_items"
+    __table_args__ = (
+        UniqueConstraint("work_key", name="uq_radar_work_key"),
+        Index("idx_radar_work_due", "state", "retry_at", "priority", "id"),
+        CheckConstraint("state IN ('pending','waiting_dependency','waiting_provider','running','ready','terminal',"
+                        "'needs_review','failed_internal','superseded')", name="ck_radar_work_state"),
+        CheckConstraint("(state = 'running' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL) OR "
+                        "(state <> 'running' AND lease_token IS NULL AND lease_expires_at IS NULL)", name="ck_radar_work_lease"),
+        CheckConstraint("attempt_count >= 0 AND length(work_key) = 64 AND length(input_revision) = 64", name="ck_radar_work_identity"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), Identity(), primary_key=True)
+    work_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    identity: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    stage: Mapped[str] = mapped_column(String(60), nullable=False)
+    lane: Mapped[str] = mapped_column(String(32), nullable=False)
+    run_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    input_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    dependencies: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    not_before: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class RadarJobWork(Base):
+    __tablename__ = "radar_job_work"
+    __table_args__ = (Index("idx_radar_job_work_work", "work_id"),)
+    job_id: Mapped[int] = mapped_column(ForeignKey("radar_jobs.id", ondelete="RESTRICT"), primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("radar_work_items.id", ondelete="RESTRICT"), primary_key=True)
+    required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class RadarWorkAttempt(Base):
+    __tablename__ = "radar_work_attempts"
+    __table_args__ = (UniqueConstraint("lease_token", name="uq_radar_attempt_token"),
+                     Index("idx_radar_attempt_work", "work_id", "id"))
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), Identity(), primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("radar_work_items.id", ondelete="RESTRICT"), nullable=False)
+    lease_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

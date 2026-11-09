@@ -21,11 +21,13 @@ from ai_stock_sentinel.daily_radar.service import run_daily_radar
 from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_fixture_records
 
 
-def prepare(engine):
+def prepare(engine, *, full=False):
     for model in (DailyRadarRun, DailyRadarCandidate, Phase1AvwapSnapshot):
         model.__table__.create(engine)
     with engine.begin() as connection:
         _migration(connection, 'cd4e5f6a7b8c_add_radar_evidence_snapshots.py')
+        if full:
+            _migration(connection, 'de5f6a7b8c9d_add_radar_durable_work.py')
 
 
 def test_evidence_migration_roundtrip_preserves_existing_runs(pg_engine):
@@ -67,7 +69,7 @@ def test_concurrent_identical_scoring_publishes_one_atomic_revision(pg_engine, m
 
 
 def test_evidence_capture_releases_all_connections_before_http(pg_engine):
-    prepare(pg_engine)
+    prepare(pg_engine, full=True)
     def fetch():
         assert pg_engine.pool.checkedout() == 0
         return {'stat': 'OK', 'data': []}
@@ -90,7 +92,7 @@ def test_publication_reserves_history_before_freezing_inputs(pg_engine):
 
 
 def test_cached_provenance_survives_jsonb_parameter_reordering(pg_engine):
-    prepare(pg_engine)
+    prepare(pg_engine, full=True)
     kwargs = dict(provider='twse', url='https://www.twse.com.tw/indicesReport/MI_5MINS_HIST',
         params={'response': 'json', 'date': '20261101'}, fetch=lambda: {'stat': 'OK'})
     first = SourceSnapshotStore(pg_engine).capture(**kwargs)

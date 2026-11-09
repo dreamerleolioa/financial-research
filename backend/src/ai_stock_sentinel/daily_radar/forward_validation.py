@@ -514,12 +514,23 @@ def _candidate_benchmark_column():
     return DailyRadarCandidate.input_snapshot["replay_input"]["market_context"]["benchmark"]["symbol"].as_json()
 
 
+def forward_validation_result_revision(row):
+    if row is None:
+        return None
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+    return fingerprint({key: (value.isoformat() if isinstance(value, (date, datetime)) else value)
+        for key in ('id', 'status', 'signal_date', 'target_date', 'benchmark_symbol',
+                    'evaluation_as_of_date', 'skip_reason', 'outcome', 'updated_at')
+        for value in [getattr(row, key)]})
+
+
 def upsert_forward_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
     *,
     terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
     require_existing_conflict: bool = False,
+    expected_revisions: Mapping[tuple, str | None] | None = None,
 ) -> dict[str, int]:
     outcome_rows = sorted(
         (row for row in outcomes if row.get("candidate_id") is not None),
@@ -587,6 +598,14 @@ def upsert_forward_validation_results(
         # reviewed history after the discovery-time exclusion has already run.
         statement = statement.with_for_update().execution_options(populate_existing=True)
         existing = session.execute(statement).scalar_one_or_none()
+        incoming_cutoff = _parse_date(outcome.get('evaluation_as_of_date'))
+        if expected_revisions is not None and existing is not None and existing.evaluation_as_of_date is not None and (
+                incoming_cutoff is None or existing.evaluation_as_of_date > incoming_cutoff):
+            continue
+        key = (int(candidate_id), int(outcome['window_days']), str(outcome['validation_version']))
+        if expected_revisions is not None and (key not in expected_revisions
+                or forward_validation_result_revision(existing) != expected_revisions[key]):
+            continue
         if existing is not None and _mapping(existing.outcome).get("historical_repair"):
             continue
         payload = dict(_mapping(outcome.get("outcome")))

@@ -9,6 +9,7 @@ from sqlalchemy import select, func
 
 from ai_stock_sentinel.calibration.forward_validation import is_terminal_forward_validation_skip_reason, parse_date
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
+from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 from ai_stock_sentinel.daily_radar.dependencies import DAILY_RADAR_REQUIRED_REFRESH_STEPS
 from ai_stock_sentinel.daily_radar.forward_validation import (
     FORWARD_VALIDATION_VERSION, forward_validation_candidates_from_runs, _proven_termination,
@@ -51,6 +52,49 @@ def _needs_diagnostic(candidate):
             and origin.get("candidate_id") == candidate["candidate_id"])
 
 
+def classify_window(candidate, row, *, basis, window, as_of_date, calendar):
+    """One shared readiness decision for reports and persisted work completion."""
+    signal = date.fromisoformat(candidate["record_date"])
+    calendar_ready = calendar is not None and calendar.through >= as_of_date
+    future = [d for d in calendar.sessions if signal < d <= as_of_date] if calendar_ready else []
+    target = future[window - 1] if len(future) >= window else None
+    reason, state = None, "validated"
+    if not calendar_ready:
+        state, reason = "unknown_maturity", "official_calendar_unavailable"
+    elif signal not in calendar.sessions:
+        state, reason = "invalid_window", "non_trading_signal_date"
+    elif target is None:
+        state = "immature"
+    elif row is None:
+        state, reason = "missing_outcome", "validation_outcome_missing"
+    elif row["status"] == "skipped":
+        reason = row["skip_reason"] or "validation_not_available"
+        terminal = (reason in RESEARCH_TERMINAL_REASONS if basis == "next_open"
+                    else is_terminal_forward_validation_skip_reason(reason))
+        if reason == "trading_terminated_in_window" and not (
+                parse_date(row["target_date"]) == target and _proven_termination(
+                    symbol=candidate["symbol"], signal_date=signal, target_date=target,
+                    evaluation_date=parse_date(row["evaluation_as_of_date"]), payload=row["outcome"])):
+            terminal, reason = False, "terminal_evidence_unverified"
+        state = "terminal" if terminal else "retryable"
+    elif row["target_date"] != str(target):
+        state, reason = "invalid_window", "calendar_window_mismatch"
+    elif basis == "next_open" and (
+            row["outcome"].get("return_basis") != "next_open"
+            or row["outcome"].get("price_basis") != RESEARCH_PRICE_BASIS):
+        state, reason = "invalid_window", "research_basis_mismatch"
+    elif basis == "signal_close" and _needs_diagnostic(candidate):
+        diagnostic = row["outcome"].get("observation_diagnostic") or {}
+        if (diagnostic.get("version") != OBSERVATION_DIAGNOSTIC_VERSION
+                or diagnostic.get("status") == "not_first_observation"
+                or diagnostic.get("first_seen_date") not in (None, candidate["record_date"])):
+            state, reason = "missing_diagnostic", "missing_observation_diagnostic"
+        elif (diagnostic.get("status") not in EVENT_STATUSES | {"already_broken_out", "already_invalidated"}
+              or diagnostic.get("missing_reason")):
+            state, reason = "missing_diagnostic", "observation_diagnostic_incomplete"
+    return state, reason, target
+
+
 def inventory_items(session, *, as_of_date, lookback_days=365):
     """Yield every expected window, including absent outcomes and diagnostics.
 
@@ -74,45 +118,13 @@ def inventory_items(session, *, as_of_date, lookback_days=365):
             if not r.get("evaluation_as_of_date") or r["evaluation_as_of_date"] <= str(as_of_date)}
         for candidate in active:
             signal = date.fromisoformat(candidate["record_date"])
-            future = [d for d in calendar.sessions if signal < d <= as_of_date] if calendar_ready else []
             for window in DAILY_RADAR_VALIDATION_WINDOWS:
                 row = saved.get((candidate["candidate_id"], window))
-                target = future[window - 1] if len(future) >= window else None
-                reason, state = None, "validated"
-                if not calendar_ready:
-                    state, reason = "unknown_maturity", "official_calendar_unavailable"
-                elif signal not in calendar.sessions:
-                    state, reason = "invalid_window", "non_trading_signal_date"
-                elif target is None:
-                    state = "immature"
-                elif row is None:
-                    state, reason = "missing_outcome", "validation_outcome_missing"
-                elif row["status"] == "skipped":
-                    reason = row["skip_reason"] or "validation_not_available"
-                    terminal = (reason in RESEARCH_TERMINAL_REASONS if basis == "next_open"
-                                else is_terminal_forward_validation_skip_reason(reason))
-                    if reason == "trading_terminated_in_window" and not (
-                            parse_date(row["target_date"]) == target and _proven_termination(
-                                symbol=candidate["symbol"], signal_date=signal, target_date=target,
-                                evaluation_date=parse_date(row["evaluation_as_of_date"]), payload=row["outcome"])):
-                        terminal, reason = False, "terminal_evidence_unverified"
-                    state = "terminal" if terminal else "retryable"
-                elif row["target_date"] != str(target):
-                    state, reason = "invalid_window", "calendar_window_mismatch"
-                elif basis == "next_open" and (
-                        row["outcome"].get("return_basis") != "next_open"
-                        or row["outcome"].get("price_basis") != RESEARCH_PRICE_BASIS):
-                    state, reason = "invalid_window", "research_basis_mismatch"
-                elif basis == "signal_close" and _needs_diagnostic(candidate):
-                    diagnostic = row["outcome"].get("observation_diagnostic") or {}
-                    if (diagnostic.get("version") != OBSERVATION_DIAGNOSTIC_VERSION
-                            or diagnostic.get("status") == "not_first_observation"
-                            or diagnostic.get("first_seen_date") not in (None, candidate["record_date"])):
-                        state, reason = "missing_diagnostic", "missing_observation_diagnostic"
-                    elif (diagnostic.get("status") not in EVENT_STATUSES | {"already_broken_out", "already_invalidated"}
-                          or diagnostic.get("missing_reason")):
-                        state, reason = "missing_diagnostic", "observation_diagnostic_incomplete"
+                state, reason, target = classify_window(candidate, row, basis=basis, window=window,
+                    as_of_date=as_of_date, calendar=calendar)
                 yield {"candidate_id": candidate["candidate_id"], "symbol": candidate["symbol"],
+                    "candidate_revision": fingerprint(candidate),
+                    "calendar_revision": fingerprint([str(d) for d in calendar.sessions if signal <= d <= target]) if target else None,
                     "signal_date": str(signal), "return_basis": basis, "validation_version": version,
                     "window_days": window, "expected_target_date": str(target) if target else None,
                     "state": state, "reason": reason, "next_action": recovery_action(reason) if reason else None}
@@ -160,6 +172,13 @@ def read_readiness(session, *, run_date: date, lookback_days=365):
                     "missing_symbols": data.get("missing_symbols", []),
                     "missing_symbol_reasons": data.get("missing_symbol_reasons", {}),
                     "next_action": "resume"})
+        from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+        if durable_enabled():
+            from ai_stock_sentinel.daily_radar.integrity import background_gaps
+            for step, missing in background_gaps(session, prepared).items():
+                if missing:
+                    blockers.append({'step': step, 'reason': 'same_day_context_incomplete',
+                        'missing_symbols': missing, 'next_action': 'resume'})
         try:
             require_prepared_open_session(prepared)
             cache_rows = _require_complete_daily_radar_raw_rows(get_final_raw_data_rows_for_symbols(

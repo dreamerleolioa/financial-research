@@ -27,6 +27,18 @@ TPEX_STOCK_PATH = "/www/zh-tw/afterTrading/tradingStock"
 OHLC_FIELDS = ("open", "high", "low", "close")
 
 
+class ResearchSourceError(ValueError):
+    def __init__(self, reason, *, retryable, http_status=None, retry_after=None):
+        super().__init__(reason)
+        self.retryable, self.http_status, self.retry_after = retryable, http_status, retry_after
+
+
+def _budget_exhausted():
+    error = TimeoutError("research_recovery_budget_exhausted")
+    error.local_budget_exhausted = True
+    return error
+
+
 def _number(value):
     try:
         value = float(str(value).replace(",", ""))
@@ -88,6 +100,9 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         try:
             if self.source_store is not None:
                 self._release_read_transaction()
+                from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+                if durable_enabled():
+                    return self._fetch_source_units(supported, start_date=start_date, end_date=end_date)
                 operation = "research-unadjusted-history"
                 params = {symbol: {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
                     "auto_adjust": False, "actions": True} for symbol in supported}
@@ -103,12 +118,35 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     if fresh.get(symbol):
                         captured[symbol] = self.source_store.capture_sdk(operation=operation, params=params[symbol],
                             fetch=lambda symbol=symbol: {"rows": fresh[symbol]}, reuse=False)
-                return {symbol: [dict(row) | {"source_capture": proof} for row in payload["rows"]]
+                return {symbol: [dict(row) | {"source_capture": proof} for row in payload["rows"]
+                                if start_date <= date.fromisoformat(row["date"]) <= end_date]
                         for symbol, item in captured.items() if item is not None for payload, proof in [item]}
             return super().fetch(supported, start_date=start_date, end_date=end_date)
         except Exception as exc:
             self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": supported})
             return {}
+
+    def _fetch_source_units(self, symbols, *, start_date, end_date):
+        result = {}
+        for symbol in symbols:
+            params = {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
+                      "auto_adjust": False, "actions": True}
+            try:
+                captured = self.source_store.lookup_sdk(operation="research-unadjusted-history", params=params)
+                if captured is None:
+                    def fetch(symbol=symbol):
+                        rows = super(RecoveringResearchPriceProvider, self).fetch(
+                            [symbol], start_date=start_date, end_date=end_date)
+                        if not rows.get(symbol):
+                            raise RuntimeError("forward_price_provider_returned_no_data")
+                        return {"rows": rows[symbol]}
+                    captured = self.source_store.capture_sdk(operation="research-unadjusted-history", params=params, fetch=fetch)
+                payload, proof = captured
+                result[symbol] = [dict(row) | {"source_capture": proof} for row in payload["rows"]
+                    if start_date <= date.fromisoformat(row["date"]) <= end_date]
+            except Exception as exc:
+                self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": [symbol]})
+        return result
 
     def _release_read_transaction(self):
         if self.session is not None:
@@ -128,7 +166,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             remaining = self.deadline - self.clock()
             if remaining <= 0 or self.request_count >= self.max_requests:
                 self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
-                raise TimeoutError("research_recovery_budget_exhausted")
+                raise _budget_exhausted()
             self.request_count += 1
             kwargs = {"params": params, "timeout": min(8, remaining)}
             if getter is self.official_getter and getter is official_request_get:
@@ -162,11 +200,12 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     continue
                 if retryable and attempt < attempts:
                     self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
-                    raise TimeoutError("research_recovery_budget_exhausted") from exc
-                raise ValueError(reason) from exc
+                    raise _budget_exhausted() from exc
+                raise ResearchSourceError(reason, retryable=retryable, http_status=status,
+                    retry_after=headers.get("Retry-After")) from exc
             if self.clock() > self.deadline:
                 self.budget_limit = "deadline"
-                raise TimeoutError("research_recovery_budget_exhausted")
+                raise _budget_exhausted()
             return payload
 
     def _official_month(self, symbol, month):

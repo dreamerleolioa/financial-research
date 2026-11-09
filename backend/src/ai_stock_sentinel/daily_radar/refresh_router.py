@@ -114,6 +114,11 @@ def prepare_daily_radar_universe_endpoint(
     request = payload or DailyRadarPreparedRunRequest()
     run_date = request.run_date or dependencies._backend_today()
     session_proof = require_open_session(market_session_provider, run_date=run_date, market=request.market)
+    return persist_prepared_universe(db, request=request, run_date=run_date,
+        universe_provider=universe_provider, session_proof=session_proof)
+
+
+def persist_prepared_universe(db, *, request, run_date, universe_provider, session_proof, commit=True):
     institutional_archive = _required_institutional_archive_details(
         db,
         run_date=run_date,
@@ -196,7 +201,8 @@ def prepare_daily_radar_universe_endpoint(
         status="completed",
         details={"symbol_count": len(selected_symbols), "market_exploration": exploration_audit},
     )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarPreparedRunResponse(
         status="prepared",
         run_date=prepared.run_date,
@@ -438,7 +444,7 @@ def refresh_daily_radar_ohlcv_endpoint(
         raise
 
 
-def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher, fetched_payloads, market_bars):
+def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher, fetched_payloads, market_bars, commit=True):
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
     db.refresh(prepared, with_for_update=True)
     if (prepared.id, prepared.selected_symbols, prepared.universe) != snapshot:
@@ -529,7 +535,8 @@ def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher
             "skipped_symbol_reasons": skipped_symbol_reasons,
         },
     )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarRefreshStepResponse(
         status=status,
         step="refresh-ohlcv",
@@ -558,9 +565,14 @@ def refresh_daily_radar_market_context_endpoint(
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
-    market_context = dict(
-        market_context_provider.build(run_date=run_date, market=request.market)
-    )
+    db.rollback()
+    market_context = dict(market_context_provider.build(run_date=run_date, market=request.market))
+    return persist_market_context(db, request=request, run_date=run_date, market_context=market_context)
+
+
+def persist_market_context(db, *, request, run_date, market_context, commit=True):
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    db.refresh(prepared, with_for_update=True)
     error = market_context_refresh_error(market_context, run_date=run_date)
     reused_existing_context = False
     if error is not None and prepared.market_context:
@@ -594,7 +606,8 @@ def refresh_daily_radar_market_context_endpoint(
             "errors": errors,
         },
     )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarRefreshStepResponse(
         status=status,
         step="refresh-market-context",

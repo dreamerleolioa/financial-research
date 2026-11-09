@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from ai_stock_sentinel.daily_radar import (
     managed_raw_data_router,
+    jobs_router,
     maintenance_router,
     read_router,
     readiness_router,
@@ -18,5 +19,6 @@ router.include_router(maintenance_router.router)
 router.include_router(run_router.router)
 router.include_router(read_router.router)
 router.include_router(readiness_router.router)
+router.include_router(jobs_router.router)
 
 __all__ = ["router"]

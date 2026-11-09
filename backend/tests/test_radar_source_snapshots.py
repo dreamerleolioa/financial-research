@@ -175,3 +175,16 @@ def test_one_shot_run_archives_with_a_single_connection(archive, monkeypatch):
         assert db.scalar(select(SharedBackgroundContext.id).limit(1)) is not None
         assert db.scalar(select(Phase1AvwapSnapshot.id).limit(1)) is not None
     engine.dispose()
+
+
+def test_covering_snapshot_is_reused_without_returning_future_prices(archive, monkeypatch):
+    from ai_stock_sentinel.calibration.price_provider import YFinanceResearchPriceProvider
+    store = SourceSnapshotStore(archive)
+    store.capture_sdk(operation='research-unadjusted-history', params={'symbol': '2330.TW',
+        'start_date': '2026-11-01', 'end_date': '2026-11-06', 'auto_adjust': False, 'actions': True},
+        fetch=lambda: {'rows': [{'date': day, 'close': 100, 'price_basis': 'unadjusted_price'}
+            for day in ['2026-11-02', '2026-11-05', '2026-11-06']]})
+    monkeypatch.setattr(YFinanceResearchPriceProvider, 'fetch', lambda *args, **kwargs: pytest.fail('covering data re-fetched'))
+    result = RecoveringResearchPriceProvider(source_store=store).fetch(['2330.TW'],
+        start_date=date(2026, 11, 5), end_date=date(2026, 11, 5))
+    assert [row['date'] for row in result['2330.TW']] == ['2026-11-05']

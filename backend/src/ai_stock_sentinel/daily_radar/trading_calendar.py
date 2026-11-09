@@ -137,6 +137,19 @@ def load_calendar(session, *, start_date, as_of_date):
             continue
         if calendar.through <= as_of_date:
             evidence.append(calendar)
+    from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+    if durable_enabled():
+        from ai_stock_sentinel.db.models import RadarWorkItem
+        if inspect(session.connection()).has_table(RadarWorkItem.__tablename__):
+            saved = session.scalars(select(RadarWorkItem.result).where(RadarWorkItem.stage == 'calendar',
+                RadarWorkItem.state == 'ready', RadarWorkItem.run_date <= as_of_date))
+            for result in saved:
+                try:
+                    calendar = TradingCalendar.parse(result['calendar'])
+                    if calendar.through <= as_of_date:
+                        evidence.append(calendar)
+                except (ValueError, TypeError, KeyError):
+                    continue
     # A single complete proof is preferable to an unprovable union of sparse
     # price histories. Overlapping contradictory proofs remain unavailable.
     covering = [c for c in evidence if c.start <= start_date <= c.through]

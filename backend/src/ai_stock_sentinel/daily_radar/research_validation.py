@@ -281,7 +281,8 @@ def _classify_corporate_action(row, yahoo, marked, benchmark, *, as_of_date, pro
     }}
 
 
-def run_research_validation(session, request, *, as_of_date: date, price_provider, calendar_provider=None):
+def run_research_validation(session, request, *, as_of_date: date, price_provider, calendar_provider=None,
+                            candidate_ids=None, prepare_only=False):
     """Bounded, resumable research. The router owns the single transaction."""
     windows = ordered_positive_values(request.windows)
     scoped = request.conflict_recovery_symbols is not None
@@ -304,6 +305,10 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         include_candidate_ids=list(resume), symbols=request.conflict_recovery_symbols)
     candidates = [c for c in candidates if c["selection_status"] == "selected"
                   or (c["selection_status"] == "shadow" and c["shadow_cohort"] == "comparable")]
+    if candidate_ids is not None:
+        candidates = [c for c in candidates if c["candidate_id"] in candidate_ids]
+        if {c["candidate_id"] for c in candidates} != set(candidate_ids):
+            raise ValueError("validation_candidate_scope_unavailable")
     validate_forward_validation_benchmark(candidates, benchmark_symbol=request.benchmark_symbol)
     pending = {candidate_key(c): (sorted(resume[c["candidate_id"]])
                if scoped or (start and parse_date(c["record_date"]) < start) else windows) for c in candidates}
@@ -409,6 +414,12 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         resolved = _classify_corporate_action(row, yahoo, marked, benchmark, as_of_date=as_of_date,
                                               provider=price_provider) if can_prove_actions else None
         outcomes.append(resolved if resolved is not None else row)
+    from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, reserve_validation_commit
+    if prepare_only:
+        return ValidationPreparation(candidates=candidates, outcomes=outcomes,
+            calendar=official_calendar if fresh and calendar_provider is not None else None,
+            as_of_date=as_of_date, return_basis="next_open", diagnostics=list(getattr(price_provider, "diagnostics", [])))
+    reserve_validation_commit(session)
     summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
                                                require_existing_conflict=scoped)
     if fresh and calendar_provider is not None:

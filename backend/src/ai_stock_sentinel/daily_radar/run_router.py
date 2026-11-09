@@ -81,6 +81,10 @@ def run_daily_radar_scoring_endpoint(
     payload: DailyRadarRefreshStepRequest | None = None,
     db: Session = Depends(get_db),
 ) -> DailyRadarRunTriggerResponse:
+    return execute_prepared_scoring(db, payload=payload)
+
+
+def execute_prepared_scoring(db, *, payload, commit=True):
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
     if snapshots_enabled():
@@ -91,6 +95,13 @@ def run_daily_radar_scoring_endpoint(
         db.refresh(prepared, with_for_update=True)
     _raise_if_required_refresh_steps_missing(prepared)
     require_prepared_open_session(prepared)
+    from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+    if durable_enabled():
+        from ai_stock_sentinel.daily_radar.integrity import background_gaps
+        missing = {step: symbols for step, symbols in background_gaps(db, prepared).items() if symbols}
+        if missing:
+            raise HTTPException(status_code=409, detail={'code': 'daily_radar_live_background_context_incomplete',
+                'missing_symbols_by_step': missing})
     if not prepared.market_context:
         raise HTTPException(
             status_code=409,
@@ -122,7 +133,8 @@ def run_daily_radar_scoring_endpoint(
     prepared.status = "scored"
     freeze_discovery_summary(run, (prepared.step_statuses.get("prepare-universe") or {}).get("market_exploration"))
     db.add(prepared)
-    db.commit()
+    if commit:
+        db.commit()
     return run_trigger_response(run)
 
 

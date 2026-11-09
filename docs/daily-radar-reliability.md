@@ -37,3 +37,49 @@ readiness 在開關啟用後比較目前 inputs fingerprint 與已發布 manifes
 第三階段保存來源依賴、待辦與嘗試紀錄，短交易領取工作、外部 HTTP 不占用交易，以到期時間與執行權版本控制有界續跑及冪等提交。沿用 Actions、Cloud Run、Cloud SQL，不新增 queue service。GitHub concurrency 僅負責互斥，不能取代持久工作紀錄。
 
 正式 migration、部署及歷史補修分別授權。歷史補修沿用 `daily-radar-history-repair-runbook.md` 的 manifest、前後像、CAS 及 rollback 保護；部署不會自動補寫歷史結果。
+
+## 第三階段：持久工作與有界續跑
+
+Additive migration `de5f6a7b8c9d` 新增 `radar_jobs`、`radar_work_items`、`radar_job_work`、`radar_work_attempts`，並為來源快照增加可查詢的 SDK 區間欄位／索引。舊資料不回填，不改寫既有 validation。備份 allowlist 包含全部新表。
+
+`POST /internal/daily-radar/jobs` 只接受明確 `run_date`、TW market 與 lane（publication、signal_close、next_open、auxiliary）。同一意圖重複送出只取回同一工作；202 表示已記錄，沒有宣告資料 ready。每次 `POST /jobs/{id}/advance` 最多執行一個單位，HTTP 回傳後沒有背景工作。`GET /jobs/due` 只回傳持久紀錄內的日期，週末及跨午夜不改成今天。`GET /jobs/{id}` 顯示各 lane 狀態／原因計數、`intent_complete`、`data_ready` 與最後完整度查核時間；即時完整度仍以 `/readiness` 為準。API 不回傳 managed raw data 的分析標的清單或任意 provider 回應。
+
+```mermaid
+flowchart TD
+    A[記錄固定日期意圖] --> B[依資料依賴建立待辦]
+    B --> C{已到原定執行時間且依賴完整?}
+    C -->|否| D[保存等待狀態與重試時間]
+    C -->|是| E[短交易領取一個工作]
+    E --> F[釋放交易後擷取來源]
+    F --> G{執行權與輸入版本仍有效?}
+    G -->|否| D
+    G -->|是| H[同一交易提交資料與嘗試結果]
+    H --> I{實際完整度通過?}
+    I -->|否| B
+    I -->|是| J[記錄該 lane 完整]
+```
+
+上市／上櫃來源分開保存待辦，OHLCV、lending、full margin、AVWAP 與 managed raw data 依標的領取；兩種 validation 依 candidate、basis、版本與完整窗口建立待辦。已成熟的同一窗口在後續日期共用，回溯請求不使用較晚截止日的計算。未知官方日曆先取證；休市證據只略過當日 publication，不取消歷史 validation。正常窗口沿用既有 evaluator、ownership guard 與完整度分類。
+
+領取使用短交易與 PostgreSQL `FOR UPDATE SKIP LOCKED`。領取後先 commit，HTTP 不占用該交易；接受結果時重新核對 DB 時鐘、lease token、到期時間、input revision、prepared generation／canonical candidate 與日曆。資料寫入、work 狀態與 attempt 完成同一交易提交。重建 universe 後淘汰舊 generation，其他標的技術 track 更新不會改變 generation。過期執行者不能提交或重置新執行者的狀態。relation 鎖順序維持與歷史 manifest repair 一致。
+
+來源 request 與 provider gate 也保存 lease、退避與 `Retry-After`。官方市場共用報表、SDK 研究／還原行情與供應鏈標準化結果可跨請求重用；標準化結果仍只是擷取證據，consumer 會重跑日期、標的、完整性與 basis 檢查。SDK 覆蓋區間可供較小窗口重用，但回傳資料裁切到精確請求日期。technical refresh 的完整還原歷史另存，不以官方未還原價格替代。FinMind 認證參數不進入快照 request。
+
+價格衝突保留為 `needs_review`。有來源參照時，只在來源到期後重查來源 hash；相同內容不重跑完整窗口，hash 改變才喚醒 evaluator。日期錯誤、舊 validated 結果缺診斷、已審核 rights／history repair 仍由既有 manifest／CAS 流程處理。內部程式錯誤列為 `failed_internal`，不藉由無限重試或放寬檢查取得成功。未完成窗口和 optional 工作在後續觸發續跑。
+
+原 cron 時間保留，包括下一日 00:30 才可 scoring。新增每 30 分鐘的 resume trigger，沒有今天是否開市的前置 gate。開關關閉時保留既有流程；開啟時由新 driver 記錄／推進意圖，23:50 validation、00:30 publication、07:00 repair 仍用獨立 readiness deadline 判定失敗。一般早期 enqueue／advance 成功只表示已記錄或有進展。
+
+### 切換與回滾
+
+1. 先完成備份與經核准的正式 migration，驗證新增表、SDK 索引及既有金融資料；正式 migration／部署不由本機驗證代替。
+2. 部署後先保留 `DAILY_RADAR_DURABLE_EXECUTION_ENABLED=false`；確認 `/capabilities` 的 migration 狀態，再經核准啟用 backend 的 source snapshots 與 durable execution 開關。
+3. 確認 capabilities `enabled=true` 後，再將 GitHub Actions repository variable `DAILY_RADAR_RELIABILITY_ENABLED=true`。未就緒會 fail closed，不會偷偷回到舊流程。需另行核准的 production 補跑仍使用明確日期。
+4. 回滾先關閉 Actions variable，再關閉 backend durable 開關；保留待辦、attempt、來源快照與輸入 manifests，避免刪除恢復證據。已完成工作不因切換被當成整體完整。
+
+本機驗證涵蓋 SQLite 回歸、實際 PostgreSQL 17 的 migration／競爭領取／過期結果回滾、來源去重與節流，以及斷線後兩種 validation 的實際提交。這些證據不代表正式環境已 migration、切換或補修。
+
+### 本機交付驗證（2026-11-09）
+
+第三階段完整 gate 為 2,087 passed、1 skipped（44.47 秒），含隔離 PostgreSQL 17 的 migration、競爭領取、舊快照鎖、窗口續跑、CAS 與備份還原，以及真正 CLI 對 localhost HTTPS mock 的往返驗證。唯一未執行的是需要指定 exact runtime Docker image 的測試。完成自行 review 與一次完整獨立 review、兩次限定補審；核實並修正 6 項 findings，最後補審無 findings。
+
+返工包含補齊測試的 recovery 攔截、ORM／schema 替身，以及修正窗口 closure 的變數遮蔽。正式部署與歷史資料補修未執行；沒有可比較的任務基準，token usage 未取得，不據此宣稱整體效率提升。

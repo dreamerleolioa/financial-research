@@ -7,3 +7,7 @@ GOOGLE_OAUTH_REDIRECT_URIS: http://localhost:5173/login/callback
 DAILY_RADAR_BACKGROUND_PROVIDER_MODE: finmind_only
 DAILY_RADAR_TW_OHLCV_PROVIDER_MODE: yfinance_only
 FUNDAMENTAL_PROVIDER_MODE: finmind_only
+
+# Enable only after durable migration and backend capability verification.
+DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED: "false"
+DAILY_RADAR_DURABLE_EXECUTION_ENABLED: "false"

@@ -382,6 +382,11 @@ class ArchiveFirstDailyPriceProvider:
         start_date: date,
         end_date: date,
     ) -> DailyPriceHistoryResult:
+        from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+        if durable_enabled():
+            if self._session.new or self._session.dirty or self._session.deleted:
+                raise ValueError("radar_network_with_pending_writes")
+            self._session.rollback()
         evidence = listing_evidence(symbol, as_of_date=end_date)
         if evidence is not None:
             start_date = max(start_date, evidence.listing_date)

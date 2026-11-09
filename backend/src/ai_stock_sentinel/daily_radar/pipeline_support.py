@@ -104,6 +104,8 @@ def _refresh_daily_radar_context_step(
     provider: BackgroundChipContextProvider,
     context_type: str,
     step: str,
+    commit: bool = True,
+    expected_generation: str | None = None,
 ) -> DailyRadarRefreshStepResponse:
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
@@ -118,6 +120,14 @@ def _refresh_daily_radar_context_step(
         reuse_same_day_fresh=True,
         require_same_day_fresh=True,
     )
+    # Context rows precede prepared metadata in legacy writers too. Lock only
+    # after collection/upserts, then fence the frozen generation before status.
+    db.refresh(prepared, with_for_update=True)
+    if expected_generation is not None:
+        from ai_stock_sentinel.daily_radar.jobs import prepared_generation
+        from ai_stock_sentinel.daily_radar.work_queue import LostLease
+        if prepared_generation(prepared) != expected_generation:
+            raise LostLease('radar_prepared_generation_changed')
     update_daily_radar_prepared_step_status(
         db,
         prepared,
@@ -133,7 +143,8 @@ def _refresh_daily_radar_context_step(
             "errors": list(result["errors"]),
         },
     )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarRefreshStepResponse(
         status=result["status"],
         step=step,
@@ -362,6 +373,7 @@ def _finish_managed_raw_data_refresh(
     records_written: int = 0,
     missing_record_count: int = 0,
     error_codes: list[str] | None = None,
+    commit: bool = True,
 ) -> DailyRadarManagedRawDataRefreshResponse:
     safe_error_codes = list(error_codes or [])
     response_details = {
@@ -387,7 +399,8 @@ def _finish_managed_raw_data_refresh(
                 **response_details,
             },
         )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarManagedRawDataRefreshResponse(
         status=status,
         run_date=run_date,

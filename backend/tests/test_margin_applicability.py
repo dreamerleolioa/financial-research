@@ -217,18 +217,20 @@ def test_new_raw_row_roundtrip_retains_applicability_without_old_margin_values(e
 
 
 def test_refresh_endpoint_retains_not_applicable_in_response_and_step_status(monkeypatch):
-    from types import SimpleNamespace
+    from ai_stock_sentinel.db.models import DailyRadarPreparedRun
     from ai_stock_sentinel.daily_radar import pipeline_support as router
     from ai_stock_sentinel.daily_radar.schemas import DailyRadarRefreshStepRequest
 
     engine = create_engine('sqlite://')
     SharedBackgroundContext.__table__.create(engine)
+    DailyRadarPreparedRun.__table__.create(engine)
     statuses = []
-    monkeypatch.setattr(router, '_prepared_run_or_404',
-                        lambda *args, **kwargs: SimpleNamespace(selected_symbols=['7827.TW']))
     monkeypatch.setattr(router, 'update_daily_radar_prepared_step_status',
                         lambda *args, **kwargs: statuses.append(kwargs))
     with Session(engine) as session:
+        session.add(DailyRadarPreparedRun(run_date=RUN_DATE, market='TW', selected_symbols=['7827.TW'],
+            symbol_count=1, universe=[], errors=[], step_statuses={}))
+        session.commit()
         result = router._refresh_daily_radar_context_step(
             session, payload=DailyRadarRefreshStepRequest(run_date=RUN_DATE, market='TW'),
             provider=_provider(), context_type='full_margin', step='refresh-full-margin',
