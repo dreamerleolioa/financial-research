@@ -140,7 +140,7 @@ def test_research_basis_mismatch_is_unresolved(storage, data):
     candidate = add_candidate(db, add_run(db))
     add_result(db, candidate, diagnostic=False, version=RESEARCH_VALIDATION_VERSION)
     row = db.scalar(select(DailyRadarForwardValidationResult))
-    row.outcome = data
+    row.outcome = data | {'validation_input': row.outcome['validation_input']}
     proof(db)
     report = validation_inventory(db, as_of_date=date(2026, 6, 30))["next_open"]
     assert report["validated_count"] == 0

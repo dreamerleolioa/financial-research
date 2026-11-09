@@ -98,7 +98,7 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
         previous = db.scalar(select(RadarWorkItem).where(RadarWorkItem.work_key == fingerprint(identity)))
         if previous and date.fromisoformat(previous.scope['as_of_date']) > job.run_date:
             identity['cutoff'] = str(job.run_date)
-        manual = item['state'] in {'invalid_window', 'missing_diagnostic'}
+        manual = item['state'] in {'invalid_window', 'missing_diagnostic', 'input_unverified'}
         done = item['state'] in {'validated', 'terminal'}
         work = ensure_work(db, identity=identity, stage='window', lane=item['return_basis'], run_date=job.run_date,
             scope=dict(item) | {'as_of_date': str(job.run_date)}, input_revision=fingerprint(identity),

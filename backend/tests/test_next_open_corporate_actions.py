@@ -163,10 +163,12 @@ def test_reviewed_windows_stop_retrying_with_official_evidence(replay, symbol, s
         assert evidence["sources"] and all(len(s["snapshot_sha256"]) == 64 for s in evidence["sources"])
         from types import SimpleNamespace
         from ai_stock_sentinel.daily_radar.readiness import classify_window
+        from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
+        evaluated_candidate = forward_validation_candidates_from_runs(db, market='TW',
+            start_date=signal, end_date=signal, candidate_ids=[row.candidate_id])[0]
         calendar = SimpleNamespace(through=TARGET, sessions=tuple([signal] + [
             date.fromisoformat(d) for d in evidence['session_dates']]))
-        state, _, _ = classify_window({'symbol': symbol, 'record_date': str(signal),
-            'data_dates': {'ohlcv': str(signal)}}, {'status': row.status, 'skip_reason': row.skip_reason,
+        state, _, _ = classify_window(evaluated_candidate, {'status': row.status, 'skip_reason': row.skip_reason,
             'target_date': str(row.target_date) if row.target_date else None,
             'evaluation_as_of_date': str(row.evaluation_as_of_date), 'outcome': row.outcome},
             basis='next_open', window=window, as_of_date=TARGET, calendar=calendar)

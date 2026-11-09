@@ -103,6 +103,7 @@ def _index(rows):
 
 def evaluate_research_window(candidate, *, price_series, benchmark_prices,
                              window_days, as_of_date, benchmark_symbol, trading_calendar=None, validate_signal_session=False):
+    from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
     signal = parse_date(candidate.get("record_date"))
     base = {"candidate_id": candidate.get("candidate_id"), "symbol": candidate.get("symbol"),
             "signal_date": signal.isoformat() if signal else None, "window_days": window_days,
@@ -110,10 +111,10 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             "evaluation_as_of_date": as_of_date.isoformat()}
 
     def skip(reason, *, pending=False, missing_dates=(), target_date=None):
-        return base | {"status": "pending" if pending else "skipped", "target_date": None,
+        return bind_validation_input(candidate, base | {"status": "pending" if pending else "skipped", "target_date": None,
                        "skip_reason": reason, "outcome": {"return_basis": "next_open", "price_basis": RESEARCH_PRICE_BASIS,
                        "missing_dates": [str(d) for d in missing_dates],
-                       "expected_target_date": str(target_date) if target_date else None}}
+                       "expected_target_date": str(target_date) if target_date else None}})
 
     if signal is None:
         return skip("signal_date_missing")
@@ -213,8 +214,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             "net_excess_return_pct": round(gross - cost - benchmark_return, 4),
         } for cost in RESEARCH_COSTS},
     }
-    return base | {"status": "validated", "target_date": days[-1].isoformat(),
-                   "skip_reason": None, "outcome": payload}
+    return bind_validation_input(candidate, base | {"status": "validated", "target_date": days[-1].isoformat(),
+                   "skip_reason": None, "outcome": payload})
 
 
 def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *, as_of_date, scoped, provider):

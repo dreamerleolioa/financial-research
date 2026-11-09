@@ -70,10 +70,23 @@ def add_result(session, row, *, status="confirmed", diagnostic=True, window=5, v
             "lead_trading_days": 3 if status == "confirmed" else None,
             "waiting_max_adverse_excursion_pct": -2,
         }
-    session.add(DailyRadarForwardValidationResult(candidate_id=row.id, window_days=window,
+    result = DailyRadarForwardValidationResult(candidate_id=row.id, window_days=window,
         validation_version=version, status="validated", signal_date=row.run.run_date,
         target_date=date(2026, 6, 8), benchmark_symbol="TAIEX",
-        evaluation_as_of_date=date(2026, 6, 8), outcome=payload))
+        evaluation_as_of_date=date(2026, 6, 8), outcome=payload)
+    session.add(result)
+    certify_results(session, [result])
+
+
+def certify_results(session, results=None):
+    """Synthetic results in this fixture were evaluated against these inputs."""
+    from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
+    from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
+    snapshots = {c['candidate_id']: c for c in forward_validation_candidates_from_runs(session, market='TW')}
+    results = list(session.scalars(select(DailyRadarForwardValidationResult))) if results is None else results
+    for result in results:
+        if result.candidate_id in snapshots:
+            result.outcome = bind_validation_input(snapshots[result.candidate_id], {'outcome': result.outcome})['outcome']
 
 
 def test_rejected_calendar_never_falls_back_to_sparse_price_maturity(storage):
@@ -145,6 +158,7 @@ def add_long_research_history(session, *, lookback, window, paired_count, gap=Fa
             market_context={"benchmark": {"symbol": "TAIEX", "price_history": [
                 {"date": d.isoformat(), "close": 1000}
                 for d in calendar if day - timedelta(days=120) <= d <= day and d != missing]}}))
+    certify_results(session)
     session.commit()
     return end, missing
 
@@ -251,6 +265,7 @@ def test_public_research_comparison_separates_versions_and_is_read_only(storage)
     new.outcome = {"forward_return_pct": 10, "excess_return_vs_benchmark_pct": 8,
                    "max_adverse_excursion_pct": -4, "return_basis": "next_open",
                    "price_basis": "unadjusted_price"}
+    certify_results(session, [new])
     add_calendar(session)
     session.commit()
     statements = []

@@ -44,6 +44,7 @@ def write_new(path, payload):
 
 
 def inventory(session, calendar):
+    from ai_stock_sentinel.daily_radar.validation_inputs import validation_inputs_match
     candidates = forward_validation_candidates_from_runs(session, market="TW", end_date=calendar.through)
     closed_ids = list(session.scalars(select(DailyRadarRun.id).where(DailyRadarRun.market=="TW",
         DailyRadarRun.run_date.between(calendar.start,calendar.through),
@@ -63,12 +64,16 @@ def inventory(session, calendar):
         if row.evaluation_as_of_date and row.evaluation_as_of_date>calendar.through:
             continue
         c=by_id[row.candidate_id]
+        c=c | {'observation_origin': origins.get((c['symbol'],strategy_cohort(c)))}
         days=[d for d in calendar.sessions if d>row.signal_date][:row.window_days]
         if len(days)!=row.window_days:
             continue
         if row.status == "skipped" and not row.outcome.get("historical_repair"):
             continue
-        if row.target_date!=days[-1] or row.outcome.get("target_date",str(days[-1]))!=str(days[-1]):
+        unverified = not validation_inputs_match(c, {'status': row.status,
+            'skip_reason': row.skip_reason, 'outcome': row.outcome})
+        if (row.target_date!=days[-1] or row.outcome.get("target_date",str(days[-1]))!=str(days[-1])
+                or unverified):
             targets.append({"id":row.id,"operation":"recompute"})
         else:
             origin=origins.get((c["symbol"],strategy_cohort(c))) or {}

@@ -28,13 +28,16 @@ from ai_stock_sentinel.daily_radar.research_validation import (
 )
 from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
 from ai_stock_sentinel.daily_radar.terminal_integrity import terminal_evidence_matches
+from ai_stock_sentinel.daily_radar.validation_inputs import (
+    validation_candidate_revision, validation_inputs_match, UNVERIFIED,
+)
 from ai_stock_sentinel.db.models import DailyRadarRun, DailyRadarCandidate
 
 
 def recovery_action(reason):
     """Stable classes consumed by reports and the durable executor."""
     if reason in {"conflicting_price_records", "adjusted_history_changed", "price_basis_mismatch",
-                  "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict"}:
+                  "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict", UNVERIFIED}:
         return "needs_review"
     if reason in {"research_recovery_budget_exhausted", "budget_exhausted"}:
         return "resume"
@@ -68,6 +71,8 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar):
         state = "immature"
     elif row is None:
         state, reason = "missing_outcome", "validation_outcome_missing"
+    elif not validation_inputs_match(candidate, row):
+        state, reason = 'input_unverified', UNVERIFIED
     elif row["status"] == "skipped":
         reason = row["skip_reason"] or "validation_not_available"
         terminal = (reason in RESEARCH_TERMINAL_REASONS if basis == "next_open"
@@ -92,14 +97,6 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar):
               or diagnostic.get("missing_reason")):
             state, reason = "missing_diagnostic", "observation_diagnostic_incomplete"
     return state, reason, target
-
-
-def validation_candidate_revision(candidate):
-    """Names and unused shadow origins do not change validation semantics."""
-    values = {k: v for k, v in candidate.items() if k != 'name'}
-    if candidate.get('selection_status') == 'shadow':
-        values.pop('observation_origin', None)
-    return fingerprint(values)
 
 
 def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=None):
@@ -151,7 +148,7 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
     for report in reports.values():
         counts = report.pop("counts")
         for name in ("validated", "terminal", "immature", "unknown_maturity", "invalid_window",
-                     "missing_outcome", "missing_diagnostic", "retryable"):
+                     "missing_outcome", "missing_diagnostic", "retryable", "input_unverified"):
             report[name + "_count"] = counts[name]
         gap_count = sum(report["reasons"].values())
         report.update(ready=gap_count == 0, calendar_ready=bool(

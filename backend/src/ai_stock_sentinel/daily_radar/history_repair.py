@@ -128,9 +128,23 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
         loaded.append((item, row, candidate_snapshot(c, run)))
     origins = load_observation_origins(session, [c for _,_,c in loaded], market="TW",
                                        through_date=calendar.through, excluded_dates=invalid_dates)
+    # Only a complete recomputation may certify return inputs. Diagnostic-only
+    # repair preserves the original return and its existing (or absent) proof.
+    from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
+    from ai_stock_sentinel.daily_radar.validation_inputs import (
+        bind_validation_input, validation_candidate_revision, validation_inputs_match,
+    )
+    input_ids = [row.candidate_id for _, row, _ in loaded]
+    evaluation_inputs = {c['candidate_id']: c | {'observation_origin':
+        origins.get((c['symbol'], strategy_cohort(c)))} for c in forward_validation_candidates_from_runs(
+            session, market='TW', end_date=calendar.through, candidate_ids=input_ids)} if input_ids else {}
+    if set(input_ids) != set(evaluation_inputs):
+        raise ValueError('repair_candidate_input_unavailable')
+    revisions = {cid: validation_candidate_revision(c) for cid, c in evaluation_inputs.items()}
     seed = {"version": VERSION, "calendar": calendar.payload(),
             "results": [{"id": row.id, "operation": item["operation"], "before": result_snapshot(row),
                          "candidate_sha256": fingerprint(c),
+                         "validation_candidate_revision": revisions[row.candidate_id],
                          "observation_origin": origins.get((c["symbol"],strategy_cohort(c)))} for item,row,c in loaded],
             "runs": [{"id": run.id, "before": run_snapshot(run)} for run in runs]}
     repair_id = fingerprint(seed)
@@ -159,7 +173,8 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
         c["observation_origin"] = origin
         if operation == "recompute":
             if (row.status == "validated" and row.target_date == target
-                    and before["outcome"].get("target_date",str(target)) == str(target)):
+                    and before["outcome"].get("target_date",str(target)) == str(target)
+                    and validation_inputs_match(evaluation_inputs[row.candidate_id], before)):
                 raise ValueError("recompute_requires_historical_mismatch")
             # Avoid using valid-looking but inconsistent OHLC or ambiguous prices.
             from ai_stock_sentinel.calibration.forward_validation import price_conflict_fields, number
@@ -202,8 +217,11 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
             "observation_origin": deepcopy(origin),
             "calendar_sha256": fingerprint(calendar.payload()),
             "price_evidence_sha256": fingerprint(evidence.get(str(row.id)))}
+        if operation == 'recompute':
+            after['outcome'] = bind_validation_input(evaluation_inputs[row.candidate_id], after)['outcome']
         plan["results"].append({"id": row.id, "operation": operation, "before": before, "after": after,
                                 "observation_origin": deepcopy(origin),
+                                "validation_candidate_revision": revisions[row.candidate_id],
                                 "candidate_sha256": fingerprint(candidate_snapshot(session.get(DailyRadarCandidate, row.candidate_id),
                                     session.get(DailyRadarRun, session.get(DailyRadarCandidate, row.candidate_id).run_id)))})
     for run in runs:
@@ -277,6 +295,14 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
             current_origins = load_observation_origins(session,list(contexts.values()),market="TW",
                                                        through_date=cutoff,excluded_dates=excluded)
             current_public = set(session.scalars(canonical_radar_run_ids(market="TW",end_date=cutoff)))
+            from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
+            from ai_stock_sentinel.daily_radar.validation_inputs import (
+                validation_candidate_revision, PROOF_KEY, VERSION as INPUT_VERSION,
+            )
+            current_inputs = {c['candidate_id']: c | {'observation_origin':
+                current_origins.get((c['symbol'], strategy_cohort(c)))}
+                for c in forward_validation_candidates_from_runs(session, market='TW',
+                    end_date=cutoff, candidate_ids=list(contexts))}
         for entry in plan[kind]:
             row = rows.get(entry["id"])
             if row is None:
@@ -293,6 +319,18 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
                 if (run.id not in current_public or current_origins.get((context["symbol"],strategy_cohort(context)))
                         != entry["observation_origin"]):
                     raise ValueError("repair_observation_origin_changed")
+                expected_revision = entry.get('validation_candidate_revision')
+                proof = entry['after']['outcome'].get(PROOF_KEY)
+                if expected_revision is not None:
+                    current_input = current_inputs.get(row.candidate_id)
+                    if current_input is None or validation_candidate_revision(current_input) != expected_revision:
+                        raise ValueError('repair_validation_inputs_changed')
+                    if entry['operation'] == 'recompute' and (not isinstance(proof, dict)
+                            or proof.get('version') != INPUT_VERSION
+                            or proof.get('candidate_revision') != expected_revision):
+                        raise ValueError('repair_validation_proof_invalid')
+                elif entry['operation'] == 'recompute' and proof is not None:
+                    raise ValueError('repair_validation_proof_missing_revision')
                 if entry["operation"] == "diagnostic":
                     def returns(payload):
                         return {k:v for k,v in payload.items() if k not in ("observation_diagnostic","historical_repair")}

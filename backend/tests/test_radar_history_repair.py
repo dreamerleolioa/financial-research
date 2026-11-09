@@ -79,6 +79,10 @@ def stored(db, *, signal=date(2026, 9, 16), target=date(2026, 9, 23)):
         evaluation_as_of_date=date(2026,9,24))
     db.add(row)
     db.add(DailyRadarPreparedRun(run_date=date(2026,9,24), market="TW", selected_symbols=[], universe=[], step_statuses=ready_steps()))
+    from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
+    from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
+    snapshot = forward_validation_candidates_from_runs(db, market='TW', candidate_ids=[c.id])[0]
+    row.outcome = bind_validation_input(snapshot, {'outcome': row.outcome})['outcome']
     db.commit()
     return run,c,row
 

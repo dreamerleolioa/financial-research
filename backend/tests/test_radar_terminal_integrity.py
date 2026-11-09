@@ -85,7 +85,8 @@ def test_split_producer_checks_full_window_before_accepting_terminal():
     from test_daily_radar_research_validation import evaluate, price
     rows = [price('2026-06-05'), price('2026-06-08', stock_splits=2), price('2026-06-09')]
     row = evaluate(rows)
-    c = {'symbol': '2330.TW', 'record_date': '2026-06-05', 'data_dates': {'ohlcv': '2026-06-05'}}
+    c = {'candidate_id': 1, 'symbol': '2330.TW', 'record_date': '2026-06-05',
+         'data_dates': {'ohlcv': '2026-06-05'}, 'input_snapshot': {'ohlcv': {'close': 50}}}
     cal = SimpleNamespace(through=date(2026, 6, 9), sessions=tuple(date(2026, 6, d) for d in (5, 8, 9)))
     assert classify_window(c, row, basis='next_open', window=2, as_of_date=cal.through, calendar=cal)[0] == 'terminal'
     rows[-1]['low'] = None

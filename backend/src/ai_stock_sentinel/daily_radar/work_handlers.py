@@ -296,7 +296,7 @@ class WorkHandlers:
                 validation_version=scope['validation_version'])
             for saved in before:
                 state, reason, _ = classify_window(current[0], saved, basis=scope['return_basis'], window=scope['window_days'], as_of_date=asof, calendar=calendar)
-                if state in {'invalid_window', 'missing_diagnostic'}:
+                if state in {'invalid_window', 'missing_diagnostic', 'input_unverified'}:
                     return {'state': 'needs_review', 'reason': reason, 'result': {'manual_repair_required': True}}
             kwargs = {'terminal_skip_reasons': RESEARCH_TERMINAL_REASONS} if scope['return_basis'] == 'next_open' else {}
             upsert_forward_validation_results(db, bundle.outcomes, expected_revisions=expected, **kwargs)

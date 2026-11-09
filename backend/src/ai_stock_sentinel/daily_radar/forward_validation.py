@@ -33,6 +33,7 @@ from ai_stock_sentinel.daily_radar.observation_validation import (
     canonical_radar_run_ids, evaluate_observation, load_observation_origins, observation_report, strategy_cohort,
 )
 from ai_stock_sentinel.daily_radar.scoring import RULE_VERSION, SCORING_VERSION
+from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_inputs, checked_validation_inputs
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarForwardValidationResult,
@@ -92,6 +93,7 @@ def build_forward_validation_report(
         candidate_list, diagnosed_outcomes, price_series_by_symbol=price_series_by_symbol,
         benchmark_prices=diagnostic_benchmark, as_of_date=as_of_date,
     )
+    outcomes = bind_validation_inputs(candidate_list, outcomes)
 
     report = _build_report_from_outcomes(
         candidate_list,
@@ -383,6 +385,7 @@ def forward_validation_candidates_from_runs(
     include_candidate_ids: Sequence[int] = (),
     symbols: Sequence[str] | None = None,
     candidate_ids: Sequence[int] | None = None,
+    comparable_pool_only: bool = False,
 ) -> list[dict[str, Any]]:
     query = (
         select(*forward_validation_snapshot_columns())
@@ -398,6 +401,9 @@ def forward_validation_candidates_from_runs(
         query = query.where(DailyRadarCandidate.symbol.in_(symbols))
     if candidate_ids is not None:
         query = query.where(DailyRadarCandidate.id.in_(candidate_ids))
+    if comparable_pool_only:
+        query = query.where(or_(DailyRadarCandidate.selection_status == 'selected', and_(
+            DailyRadarCandidate.selection_status == 'shadow', DailyRadarCandidate.shadow_cohort == 'comparable')))
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),
@@ -789,7 +795,7 @@ def persisted_forward_validation_outcomes(
                 "outcome": dict(result.outcome or {}),
             }
         )
-    return outcomes
+    return checked_validation_inputs(candidate_by_id.values(), outcomes)
 
 
 def default_due_start_date(as_of_date: date, max_window: int = max(DEFAULT_FORWARD_WINDOWS)) -> date:
