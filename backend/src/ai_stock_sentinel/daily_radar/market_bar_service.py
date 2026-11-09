@@ -38,6 +38,7 @@ def refresh_taiwan_market_bars(
 
     records_by_date: dict[date, int] = {trade_date: 0 for trade_date in trading_dates}
     errors: list[dict[str, Any]] = []
+    reports = []
     with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 4))) as executor:
         futures = {
             executor.submit(
@@ -51,7 +52,7 @@ def refresh_taiwan_market_bars(
         for future in as_completed(futures):
             trade_date, market = futures[future]
             try:
-                bars = future.result()
+                bars = list(future.result())
             except OfficialMarketBarProviderError as exc:
                 errors.append(
                     {
@@ -61,8 +62,13 @@ def refresh_taiwan_market_bars(
                     }
                 )
                 continue
-            records_by_date[trade_date] += upsert_taiwan_daily_bars(session, bars)
-            session.flush()
+            reports.append((trade_date, market, bars))
+
+    # Provider futures (and any lazy payloads) are exhausted before the first
+    # write. Preserve partial-source errors and the caller's commit boundary.
+    for trade_date, market, bars in sorted(reports, key=lambda item: (item[0], item[1])):
+        records_by_date[trade_date] += upsert_taiwan_daily_bars(session, sorted(bars, key=lambda bar: bar.symbol))
+        session.flush()
 
     dates_with_data = sorted(
         trade_date.isoformat()

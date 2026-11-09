@@ -14,7 +14,11 @@ from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.background_context import (
     BackgroundChipContextProvider,
-    update_background_chip_context_cache,
+    prepare_background_context_refresh,
+    collect_background_context_refresh,
+    persist_background_context_refresh,
+    CollectedBackgroundContextRefresh,
+    BackgroundContextPayload,
 )
 from ai_stock_sentinel.daily_radar.dependencies import DAILY_RADAR_REQUIRED_REFRESH_STEPS
 from ai_stock_sentinel.daily_radar.institutional_archive_universe import (
@@ -52,6 +56,7 @@ from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_indust
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun
 from ai_stock_sentinel.phase1_avwap.service import (
     DailyPriceProvider,
+    Phase1AvwapRefreshCollection,
     prepare_phase1_avwap_refresh_for_symbols,
     collect_phase1_avwap_refresh,
     persist_phase1_avwap_refresh,
@@ -62,43 +67,49 @@ from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_refresh_symbo
 logger = logging.getLogger(__name__)
 
 
-def _refresh_phase1_avwap_for_daily_radar(
-    db: Session,
-    *,
-    symbols: list[str],
-    run_date: date,
-    provider: DailyPriceProvider,
-) -> None:
+def _collect_phase1_avwap_for_daily_radar(
+    db: Session, *, symbols: list[str], run_date: date, provider: DailyPriceProvider,
+) -> Phase1AvwapRefreshCollection | None:
+    """Optional AVWAP collection belongs to the owner's read phase."""
     try:
         refresh_symbol_set = resolve_phase1_refresh_symbol_set(db, seed_symbols=symbols)
-        refresh_symbols = refresh_symbol_set.symbols
-        preparation = prepare_phase1_avwap_refresh_for_symbols(
-            db,
-            symbols=refresh_symbols,
-            data_date=run_date,
-            provider=provider,
-        )
+        preparation = prepare_phase1_avwap_refresh_for_symbols(db,
+            symbols=refresh_symbol_set.symbols, data_date=run_date, provider=provider)
         db.rollback()
-        result = persist_phase1_avwap_refresh(db, collect_phase1_avwap_refresh(preparation))
-        if result.missing_symbols:
-            logger.warning(
-                "[DailyRadar] Phase 1 AVWAP refresh completed with missing snapshots run_date=%s missing_symbol_reasons=%s",
-                run_date.isoformat(),
-                result.missing_symbol_reasons,
-            )
+        collection = collect_phase1_avwap_refresh(preparation)
         if refresh_symbol_set.skipped_symbol_reasons:
-            logger.info(
-                "[DailyRadar] Phase 1 AVWAP refresh skipped unsupported symbols run_date=%s skipped_symbol_reasons=%s",
-                run_date.isoformat(),
-                refresh_symbol_set.skipped_symbol_reasons,
-            )
+            logger.info("[DailyRadar] Phase 1 AVWAP refresh skipped unsupported symbols run_date=%s skipped_symbol_reasons=%s",
+                run_date.isoformat(), refresh_symbol_set.skipped_symbol_reasons)
+        return collection
     except Exception:
         with suppress(Exception):
             db.rollback()
-        logger.exception(
-            "[DailyRadar] Phase 1 AVWAP refresh failed; continuing with read-only missing trace run_date=%s",
-            run_date.isoformat(),
-        )
+        logger.exception("[DailyRadar] Phase 1 AVWAP collection failed; continuing with read-only missing trace run_date=%s",
+            run_date.isoformat())
+        return None
+
+
+def _persist_phase1_avwap_for_daily_radar(db: Session, collection: Phase1AvwapRefreshCollection | None, *, run_date: date) -> None:
+    """The run owner invokes this FIRST in its write phase, before other domain writes."""
+    if collection is None:
+        return
+    try:
+        result = persist_phase1_avwap_refresh(db, collection)
+        if result.missing_symbols:
+            logger.warning("[DailyRadar] Phase 1 AVWAP refresh completed with missing snapshots run_date=%s missing_symbol_reasons=%s",
+                run_date.isoformat(), result.missing_symbol_reasons)
+    except Exception:
+        with suppress(Exception):
+            db.rollback()
+        logger.exception("[DailyRadar] Phase 1 AVWAP persistence failed; continuing with read-only missing trace run_date=%s",
+            run_date.isoformat())
+
+
+def _refresh_phase1_avwap_for_daily_radar(
+    db: Session, *, symbols: list[str], run_date: date, provider: DailyPriceProvider,
+) -> None:
+    collection = _collect_phase1_avwap_for_daily_radar(db, symbols=symbols, run_date=run_date, provider=provider)
+    _persist_phase1_avwap_for_daily_radar(db, collection, run_date=run_date)
 
 
 def _refresh_daily_radar_context_step(
@@ -110,11 +121,12 @@ def _refresh_daily_radar_context_step(
     step: str,
     commit: bool = True,
     expected_generation: str | None = None,
+    fetched_payloads: list[BackgroundContextPayload] | None = None,
 ) -> DailyRadarRefreshStepResponse:
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
-    result = update_background_chip_context_cache(
+    preparation = prepare_background_context_refresh(
         db,
         run_date=run_date,
         market=request.market,
@@ -124,6 +136,20 @@ def _refresh_daily_radar_context_step(
         reuse_same_day_fresh=True,
         require_same_day_fresh=True,
     )
+    if commit:
+        # This endpoint owns its read phase. Durable acceptance passes collected
+        # payloads and must retain its domain/lease transaction.
+        db.rollback()
+        collected = collect_background_context_refresh(preparation)
+    else:
+        if fetched_payloads is None:
+            raise TypeError('context_acceptance_requires_collected_payloads')
+        # A legacy writer may have filled this cache after durable collection.
+        # Keep its current valid rows; they are no longer expected fetch pairs.
+        payloads = tuple(payload for payload in fetched_payloads
+            if (payload.symbol, payload.context_type) not in preparation.reused_pairs)
+        collected = CollectedBackgroundContextRefresh(preparation, payloads, ())
+    result = persist_background_context_refresh(db, collected)
     # Context rows precede prepared metadata in legacy writers too. Lock only
     # after collection/upserts, then fence the frozen generation before status.
     db.refresh(prepared, with_for_update=True)

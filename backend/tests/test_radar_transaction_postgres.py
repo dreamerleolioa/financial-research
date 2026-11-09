@@ -169,3 +169,35 @@ def test_postgres_collection_cannot_commit_a_select_prefixed_sql_batch(pg_engine
         assert db.scalar(select(DailyRadarRun.status)) == 'completed', 'collection SQL committed domain data before acceptance'
         attempt = db.scalar(select(RadarWorkAttempt))
         assert attempt.state == 'failed_internal' and attempt.reason == 'radar_collection_mutated_domain'
+
+
+@pytest.mark.parametrize('snapshots', [False, True])
+@pytest.mark.parametrize('failure', ['none', 'market', 'write'])
+def test_postgres_legacy_run_collects_before_writes_and_rolls_back_failures(pg_engine, monkeypatch, snapshots, failure):
+    from test_radar_legacy_transactions import test_one_shot_collects_every_source_before_domain_write as run_case
+    Base.metadata.create_all(pg_engine)
+    with Session(pg_engine, autoflush=False) as db:
+        run_case(db, monkeypatch, snapshots, True, failure)
+
+
+@pytest.mark.parametrize('context', ['lending', 'full_margin'])
+def test_postgres_legacy_context_releases_read_before_http(pg_engine, context):
+    from test_radar_legacy_transactions import test_legacy_context_owner_releases_prepared_read_before_provider as context_case
+    Base.metadata.create_all(pg_engine)
+    with Session(pg_engine, autoflush=False) as db:
+        context_case(db, context)
+
+
+def test_postgres_market_bars_collect_before_writes(pg_engine):
+    from test_radar_legacy_transactions import test_market_bar_batch_collects_all_futures_before_first_write as bars_case
+    Base.metadata.create_all(pg_engine)
+    with Session(pg_engine, autoflush=False) as db:
+        bars_case(db)
+
+
+@pytest.mark.parametrize('context', ['lending', 'full_margin'])
+def test_postgres_context_acceptance_keeps_intervening_legacy_refresh(pg_engine, monkeypatch, context):
+    from test_radar_legacy_transactions import test_durable_context_acceptance_reuses_intervening_legacy_refresh as reuse_case
+    Base.metadata.create_all(pg_engine)
+    with Session(pg_engine, autoflush=False) as db:
+        reuse_case(db, monkeypatch, context)

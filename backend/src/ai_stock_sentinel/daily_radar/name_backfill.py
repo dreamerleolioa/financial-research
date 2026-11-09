@@ -20,6 +20,24 @@ class DailyRadarNameBackfillResult:
     unresolved_symbols: list[str]
 
 
+def prepare_daily_radar_name_backfill(session: Session, *, limit: int | None = None) -> list[str]:
+    return _ordered_unique(candidate.symbol for candidate in _candidate_rows_needing_name(session, limit=limit))
+
+
+def collect_daily_radar_symbol_names(
+    symbols: Iterable[str], *, name_resolver: SymbolNameResolver,
+) -> tuple[dict[str, str], list[str]]:
+    """Resolve plain identities without a database session."""
+    resolved_names, unresolved_symbols = {}, []
+    for symbol in symbols:
+        resolved = _resolved_display_name(symbol, name_resolver)
+        if resolved is None:
+            unresolved_symbols.append(symbol)
+        else:
+            resolved_names[symbol] = resolved
+    return resolved_names, unresolved_symbols
+
+
 def backfill_daily_radar_symbol_names(
     session: Session,
     *,
@@ -29,15 +47,7 @@ def backfill_daily_radar_symbol_names(
 ) -> DailyRadarNameBackfillResult:
     candidates = _candidate_rows_needing_name(session, limit=limit)
     symbols = _ordered_unique(candidate.symbol for candidate in candidates)
-    resolved_names: dict[str, str] = {}
-    unresolved_symbols: list[str] = []
-
-    for symbol in symbols:
-        resolved = _resolved_display_name(symbol, name_resolver)
-        if resolved is None:
-            unresolved_symbols.append(symbol)
-            continue
-        resolved_names[symbol] = resolved
+    resolved_names, unresolved_symbols = collect_daily_radar_symbol_names(symbols, name_resolver=name_resolver)
 
     updated_candidates = 0
     for candidate in candidates:

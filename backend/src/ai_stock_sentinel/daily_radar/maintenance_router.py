@@ -18,7 +18,9 @@ from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
     BackgroundChipContextProvider,
-    update_background_chip_context_cache,
+    prepare_background_context_refresh,
+    collect_background_context_refresh,
+    persist_background_context_refresh,
 )
 from ai_stock_sentinel.daily_radar.dependencies import (
     get_daily_radar_background_chip_context_provider,
@@ -41,6 +43,8 @@ from ai_stock_sentinel.daily_radar.market_session import (
     MarketSessionProviderError,
 )
 from ai_stock_sentinel.daily_radar.name_backfill import (
+    prepare_daily_radar_name_backfill,
+    collect_daily_radar_symbol_names,
     SymbolNameResolver,
     backfill_daily_radar_symbol_names,
     get_daily_radar_symbol_name_resolver,
@@ -121,11 +125,14 @@ def backfill_daily_radar_names_endpoint(
 ) -> DailyRadarNameBackfillResponse:
     request = payload or DailyRadarNameBackfillRequest()
     try:
+        symbols = prepare_daily_radar_name_backfill(db, limit=request.limit)
+        db.rollback()
+        names, _ = collect_daily_radar_symbol_names(symbols, name_resolver=name_resolver)
         result = backfill_daily_radar_symbol_names(
             db,
             limit=request.limit,
             dry_run=request.dry_run,
-            name_resolver=name_resolver,
+            name_resolver=names.get,
         )
         if request.dry_run:
             db.rollback()
@@ -271,7 +278,7 @@ def update_daily_radar_chip_context_endpoint(
         len(request.symbols) if request.symbols is not None else "latest_run",
         provider.__class__.__name__,
     )
-    result = update_background_chip_context_cache(
+    preparation = prepare_background_context_refresh(
         db,
         run_date=run_date,
         market=request.market,
@@ -279,6 +286,9 @@ def update_daily_radar_chip_context_endpoint(
         symbols=request.symbols,
         context_types=request.context_types,
     )
+    db.rollback()
+    collected = collect_background_context_refresh(preparation)
+    result = persist_background_context_refresh(db, collected)
     db.commit()
     logger.info(
         "[DailyRadarChipContext] update completed status=%s run_date=%s market=%s symbol_count=%s context_types=%s records_written=%s errors_count=%s",

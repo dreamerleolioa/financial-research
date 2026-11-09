@@ -149,7 +149,7 @@ class WorkHandlers:
         def apply(db):
             result = _refresh_daily_radar_context_step(db, payload=DailyRadarRefreshStepRequest(run_date=claim.run_date),
                 provider=static_context(payloads), context_type=context_type, step='refresh-' + claim.stage,
-                commit=False, expected_generation=claim.scope.get('generation'))
+                commit=False, expected_generation=claim.scope.get('generation'), fetched_payloads=payloads)
             missing = result.missing_symbol_reasons.get(symbol)
             return {'state': 'waiting_provider' if symbol in result.missing_symbols else 'ready',
                     'reason': missing, 'result': {'target_ready': symbol not in result.missing_symbols}}
