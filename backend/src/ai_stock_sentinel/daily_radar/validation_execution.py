@@ -10,11 +10,11 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     build_forward_validation_report_from_outcomes, default_due_start_date, due_windows_by_candidate,
     exclude_persisted_daily_radar_windows, forward_validation_candidates_from_runs,
     load_benchmark_prices_from_prepared_market_context, load_price_series_from_raw_data,
-    persisted_forward_validation_outcomes, upsert_forward_validation_results, validate_forward_validation_benchmark,
+    persisted_forward_validation_outcomes, validate_forward_validation_benchmark,
 )
-from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar, save_calendar
+from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
 from ai_stock_sentinel.daily_radar.schemas import DailyRadarForwardValidationRunResponse
-from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, reserve_validation_commit
+from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, accept_validation_results
 
 logger = logging.getLogger("ai_stock_sentinel.daily_radar.maintenance_router")
 
@@ -145,11 +145,8 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
     if prepare_only:
         return ValidationPreparation(candidates=candidates, outcomes=evaluation.outcomes, calendar=calendar,
             as_of_date=as_of_date, return_basis="signal_close", benchmark_prices=benchmark_prices)
-    reserve_validation_commit(db)
     with metrics.stage("upsert"):
-        write_summary = upsert_forward_validation_results(db, evaluation.outcomes)
-        if calendar is not None:
-            save_calendar(db, calendar)
+        write_summary = accept_validation_results(db, evaluation.outcomes, calendar=calendar)
         metrics.counts["records_written"] = write_summary["records_written"]
     with metrics.stage("read_persisted"):
         persisted_outcomes = persisted_forward_validation_outcomes(

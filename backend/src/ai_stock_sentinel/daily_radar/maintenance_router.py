@@ -335,9 +335,12 @@ def run_daily_radar_forward_validation_endpoint(
         db.commit()
         return DailyRadarForwardValidationRunResponse(**result)
     from ai_stock_sentinel.daily_radar.validation_execution import run_signal_close_validation
-    return run_signal_close_validation(db, request, as_of_date=as_of_date,
-        price_provider=price_provider, calendar_provider=calendar_provider,
-        raw_price_loader=load_price_series_from_raw_data)
+    try:
+        return run_signal_close_validation(db, request, as_of_date=as_of_date,
+            price_provider=price_provider, calendar_provider=calendar_provider,
+            raw_price_loader=load_price_series_from_raw_data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post(

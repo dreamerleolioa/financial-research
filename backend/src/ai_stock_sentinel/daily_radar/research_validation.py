@@ -20,7 +20,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     default_due_start_date, exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs, persisted_forward_validation_outcomes,
     load_benchmark_prices_from_prepared_market_context,
-    upsert_forward_validation_results, validate_forward_validation_benchmark,
+    validate_forward_validation_benchmark,
 )
 
 
@@ -438,21 +438,13 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         resolved = _classify_corporate_action(row, yahoo, marked, benchmark, as_of_date=as_of_date,
                                               provider=price_provider) if can_prove_actions else None
         outcomes.append(resolved if resolved is not None else row)
-    from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, reserve_validation_commit
+    from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, accept_validation_results
     if prepare_only:
         return ValidationPreparation(candidates=candidates, outcomes=outcomes,
             calendar=official_calendar,
             as_of_date=as_of_date, return_basis="next_open", diagnostics=list(getattr(price_provider, "diagnostics", [])))
-    reserve_validation_commit(session)
-    # Keep result -> prepared lock order. A missing checkpoint must not leave
-    # accepted result writes behind if the caller handles the exception.
-    with session.begin_nested():
-        summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
-                                                   require_existing_conflict=scoped)
-        if official_calendar is not None:
-            from ai_stock_sentinel.daily_radar.trading_calendar import save_calendar
-            if not save_calendar(session, official_calendar):
-                raise ValueError('calendar_checkpoint_unavailable')
+    summary = accept_validation_results(session, outcomes, calendar=official_calendar,
+        terminal_skip_reasons=RESEARCH_TERMINAL_REASONS, require_existing_conflict=scoped)
     remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
     persisted = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date,

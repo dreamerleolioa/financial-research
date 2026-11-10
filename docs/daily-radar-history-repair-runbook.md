@@ -107,3 +107,5 @@ diagnostic-only 向前 apply 也使用上述 JSONB fingerprint，核對除 `obse
 舊事件已證明位於新窗口外、而目前另有現金減資時，先執行既有減資專用驗證，確認官方事件與停牌區間，再驗證股票必要日期；TAIEX 仍須完整信號日加 N 日。Yahoo 以零成交量列表示停牌時，不論有無減資標記都依相同規則；缺少非停牌行情、未核實停牌日期、額外事件或 benchmark 行動仍拒絕補修。所有來源與事件驗證仍凍結於 capture 並由 plan／apply／rollback 離線重播。
 
 next_open 續跑在排除既有結果前，先確認日曆覆蓋本次 as_of_date；有足夠日曆時可重用，顯式 range／事件補取仍重新核對指定來源。新取得的日曆即使本批沒有結果需重算也會保存；重用或新取得的日曆均在接受結果時重新核對 checkpoint 與衝突。若缺少 prepared-run 日曆 checkpoint，回報 calendar_checkpoint_unavailable，並以 SAVEPOINT 撤回本批結果，避免捕捉錯誤後外層 commit 留下部分資料。行情補取只要求本批有效日期範圍，窗口驗證仍使用完整日曆。prepare_only 只回傳日曆及結果，不寫 checkpoint；完整年度範圍、人工結果保護及所有窗口不變。
+
+signal_close 與 next_open 的舊 endpoint 共用接受結果函式，在同一 SAVEPOINT 依結果 → 日曆順序保存；日曆未保存或存在衝突時撤回本批結果，API 回傳 422，即使外層捕捉錯誤後 commit 也不留下部分結果。零結果批次同樣核對日曆。prepare_only 仍唯讀；durable work 由既有 executor 原子接受 domain effects 與 calendar ledger，不套用舊 endpoint 的 prepared-run checkpoint 責任。
