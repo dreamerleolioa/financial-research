@@ -14,6 +14,7 @@ from ai_stock_sentinel.daily_radar.research_validation import (
 )
 from ai_stock_sentinel.daily_radar.terminal_integrity import _source
 from ai_stock_sentinel.daily_radar.validation_inputs import PROOF_KEY
+from ai_stock_sentinel.daily_radar import next_open_action_scope as action_scope
 
 KEY = 'reviewed_official_window'
 VERSION = 'next-open-reviewed-official-window-v1'
@@ -94,7 +95,9 @@ def collect_window(candidate, before, row, *, calendar, provider):
     yahoo = provider.fetched.get(symbol, [])
     benchmark = provider.repaired.get('TAIEX', provider.fetched.get('TAIEX', []))
     marked = deepcopy(provider.repaired.get(symbol, yahoo))
-    kind = prior_actions(before['outcome']) | prior_actions(row.get('outcome') or {})
+    scope = action_scope.collect(candidate, before['outcome'], sessions, calendar.through, provider)
+    removed = {f['kind'] for f in scope['excluded']} if scope else set()
+    kind = (prior_actions(before['outcome']) - removed) | prior_actions(row.get('outcome') or {})
     event_replay = None
     def event(kind, stock_rows, benchmark_rows, marked_rows):
         event_row = _event_input(candidate, before['window_days'], calendar, marked_rows, benchmark_rows)
@@ -133,7 +136,7 @@ def collect_window(candidate, before, row, *, calendar, provider):
         row = evaluate_research_window(candidate, price_series=marked, benchmark_prices=benchmark,
             window_days=before['window_days'], as_of_date=calendar.through,
             benchmark_symbol='TAIEX', trading_calendar=calendar.sessions, validate_signal_session=True)
-        if row.get('skip_reason') == rights.CONFLICT_REASON:
+        if row.get('skip_reason') == rights.CONFLICT_REASON or scope and scope['current_events']:
             recovered = None
             if symbol.endswith('.TW'):
                 recovered, frozen = event('rights', yahoo, benchmark, marked)
@@ -157,6 +160,8 @@ def collect_window(candidate, before, row, *, calendar, provider):
         'stock': stock, 'benchmark': index}}
     if event_replay is not None:
         row['outcome'][KEY]['event_replay'] = event_replay
+    if scope is not None:
+        row['outcome'][KEY][action_scope.KEY] = scope
     if row['status'] == 'validated' or row.get('skip_reason') == 'stock_split_in_window':
         if rights.PROVENANCE_KEY in row['outcome']:
             used_stock = rights._unadjusted_rows(stock, 'twse_official_rights_window')
@@ -166,10 +171,12 @@ def collect_window(candidate, before, row, *, calendar, provider):
         row['outcome'][KEY].update(
             calculation_stock=[deepcopy(r) for r in used_stock if str(signal) < r['date'] <= str(target)],
             calculation_benchmark=[deepcopy(r) for r in used_index if str(signal) <= r['date'] <= str(target)])
+    if scope is not None:
+        action_scope.result_matches(scope, row)
     return row
 
 
-def verify_evidence(candidate, after, *, calendar, prior):
+def verify_evidence(candidate, after, *, calendar, prior, require_scope=True):
     signal, sessions = _window(candidate, after['window_days'], calendar)
     payload = after['outcome']; proof = payload.get(KEY)
     if (not isinstance(proof, dict) or proof.get('version') != VERSION
@@ -177,6 +184,11 @@ def verify_evidence(candidate, after, *, calendar, prior):
             or proof.get('session_dates') != [str(d) for d in sessions]):
         raise ValueError('next_open_official_evidence_invalid')
     kind = prior_actions(prior)
+    if action_scope.KEY in proof:
+        kind -= action_scope.verify(candidate, prior, sessions, calendar.through, proof[action_scope.KEY])
+        action_scope.result_matches(proof[action_scope.KEY], after)
+    elif require_scope and action_scope.excluded_actions(prior, candidate['symbol'], signal, sessions, calendar.through):
+        raise ValueError('next_open_prior_action_scope_invalid')
     rights_proof = payload.get(rights.PROVENANCE_KEY) or {}
     if 'rights' in kind and (after['status'] != 'validated'
             or rights_proof.get('evidence_version') != 'twse-cash-rights-v1'
@@ -219,6 +231,9 @@ def verify_evidence(candidate, after, *, calendar, prior):
                 raise ValueError('next_open_official_split_unverified')
             return
         if checked['status'] != 'validated' or any(payload.get(k) != checked['outcome'].get(k) for k in fields):
+            raise ValueError('next_open_official_metrics_mismatch')
+        if action_scope.KEY in proof and event_kind is None and {
+                k: v for k, v in payload.items() if k not in (KEY, 'historical_repair')} != checked['outcome']:
             raise ValueError('next_open_official_metrics_mismatch')
 
 

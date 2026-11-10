@@ -60,7 +60,7 @@ def _manual(candidate, row, calendar):
     state, reason, target = classify_window(candidate, row, basis='next_open', window=row['window_days'],
                                           as_of_date=calendar.through, calendar=calendar)
     owned = any(k in row['outcome'] for k in (
-        'historical_repair', 'official_rights_recovery', 'reviewed_rights_recovery', 'official_corporate_action'))
+        'historical_repair', 'official_rights_recovery', 'reviewed_rights_recovery', 'official_corporate_action', 'split_event'))
     eligible = target is not None and (state in {'input_unverified', 'invalid_window'}
                                       or owned and state not in {'validated', 'terminal', 'immature'})
     return eligible, reason
@@ -194,6 +194,8 @@ def _evaluate(reader, context, calendar, tape):
             codes = {'next_open_official_provider_unavailable', 'next_open_official_rights_unverified',
                 'next_open_official_action_unverified', 'next_open_official_source_invalid',
                 'next_open_official_split_unverified',
+                'next_open_prior_action_scope_unverified', 'next_open_prior_action_scope_invalid',
+                'next_open_prior_action_scope_event_unresolved',
                 'next_open_official_source_identity_invalid', 'twse_rights_incomplete_price_window',
                 'twse_rights_invalid_price_row', 'next_open_captured_provider_failure'}
             code = str(exc) if str(exc) in codes else 'next_open_official_evidence_unavailable'
@@ -242,7 +244,7 @@ def capture_evidence(bind, request, *, calendar, provider=None):
     return artifact
 
 
-def _verify_after(candidate, after, calendar, *, prior=None, require_official=True):
+def _verify_after(candidate, after, calendar, *, prior=None, require_official=True, require_scope=True):
     state, _, _ = classify_window(candidate, after, basis='next_open', window=after['window_days'],
                                   as_of_date=calendar.through, calendar=calendar)
     if state not in {'validated', 'terminal'} or after['status'] not in {'validated', 'skipped'}:
@@ -253,7 +255,7 @@ def _verify_after(candidate, after, calendar, *, prior=None, require_official=Tr
         raise ValueError('next_open_repair_cutoff_invalid')
     if require_official:
         from ai_stock_sentinel.daily_radar.next_open_official_repair import verify_evidence
-        verify_evidence(candidate, after, calendar=calendar, prior=prior or {})
+        verify_evidence(candidate, after, calendar=calendar, prior=prior or {}, require_scope=require_scope)
     if state == 'validated':
         outcome = after['outcome']
         days = [d for d in calendar.sessions if d > date.fromisoformat(candidate['record_date'])]
@@ -313,5 +315,6 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
     return _apply_result_manifest(session, plan, expected_sha256=expected_sha256, rollback=rollback,
         manifest_version=LEGACY_VERSION if legacy else VERSION, result_version=RESEARCH_VALIDATION_VERSION,
         verify_after=lambda candidate, after: _verify_after(candidate, after, calendar,
-            prior=priors[(after['candidate_id'], after['window_days'])], require_official=not legacy),
+            prior=priors[(after['candidate_id'], after['window_days'])], require_official=not legacy,
+            require_scope=not rollback),
         verify_context=lambda: _calendar_context(session, calendar))

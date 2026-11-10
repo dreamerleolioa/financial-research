@@ -77,6 +77,14 @@ capture 使用自己的唯讀 session，先凍結相關官方 archive，再於 p
 
 現金增資補修另可認證 Yahoo 原始行情已與官方全窗口一致的情況，包含既有容差內的精度差異。此分支仍重新查核現金增資條件、參考收盤價、其他公司行動與完整官方股票／TAIEX 行情，使用官方未還原價格計算；`verification_mode` 區分 `raw_prices_matched` 與 `adjustment_recovered`，取證與離線重播採同一模式。一般增資衝突 recovery 仍要求實際可還原價差；舊取證沒有此模式時維持原判定。
 
+日曆修正後，若同一類舊事件（包括巢狀 prior evidence）都已核實位於新窗口外，補修以 `prior_action_scope` 保存日期、標的、範圍及新取得的官方報告。取證須重新核實舊事件，並完整檢查新窗口的行動報告與股票／TAIEX 行情；停牌以停止至恢復買賣的整段區間判斷，與窗口重疊時仍保留原阻擋。未知日期、標的或來源不能取得窗口外豁免。新窗口若另有事件，須通過其現行判定；現金股利仍採未還原價格報酬並核對除息資料，不納入報酬。只有舊分割證據的窗口也可列入人工補修 inventory，普通 writer 的保護不變。
+
+`prior_action_scope` 的原始報告、來源 hash 與範圍判定由 plan／apply／rollback 離線重播，不會在寫入交易內連 provider。完整窗口、前後值、候選 revision 與舊證據鏈繼續保留；需要窗口外判定時，缺少此證據的 manifest 不可向前 apply，須重新 capture，不能只改版號或重算雜湊補入證據。已套用的舊 v2 manifest 保留原嚴格判定及受控 rollback；其他不需要窗口外判定的既有 manifest 沿用原檢查。
+
+全範圍與單日報告必須一致，不能用單日查到事件掩蓋全範圍缺漏；事件類型、條件、參考價及停牌區間都須互相核對。舊分割不會只憑「權」字當作已核實，配股須比對既有有界精度下的換股比率；獨立面額變更記錄則保留完整資料列交叉核對（[TWSE 面額變更說明](https://www.twse.com.tw/zh/announcement/change/cal.html)）。目前增資／配股／減資的專用驗證失敗時，不可用通用 `stock_split_in_window` 覆蓋；此補修分支的通用分割僅接受獨立官方面額變更佐證。一般現金股利另核對官方前一交易日收盤價、金額與既有 Decimal 容差，不接受 Yahoo 與官方行動資料互相矛盾。
+
+通用分割也須核對整個窗口的股利與分割標記，不能只核對第一筆事件；未記載股利、額外分割或 benchmark 的未知行動都保持未解狀態。benchmark 會同時檢查實際計算列與事件重播的原始輸入，避免轉成官方價格時把矛盾標記消掉。
+
 一般 readiness、validation 報表／窗口排程與 durable 窗口摘要在 SQL 層排除 `reviewed_official_window` 與 `historical_repair.prior_evidence`，不縮短年度範圍或窗口，也不移除目前輸入認證、事件／terminal 判定及補修識別。job status 只投影工作狀態所需欄位，不載入完整工作結果。完整原始證據仍保存於 DB 與 manifest；補修、寫入 revision／前置值檢查及 rollback 繼續使用完整快照。
 
 目前 capture 與 manifest 契約為 v2，manifest 的 `reviewed_official_window` 保存完整官方價格、來源及實際計算輸入，沿用既有浮點容差。必要事件另保存原始報告與行情供離線重播；plan 與 apply 都重新執行窗口、標的、來源、事件、精度及報酬驗證，apply 交易內不連 provider。事件重播輸入由候選、窗口及行情重新建立，不採用 manifest 可改寫的狀態與報酬欄位。既有分割事件也不能因後來的行情漏標而變回已驗證報酬。v1 capture 必須重新取證，v1 manifest 禁止 apply，不能只改版號或重算 SHA256 延用舊證據。已套用的 v1 manifest 保留 rollback，仍須通過原雜湊、輸入版本、前後值與共用日曆檢查。

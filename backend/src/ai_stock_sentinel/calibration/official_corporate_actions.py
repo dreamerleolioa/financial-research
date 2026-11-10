@@ -237,18 +237,25 @@ def _tpex_action(symbol, sessions, capture):
         return _distribution(day, row["每仟股無償配股"], row["現金股利"], row["除權息前收盤價"]), sources
 
     resume, row = reductions[0]
+    action = _tpex_reduction(symbol, resume, row)
+    return action, sources if action is not None else []
+
+
+def _tpex_reduction(symbol, resume, row):
+    """Parse the same reduction terms in range inventories and event lookups."""
+    code = symbol.split('.')[0]
     if row["減資原因"] != "現金減資":
-        return None, []
+        return None
     detail = _DetailCells(str(row["詳細資料"])).terms()
     if (detail["股票代號/股票名稱:"].split("/")[0].strip() != code
             or _roc_date(detail["恢復買賣日期:"]) != resume):
         raise ValueError("official_corporate_action_identity_mismatch")
     if any(detail[key] != "NA" for key in ("現金增資總股數:", "現金增資認購價:", "現金增資配股率:")):
-        return None, []
+        return None
     ratio = rights._amount(detail["每壹仟股換發新股票:"], "股") / 1000
     refund = rights._amount(detail["每股退還股款:"], "元/股")
     stop = _roc_date(detail["停止買賣日期:"])
-    return _cash_reduction(resume, stop, ratio, refund, row["最後交易日之收盤價格"]), sources
+    return _cash_reduction(resume, stop, ratio, refund, row["最後交易日之收盤價格"])
 
 
 def _cash_reduction(resume, stop, ratio, refund, previous_close):
