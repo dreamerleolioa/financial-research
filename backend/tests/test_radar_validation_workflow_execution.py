@@ -1,6 +1,14 @@
 import importlib.util
 import json
+from functools import partial
 from pathlib import Path
+
+
+def complete_readiness(endpoint,token):
+    from urllib.parse import parse_qs,urlsplit
+    day=parse_qs(urlsplit(endpoint).query)['run_date'][0]
+    return {'version':'radar-readiness-v1','market':'TW','requested_run_date':day,'effective_run_date':day,
+        'publication':{},'scoring':{},'validation':{b:{'ready':True} for b in ('signal_close','next_open')}}
 
 
 def runner():
@@ -8,7 +16,90 @@ def runner():
     spec = importlib.util.spec_from_file_location("radar_validation_runner", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.run=partial(module.run,readiness_request=complete_readiness)
     return module
+
+
+def test_unverified_legacy_returns_require_review_even_with_zero_retryable_skips(tmp_path,capsys):
+    calls=[]
+    def post(endpoint,token,payload):
+        calls.append(payload['return_basis'])
+        return {'status':'completed','as_of_date':'2026-11-06','retryable_skipped_count':0,
+            'report':{'remaining_retryable_window_count':0,
+                'skip_reasons':{'validation_input_unverified':int(payload['return_basis']=='next_open')}}}
+    assert runner().run(endpoint='test',token='private',run_date='2026-11-06',output_dir=tmp_path,
+        request=post,sleep=lambda _:None)==1
+    assert calls==['signal_close','next_open']
+    assert json.loads((tmp_path/'next_open-attempt-1.json').read_text())['runner']['stop_reason']=='needs_review'
+
+
+def test_runner_checks_shared_full_readiness_before_declaring_completion(tmp_path):
+    def post(endpoint,token,payload):
+        return {'status':'completed','as_of_date':'2026-11-06','retryable_skipped_count':0,
+            'report':{'remaining_retryable_window_count':0}}
+    calls=[]
+    def readiness(endpoint,token):
+        calls.append(endpoint)
+        response=complete_readiness(endpoint,token)
+        response['validation']['next_open']={'ready':False,'reasons':{'validation_input_unverified':1813},
+            'gaps':[{'next_action':'needs_review'}]}
+        return response
+    assert runner().run(endpoint='https://backend.invalid/internal/daily-radar/forward-validation/run',
+        token='private',run_date='2026-11-06',output_dir=tmp_path,request=post,readiness_request=readiness)==1
+    assert len(calls)==2 and all('run_date=2026-11-06' in c for c in calls)
+    artifact=json.loads((tmp_path/'next_open-attempt-1.json').read_text())
+    assert artifact['runner']['stop_reason']=='needs_review'
+    assert artifact['readiness']['validation']['next_open']['ready'] is False
+
+
+def test_failed_readiness_request_never_inherits_tentative_completion(tmp_path):
+    calls=[]
+    def post(endpoint,token,payload):
+        calls.append(payload['return_basis'])
+        return {'status':'completed','as_of_date':'2026-11-06','retryable_skipped_count':0,
+            'records_written':3,'report':{'remaining_retryable_window_count':0,
+                'source_recovery':[{'stage':'official_prices','recovered_dates':['2026-11-03']}]}}
+    def unavailable(endpoint,token): raise TimeoutError()
+    assert runner().run(endpoint='test',token='private',run_date='2026-11-06',output_dir=tmp_path,
+        request=post,readiness_request=unavailable,sleep=lambda _:None)==1
+    assert calls==['signal_close']*2+['next_open']*2
+    for path in tmp_path.glob('*.json'):
+        artifact=json.loads(path.read_text())
+        assert artifact['runner']['stop_reason']!='completed'
+        assert artifact['records_written']==3
+        assert artifact['report']['source_recovery'][0]['recovered_dates']==['2026-11-03']
+        assert artifact['readiness_error']['error_type']=='TimeoutError'
+
+
+def test_wrong_date_readiness_fails_both_bases_without_retries(tmp_path):
+    def post(endpoint,token,payload):
+        return {'status':'completed','as_of_date':'2026-11-06','retryable_skipped_count':0,
+            'report':{'remaining_retryable_window_count':0}}
+    def wrong(endpoint,token):
+        return complete_readiness(endpoint,token) | {'effective_run_date':'2026-11-05'}
+    assert runner().run(endpoint='test',token='private',run_date='2026-11-06',output_dir=tmp_path,
+        request=post,readiness_request=wrong)==1
+    assert len(list(tmp_path.glob('*.json')))==2
+
+
+def test_readiness_request_uses_remaining_basis_budget(tmp_path,monkeypatch):
+    from contextlib import contextmanager
+    module=runner();now=[0];deadlines=[]
+    @contextmanager
+    def deadline(seconds):
+        deadlines.append(seconds);yield
+    monkeypatch.setattr(module,'request_deadline',deadline)
+    def post(endpoint,token,payload):
+        now[0]+=899
+        return {'status':'completed','as_of_date':'2026-11-06','retryable_skipped_count':0,
+            'report':{'remaining_retryable_window_count':0}}
+    def late(endpoint,token):
+        now[0]+=2
+        return complete_readiness(endpoint,token)
+    assert module.run(endpoint='test',token='private',run_date='2026-11-06',output_dir=tmp_path,
+        request=post,readiness_request=late,clock=lambda:now[0],sleep=lambda _:None)==1
+    assert deadlines==[300,1,300,1]
+    assert all(json.loads(p.read_text())['runner']['stop_reason']=='budget_exhausted' for p in tmp_path.glob('*.json'))
 
 
 def test_one_basis_can_run_without_executing_the_other(tmp_path):
@@ -217,6 +308,6 @@ def test_recovery_budget_limits_the_remaining_request_and_wait(tmp_path, monkeyp
     assert module.run(endpoint="test", token="private", run_date="2026-11-03",
         output_dir=tmp_path, request=post, sleep=sleep, clock=lambda: now[0]) == 1
     assert sleeps == [2]
-    assert deadlines == [300, 300]
+    assert deadlines == [300, 180, 300]
     summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert summaries[-2]["stop_reason"] == "budget_exhausted"

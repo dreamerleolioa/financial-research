@@ -9,6 +9,30 @@ from urllib.parse import urlencode
 from daily_radar_http import get, diagnostic_json, request_deadline
 
 
+def valid_readiness(result, run_date):
+    return (isinstance(result, dict) and result.get('version') == 'radar-readiness-v1'
+        and result.get('market') == 'TW' and result.get('requested_run_date') == run_date
+        and result.get('effective_run_date') == run_date
+        and all(isinstance(result.get(key), dict) for key in ('publication', 'scoring', 'validation'))
+        and all(isinstance(result['validation'].get(basis), dict) for basis in ('signal_close', 'next_open')))
+
+
+def scope_ready(result, run_date, scope):
+    if not valid_readiness(result, run_date):
+        return False
+    if scope == 'publication':
+        provenance = result['publication'].get('input_manifest')
+        return (result['publication'].get('state') == 'published'
+            and result['publication'].get('status') == 'completed'
+            and result['publication'].get('output_complete', True) is True
+            and result['scoring'].get('ready') is True
+            and (provenance is None or (provenance.get('state') == 'recorded'
+                 and provenance.get('matches_current_inputs') is True)))
+    if scope == 'all':
+        return result.get('data_ready') is True
+    return result['validation'].get(scope, {}).get('ready') is True
+
+
 def run(*, endpoint, token, run_date, output_dir, scope="all", request=get):
     if date.fromisoformat(run_date).isoformat() != run_date:
         raise ValueError("invalid_readiness_date")
@@ -20,25 +44,9 @@ def run(*, endpoint, token, run_date, output_dir, scope="all", request=get):
         with request_deadline(180):
             result = request(endpoint.rstrip("/") + "/internal/daily-radar/readiness?" + urlencode(
                 {"market": "TW", "run_date": run_date}), token)
-        valid = (isinstance(result, dict) and result.get("version") == "radar-readiness-v1"
-            and result.get("market") == "TW" and result.get("requested_run_date") == run_date
-            and result.get("effective_run_date") == run_date
-            and all(isinstance(result.get(key), dict) for key in ("publication", "scoring", "validation"))
-            and all(isinstance(result["validation"].get(basis), dict) for basis in ("signal_close", "next_open")))
-        if not valid:
+        if not valid_readiness(result, run_date):
             raise ValueError("invalid_readiness_response")
-        if scope == "publication":
-            provenance = result["publication"].get("input_manifest")
-            ready = (valid and result.get("publication", {}).get("state") == "published"
-                and result.get("publication", {}).get("status") == "completed"
-                and result["publication"].get("output_complete", True) is True
-                and result.get("scoring", {}).get("ready") is True
-                and (provenance is None or (provenance.get("state") == "recorded"
-                     and provenance.get("matches_current_inputs") is True)))
-        elif scope == "all":
-            ready = valid and result.get("data_ready") is True
-        else:
-            ready = valid and result.get("validation", {}).get(scope, {}).get("ready") is True
+        ready = scope_ready(result, run_date, scope)
     except (OSError, HTTPException, ValueError, TypeError, AttributeError) as exc:
         result, ready = {"error_type": type(exc).__name__}, False
     (path / f"readiness-{scope}.json").write_text(diagnostic_json(result, token))

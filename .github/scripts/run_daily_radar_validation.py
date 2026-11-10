@@ -6,13 +6,15 @@ import os
 from pathlib import Path
 import time
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 
-from daily_radar_http import post, request_deadline, _NoRedirect, diagnostic_json
+from daily_radar_http import get, post, request_deadline, _NoRedirect, diagnostic_json
+from check_daily_radar_readiness import valid_readiness, scope_ready
 
 
 def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep,
         attempts=6, basis_timeout=900, clock=time.monotonic,
-        return_bases=("signal_close", "next_open")):
+        return_bases=("signal_close", "next_open"), readiness_request=get):
     if date.fromisoformat(run_date).isoformat() != run_date:
         raise ValueError("invalid_validation_date")
     if type(attempts) is not int or attempts < 1 or basis_timeout <= 0:
@@ -34,6 +36,11 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
         for attempt in range(1, attempt_limit + 1):
             retryable = False
             valid = False
+            readiness = None
+            validation_response = None
+            readiness_error = None
+            needs_review = False
+            readiness_blocked = False
             try:
                 remaining_time = deadline - clock()
                 if remaining_time <= 0:
@@ -51,21 +58,66 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                          and response["retryable_skipped_count"] >= 0
                          and type(remaining) is int and remaining >= 0)
                 ready = valid and response["retryable_skipped_count"] == 0 and remaining == 0
+                # Compatibility with deployed reports predating the readiness
+                # gate: protected legacy returns must never be called completed.
+                for key in ('skip_reasons', 'current_run_skip_reasons'):
+                    reasons = report.get(key, {})
+                    if not isinstance(reasons, dict) or any(type(v) is not int or v < 0 for v in reasons.values()):
+                        raise ValueError('validation_skip_reasons_invalid')
+                    needs_review |= reasons.get('validation_input_unverified', 0) > 0
+                ready = ready and not needs_review
+                if ready:
+                    validation_response = response
+                    remaining_time = deadline - clock()
+                    if remaining_time <= 0:
+                        raise TimeoutError('validation_budget_exhausted')
+                    root = endpoint.removesuffix('/internal/daily-radar/forward-validation/run')
+                    with request_deadline(min(180, remaining_time)):
+                        readiness = readiness_request(root + '/internal/daily-radar/readiness?' + urlencode(
+                            {'market': 'TW', 'run_date': run_date}), token)
+                    if clock() > deadline:
+                        raise TimeoutError('validation_budget_exhausted')
+                    if not valid_readiness(readiness, run_date):
+                        raise ValueError('invalid_readiness_response')
+                    ready = scope_ready(readiness, run_date, basis)
+                    readiness_blocked = not ready
+                    inventory = readiness['validation'][basis]
+                    reasons, gaps = inventory.get('reasons', {}), inventory.get('gaps', [])
+                    unverified = inventory.get('input_unverified_count', 0)
+                    if (not isinstance(reasons, dict) or not isinstance(gaps, list)
+                            or any(not isinstance(g, dict) for g in gaps)
+                            or any(type(v) is not int or v < 0 for v in reasons.values())
+                            or type(unverified) is not int or unverified < 0):
+                        raise ValueError('invalid_readiness_diagnostics')
+                    needs_review = (unverified > 0 or reasons.get('validation_input_unverified', 0) > 0
+                        or any(g.get('next_action') == 'needs_review' for g in gaps))
+                    ready = ready and not needs_review
                 retryable = valid and not ready
+                if needs_review or readiness_blocked:
+                    retryable = False
                 transport_failures = 0
             except HTTPError as exc:
+                ready = valid = False
                 response = {"error_type": "HTTPError", "http_status": exc.code}
                 retryable = exc.code in (408, 425, 429) or 500 <= exc.code < 600
                 transport_failures += 1
             except (OSError, HTTPException) as exc:
+                ready = valid = False
                 response = {"error_type": type(exc).__name__}
                 retryable = True
                 transport_failures += 1
             except (ValueError, TypeError) as exc:
+                ready = valid = False
                 response = {"error_type": type(exc).__name__}
+            if validation_response is not None and not valid:
+                readiness_error, response = response, validation_response
             stop_reason = None
             if ready:
                 stop_reason = "completed"
+            elif needs_review:
+                stop_reason = 'needs_review'
+            elif readiness_blocked:
+                stop_reason = 'readiness_not_ready'
             elif clock() >= deadline:
                 stop_reason = "budget_exhausted"
             elif not retryable:
@@ -77,7 +129,8 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 stop_reason = "no_progress"
             elif attempt == attempt_limit:
                 stop_reason = "attempt_limit"
-            diagnostic = response | {"runner": {"return_basis": basis, "attempt": attempt,
+            diagnostic = response | {"readiness": readiness, "readiness_error": readiness_error,
+                                    "runner": {"return_basis": basis, "attempt": attempt,
                                                  "stop_reason": stop_reason}}
             (output_dir / f"{basis}-attempt-{attempt}.json").write_text(diagnostic_json(diagnostic, token))
             report = response.get("report") if isinstance(response.get("report"), dict) else {}
@@ -90,6 +143,8 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 "skipped_count", "retryable_skipped_count", "terminal_skipped_count", "error_type", "http_status")}
             summary.update(return_basis=basis, attempt=attempt,
                 stop_reason=stop_reason,
+                readiness_ready=ready if validation_response is not None else None,
+                readiness_error=readiness_error,
                 current_run_skip_reasons=report.get("current_run_skip_reasons"),
                 remaining_retryable_window_count=report.get("remaining_retryable_window_count"),
                 persisted_skip_reasons=report.get("skip_reasons", {}),
