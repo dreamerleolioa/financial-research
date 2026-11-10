@@ -12,6 +12,7 @@ from ai_stock_sentinel.calibration.forward_validation import (
     OHLC_PRICE_FIELDS, candidate_key, number, parse_date, price_conflict_fields,
 )
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
+from ai_stock_sentinel.daily_radar.trading_calendar import pending_window_is_immature
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
 
 OBSERVATION_DIAGNOSTIC_VERSION = "daily-radar-observation-v1"
@@ -198,12 +199,10 @@ def _summarize(ranked, outcomes, window, calendar):
             repeats += 1
             continue
         row = outcomes.get((candidate_key(c), window))
+        if pending_window_is_immature(row, signal=signal, window=window, sessions=calendar):
+            immature += 1
+            continue
         if row is None:
-            # Saved validated/skipped results take precedence. A calendar that
-            # starts after the signal cannot certify an absent window as immature.
-            if calendar is not None and signal in calendar and sum(day > signal for day in calendar) < window:
-                immature += 1
-                continue
             missing_outcomes += 1
             continue
         if row.get("status") != "validated":

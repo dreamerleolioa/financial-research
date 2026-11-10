@@ -113,6 +113,18 @@ class CalendarUnavailableError(RuntimeError):
     pass
 
 
+def pending_window_is_immature(row, *, signal, window, sessions):
+    """Only absent/explicitly pending results may use current maturity evidence.
+
+    The caller supplies sessions only when trusted coverage reaches its cutoff.
+    Saved successes, diagnostic gaps and genuine failures remain visible even
+    when a newer, narrower calendar cannot establish their complete window.
+    """
+    pending = row is None or (row.get("status") == "skipped" and row.get("skip_reason") == "window_not_mature")
+    return (pending and sessions is not None and signal in sessions
+            and sum(day > signal for day in sessions) < window)
+
+
 def require_calendar(provider, *, start_date, end_date):
     try:
         calendar = TradingCalendar.parse(provider.fetch(start_date=start_date,end_date=end_date).payload())
