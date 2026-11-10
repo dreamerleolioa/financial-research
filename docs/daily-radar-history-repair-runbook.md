@@ -104,6 +104,8 @@ apply／rollback 共用既有補修的鎖定、雜湊、版本、candidate revis
 
 diagnostic-only 向前 apply 也使用上述 JSONB fingerprint，核對除 `observation_diagnostic`／`historical_repair` 外的完整 outcome；包含巢狀欄位的布林與數字互換均拒絕，不能藉重算 manifest 根雜湊改動報酬或命中判定。apply／rollback 均接受 JSONB 同值數字（含大整數與科學記號），確保接受的補修可回復。舊版已套用的型別漂移另保留 rollback 專用的舊版報酬值契約，但目前資料必須符合精確型別的原 postimage（或已回復的 before）；兩種同值契約都不符合的報酬改動仍拒絕。
 
+diagnostic-only 的保護範圍包含完整結果列：只排除 outcome 最外層的上述兩個 metadata key。狀態、目標日、評估日、skip reason、身分及任何額外 snapshot 欄位均不可向前改動；同名的巢狀 key 仍屬不可變資料。舊版已套用的 scalar 漂移保留 rollback 專用的舊 outcome 同值契約，但目前整列必須精確符合原 before／after，避免以偽造 postimage 回復其他資料。
+
 舊事件已證明位於新窗口外、而目前另有現金減資時，先執行既有減資專用驗證，確認官方事件與停牌區間，再驗證股票必要日期；TAIEX 仍須完整信號日加 N 日。Yahoo 以零成交量列表示停牌時，不論有無減資標記都依相同規則；缺少非停牌行情、未核實停牌日期、額外事件或 benchmark 行動仍拒絕補修。所有來源與事件驗證仍凍結於 capture 並由 plan／apply／rollback 離線重播。
 
 next_open 續跑在排除既有結果前，先確認日曆覆蓋本次 as_of_date；有足夠日曆時可重用，顯式 range／事件補取仍重新核對指定來源。新取得的日曆即使本批沒有結果需重算也會保存；重用或新取得的日曆均在接受結果時重新核對 checkpoint 與衝突。若缺少 prepared-run 日曆 checkpoint，回報 calendar_checkpoint_unavailable，並以 SAVEPOINT 撤回本批結果，避免捕捉錯誤後外層 commit 留下部分資料。行情補取只要求本批有效日期範圍，窗口驗證仍使用完整日曆。prepare_only 只回傳日曆及結果，不寫 checkpoint；完整年度範圍、人工結果保護及所有窗口不變。

@@ -407,11 +407,15 @@ def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest
                         return {k:v for k,v in payload.items() if k not in ("observation_diagnostic","historical_repair")}
                     before_returns = returns(entry["before"]["outcome"])
                     after_returns = returns(entry["after"]["outcome"])
-                    # Every accepted numeric form must also be reversible.
-                    # Legacy value equality is an additional rollback-only
-                    # fallback; exact typed pre/postimages are required below.
-                    unchanged = (_storage_fingerprint(before_returns) == _storage_fingerprint(after_returns)
-                        or (rollback and before_returns == after_returns))
+                    before_state = entry['before'] | {'outcome': before_returns}
+                    after_state = entry['after'] | {'outcome': after_returns}
+                    unchanged = _storage_fingerprint(before_state) == _storage_fingerprint(after_state)
+                    # Old applied manifests could also change mutable scalar
+                    # fields. Permit restoring their exact typed postimage,
+                    # retaining the original outcome-value rollback contract.
+                    if rollback and not unchanged:
+                        unchanged = (_storage_fingerprint(before_returns) == _storage_fingerprint(after_returns)
+                            or before_returns == after_returns)
                     if not unchanged:
                         raise ValueError("diagnostic_repair_changed_returns")
             current = snapshot(row)
