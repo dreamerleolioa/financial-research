@@ -411,21 +411,25 @@ def job_status(db, job_id):
     job = db.get(RadarJob, job_id)
     if job is None:
         raise ValueError('radar_job_not_found')
-    members = db.execute(select(RadarWorkItem, RadarJobWork.required).join(RadarJobWork).where(
+    members = db.execute(select(
+        RadarWorkItem.lane, RadarWorkItem.stage, RadarWorkItem.state, RadarWorkItem.reason,
+        RadarWorkItem.retry_at, RadarWorkItem.not_before, RadarWorkItem.lease_expires_at,
+        RadarWorkItem.result['status'].as_string().label('market_status'), RadarJobWork.required,
+    ).join(RadarJobWork).where(
         RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True))).all()
     lanes = {}
-    for work, required in members:
+    for work in members:
         lane = lanes.setdefault(work.lane, {'states': Counter(), 'reasons': Counter(), 'required_count': 0})
         lane['states'][work.state] += 1
-        lane['required_count'] += int(required)
+        lane['required_count'] += int(work.required)
         if work.reason:
             lane['reasons'][work.reason] += 1
-    closed = any(w.stage == 'market-session' and w.state == 'terminal' and (w.result or {}).get('status') == 'closed' for w, _ in members)
+    closed = any(w.stage == 'market-session' and w.state == 'terminal' and w.market_status == 'closed' for w in members)
     scope = job.scope or {}
     now = database_now(db)
     runnable = any((w.state in {'pending', 'waiting_provider'} and w.retry_at is not None
         and aware(w.retry_at) <= now and aware(w.not_before) <= now)
-        or (w.state == 'running' and aware(w.lease_expires_at) <= now) for w, _ in members)
+        or (w.state == 'running' and aware(w.lease_expires_at) <= now) for w in members)
     runnable = runnable or planning_remaining(job, scope)
     return {'job_id': job.id, 'requested_run_date': str(job.run_date), 'effective_run_date': str(job.run_date),
         'run_date': str(job.run_date), 'state': job.state, 'data_ready': bool(scope.get('audit_ready')),

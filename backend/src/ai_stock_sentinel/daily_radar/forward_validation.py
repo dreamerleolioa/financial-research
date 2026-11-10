@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import JSON, and_, func, or_, select
 from sqlalchemy.orm import Session
 from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 from ai_stock_sentinel.data_sources.reviewed_market_lifecycle import termination_evidence
@@ -719,6 +719,23 @@ def upsert_forward_validation_results(
     }
 
 
+def _summary_outcome(column, dialect):
+    """Remove archived repair inputs in SQL, before JSON reaches the process.
+
+    Keep current input identity, terminal/action proofs and repair ownership.
+    Repair manifests, write revisions and rollback use full ORM snapshots,
+    never this projection. No evidence is changed in the database.
+    """
+    if dialect == 'postgresql':
+        from sqlalchemy.dialects.postgresql import array
+        return column.op('-')('reviewed_official_window').op('#-')(
+            array(['historical_repair', 'prior_evidence']))
+    if dialect == 'sqlite':
+        return func.json_remove(column, '$.reviewed_official_window',
+                                '$.historical_repair.prior_evidence', type_=JSON)
+    raise ValueError('unsupported_validation_summary_dialect')
+
+
 def persisted_forward_validation_outcomes(
     session: Session,
     candidates: Iterable[Mapping[str, Any]],
@@ -735,8 +752,11 @@ def persisted_forward_validation_outcomes(
     if not candidate_by_id:
         return []
     active_windows = _ordered_positive_values(windows)
+    model = DailyRadarForwardValidationResult
     results = session.execute(
-        select(DailyRadarForwardValidationResult)
+        select(model.candidate_id, model.signal_date, model.window_days, model.validation_version,
+               model.benchmark_symbol, model.evaluation_as_of_date, model.status, model.target_date,
+               model.skip_reason, _summary_outcome(model.outcome, session.get_bind().dialect.name).label('outcome'))
         .where(
             DailyRadarForwardValidationResult.candidate_id.in_(candidate_by_id),
             DailyRadarForwardValidationResult.window_days.in_(active_windows),
@@ -747,7 +767,7 @@ def persisted_forward_validation_outcomes(
             DailyRadarForwardValidationResult.candidate_id.asc(),
             DailyRadarForwardValidationResult.window_days.asc(),
         )
-    ).scalars()
+    )
     outcomes: list[dict[str, Any]] = []
     for result in results:
         candidate = candidate_by_id[result.candidate_id]
@@ -840,6 +860,12 @@ def exclude_persisted_daily_radar_windows(
             for key, windows in windows_by_candidate.items()
             if windows
         }
+    dialect = session.get_bind().dialect.name
+    payload = DailyRadarForwardValidationResult.outcome
+    # A legacy marker containing only prior_evidence is still nonempty/owned
+    # after its large value is omitted. Test key existence, including JSON null.
+    prior_present = (payload['historical_repair'].has_key('prior_evidence') if dialect == 'postgresql'
+                     else func.json_type(payload, '$.historical_repair.prior_evidence').is_not(None))
     terminal = {
         (row["candidate_id"], row["window_days"])
         for row in session.execute(
@@ -852,7 +878,8 @@ def exclude_persisted_daily_radar_windows(
                 DailyRadarForwardValidationResult.evaluation_as_of_date,
                 DailyRadarForwardValidationResult.skip_reason,
                 DailyRadarForwardValidationResult.target_date,
-                DailyRadarForwardValidationResult.outcome,
+                _summary_outcome(payload, dialect).label('outcome'),
+                prior_present.label('historical_prior_present'),
                 DailyRadarCandidate.symbol,
                 DailyRadarRun.run_date,
                 _candidate_benchmark_column().label("candidate_benchmark"),
@@ -881,6 +908,7 @@ def exclude_persisted_daily_radar_windows(
             and (
                 row["status"] == "validated"
                 or bool(_mapping(row["outcome"]).get("historical_repair"))
+                or bool(row['historical_prior_present'])
                 or (
                     row["status"] == "skipped"
                     and row["evaluation_as_of_date"] is not None
