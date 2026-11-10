@@ -178,13 +178,15 @@ def test_api_keeps_legacy_results_and_research_retry_is_idempotent(monkeypatch):
     from ai_stock_sentinel.daily_radar import maintenance_router
     from ai_stock_sentinel.calibration.price_provider import get_research_price_provider
     from ai_stock_sentinel.daily_radar.forward_validation import FORWARD_VALIDATION_VERSION
-    from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
+    from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult, DailyRadarPreparedRun
     from ai_stock_sentinel.db.session import get_db
     from test_forward_validation_memory import engine_with_tables
     from test_daily_radar_forward_validation import _add_candidate, _add_run
 
     engine = engine_with_tables()
     with Session(engine) as session:
+        session.add(DailyRadarPreparedRun(run_date=date(2026, 6, 9), market='TW',
+            selected_symbols=[], universe=[], symbol_count=0, step_statuses={}))
         candidate = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 5)))
         candidate_id = candidate.id
         session.add(DailyRadarForwardValidationResult(

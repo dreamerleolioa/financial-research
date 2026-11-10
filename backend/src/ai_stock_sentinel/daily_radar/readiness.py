@@ -37,7 +37,7 @@ from ai_stock_sentinel.db.models import DailyRadarRun, DailyRadarCandidate
 def recovery_action(reason):
     """Stable classes consumed by reports and the durable executor."""
     if reason in {"conflicting_price_records", "adjusted_history_changed", "price_basis_mismatch",
-                  "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict", UNVERIFIED}:
+                  "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict", 'calendar_window_unverified', UNVERIFIED}:
         return "needs_review"
     if reason in {"research_recovery_budget_exhausted", "budget_exhausted"}:
         return "resume"
@@ -56,7 +56,7 @@ def _needs_diagnostic(candidate):
             and origin.get("candidate_id") == candidate["candidate_id"])
 
 
-def classify_window(candidate, row, *, basis, window, as_of_date, calendar):
+def classify_window(candidate, row, *, basis, window, as_of_date, calendar, require_window=True):
     """One shared readiness decision for reports and persisted work completion."""
     signal = date.fromisoformat(candidate["record_date"])
     calendar_ready = calendar is not None and calendar.through >= as_of_date
@@ -96,6 +96,10 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar):
         elif (diagnostic.get("status") not in EVENT_STATUSES | {"already_broken_out", "already_invalidated"}
               or diagnostic.get("missing_reason")):
             state, reason = "missing_diagnostic", "observation_diagnostic_incomplete"
+    if require_window and state == 'validated' and target is not None:
+        from ai_stock_sentinel.daily_radar.window_identity import window_error
+        if error := window_error(row, signal=signal, sessions=future[:window], basis=basis):
+            state, reason = 'invalid_window', error
     return state, reason, target
 
 

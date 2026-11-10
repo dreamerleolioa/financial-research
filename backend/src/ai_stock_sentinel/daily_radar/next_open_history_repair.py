@@ -246,7 +246,7 @@ def capture_evidence(bind, request, *, calendar, provider=None):
 
 def _verify_after(candidate, after, calendar, *, prior=None, require_official=True, require_scope=True):
     state, _, _ = classify_window(candidate, after, basis='next_open', window=after['window_days'],
-                                  as_of_date=calendar.through, calendar=calendar)
+                                  as_of_date=calendar.through, calendar=calendar, require_window=require_official)
     if state not in {'validated', 'terminal'} or after['status'] not in {'validated', 'skipped'}:
         raise ValueError('next_open_repair_incomplete')
     if require_official and after['status'] == 'validated' and after.get('skip_reason') is not None:

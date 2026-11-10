@@ -97,3 +97,5 @@ uv run python scripts/repair_daily_radar_next_open.py rollback --manifest /tmp/n
 ```
 
 apply／rollback 共用既有補修的鎖定、雜湊、版本、candidate revision 與全批 preimage 檢查。新結果的 `historical_repair.prior_evidence` 保留原始 outcome，manifest 另保存完整原列供回復；不把舊企業行動證據直接當成新報酬證明。回復後仍可能需要人工處理，必須重新檢查完整 365 日 inventory、兩種 basis 與所有窗口，而非只看本批 receipt。
+
+完整窗口另保存 `validation_window` 輕量指紋，包含 basis、信號日、窗口長度、進場日、目標日及實際計算交易日序列的 hash；readiness、公開驗證結果及續跑核對整段日期，不因目標日相同就延用舊結果。舊補修可使用已保存的完整官方窗口日期，摘要 SQL 僅投影小型日期清單；沒有完整日期證據時列為待核實，不由目標日或價格稀疏程度推算。日曆變更後，受保護結果進人工補修，一般 writer 仍不得覆蓋。

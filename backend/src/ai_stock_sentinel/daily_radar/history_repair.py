@@ -134,6 +134,7 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
     from ai_stock_sentinel.daily_radar.validation_inputs import (
         bind_validation_input, validation_candidate_revision, validation_inputs_match,
     )
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window, window_error
     input_ids = [row.candidate_id for _, row, _ in loaded]
     evaluation_inputs = {c['candidate_id']: c | {'observation_origin':
         origins.get((c['symbol'], strategy_cohort(c)))} for c in forward_validation_candidates_from_runs(
@@ -174,7 +175,9 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
         if operation == "recompute":
             if (row.status == "validated" and row.target_date == target
                     and before["outcome"].get("target_date",str(target)) == str(target)
-                    and validation_inputs_match(evaluation_inputs[row.candidate_id], before)):
+                    and validation_inputs_match(evaluation_inputs[row.candidate_id], before)
+                    and window_error(
+                        before, signal=row.signal_date, sessions=days, basis='signal_close') is None):
                 raise ValueError("recompute_requires_historical_mismatch")
             # Avoid using valid-looking but inconsistent OHLC or ambiguous prices.
             from ai_stock_sentinel.calibration.forward_validation import price_conflict_fields, number
@@ -218,6 +221,7 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
             "calendar_sha256": fingerprint(calendar.payload()),
             "price_evidence_sha256": fingerprint(evidence.get(str(row.id)))}
         if operation == 'recompute':
+            after = bind_window(after, calendar.sessions, 'signal_close')
             after['outcome'] = bind_validation_input(evaluation_inputs[row.candidate_id], after)['outcome']
         plan["results"].append({"id": row.id, "operation": operation, "before": before, "after": after,
                                 "observation_origin": deepcopy(origin),

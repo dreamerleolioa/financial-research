@@ -1139,7 +1139,7 @@ def test_benchmark_price_loader_rejects_non_finite_newest_complete_run() -> None
     assert prices[-1]["close"] == 1010.0
 
 
-def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal() -> None:
+def test_retryable_and_unverified_calendar_windows_are_retried_but_stale_is_terminal() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
         engine,
@@ -1210,7 +1210,7 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
     assert terminal_summary["terminal_skipped_count"] == 1
     assert pending == {f"id:{candidate.id}": [5]}
     assert stale == {}
-    assert completed == {}
+    assert completed == {f"id:{candidate.id}": [5]}
 
 
 def test_legacy_terminal_skip_without_evaluation_date_is_requeued() -> None:

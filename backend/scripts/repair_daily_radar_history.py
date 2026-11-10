@@ -45,6 +45,7 @@ def write_new(path, payload):
 
 def inventory(session, calendar):
     from ai_stock_sentinel.daily_radar.validation_inputs import validation_inputs_match
+    from ai_stock_sentinel.daily_radar.window_identity import window_error
     candidates = forward_validation_candidates_from_runs(session, market="TW", end_date=calendar.through)
     closed_ids = list(session.scalars(select(DailyRadarRun.id).where(DailyRadarRun.market=="TW",
         DailyRadarRun.run_date.between(calendar.start,calendar.through),
@@ -73,7 +74,8 @@ def inventory(session, calendar):
         unverified = not validation_inputs_match(c, {'status': row.status,
             'skip_reason': row.skip_reason, 'outcome': row.outcome})
         if (row.target_date!=days[-1] or row.outcome.get("target_date",str(days[-1]))!=str(days[-1])
-                or unverified):
+                or unverified or row.status == 'validated' and window_error({'outcome': row.outcome},
+                    signal=row.signal_date, sessions=days, basis='signal_close')):
             targets.append({"id":row.id,"operation":"recompute"})
         else:
             origin=origins.get((c["symbol"],strategy_cohort(c))) or {}

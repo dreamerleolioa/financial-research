@@ -82,11 +82,17 @@ def certify_results(session, results=None):
     """Synthetic results in this fixture were evaluated against these inputs."""
     from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
     from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
+    from ai_stock_sentinel.daily_radar.window_identity import identity, KEY
     snapshots = {c['candidate_id']: c for c in forward_validation_candidates_from_runs(session, market='TW')}
     results = list(session.scalars(select(DailyRadarForwardValidationResult))) if results is None else results
     for result in results:
         if result.candidate_id in snapshots:
             result.outcome = bind_validation_input(snapshots[result.candidate_id], {'outcome': result.outcome})['outcome']
+            days = [result.signal_date+timedelta(days=i) for i in range(1, 100)
+                    if (result.signal_date+timedelta(days=i)).weekday()<5][:result.window_days]
+            if result.status == 'validated' and days[-1] == result.target_date:
+                basis = 'next_open' if result.validation_version.startswith('daily-radar-next-open') else 'signal_close'
+                result.outcome = result.outcome | {KEY: identity(result.signal_date, days, basis)}
 
 
 def test_rejected_calendar_never_falls_back_to_sparse_price_maturity(storage):

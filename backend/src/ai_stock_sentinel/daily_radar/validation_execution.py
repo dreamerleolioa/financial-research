@@ -109,6 +109,7 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
                 windows_by_candidate,
                 benchmark_symbol=request.benchmark_symbol,
                 as_of_date=as_of_date,
+                calendar=calendar,
             )
         with metrics.stage("prepare_prices"):
             preparation = prepare_due_forward_validation(

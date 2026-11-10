@@ -215,9 +215,13 @@ def check_outcome_calendar(outcomes, sessions):
     checked, invalid = [], []
     for row in outcomes:
         if row["status"] == "validated":
+            from ai_stock_sentinel.daily_radar.window_identity import window_error
             signal, target = parse_date(row["signal_date"]), parse_date(row.get("target_date"))
             expected = [d for d in days if signal is not None and d > signal][:int(row["window_days"])]
-            if signal not in days or len(expected) != row["window_days"] or target != expected[-1]:
+            error = (window_error(row, signal=signal, sessions=expected,
+                basis='next_open' if row['validation_version'].startswith('daily-radar-next-open') else 'signal_close')
+                if signal in days and len(expected) == row['window_days'] else None)
+            if signal not in days or len(expected) != row["window_days"] or target != expected[-1] or error:
                 reason = "historical_window_calendar_mismatch"
                 invalid.append({"candidate_id":row["candidate_id"],"window_days":row["window_days"],
                                 "validation_version":row["validation_version"],"reason":reason})

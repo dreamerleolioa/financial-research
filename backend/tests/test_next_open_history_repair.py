@@ -404,6 +404,7 @@ def test_legacy_artifacts_cannot_apply_but_legacy_applied_rows_can_rollback(db):
     legacy['version']=tool.LEGACY_VERSION
     for entry in legacy['results']:
         entry['after']['outcome'].pop('reviewed_official_window')
+        entry['after']['outcome'].pop('validation_window', None)
         entry['after']['outcome']['historical_repair']['version']=tool.LEGACY_VERSION
     legacy['sha256']=tool.fingerprint({k:v for k,v in legacy.items() if k!='sha256'})
     with pytest.raises(ValueError,match='next_open_legacy_manifest_apply_disabled'):

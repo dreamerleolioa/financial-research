@@ -22,10 +22,14 @@ def seed_both(db):
     snapshot = validation.forward_validation_candidates_from_runs(db, market='TW', end_date=DAY)[0]
     for row in list(db.scalars(select(Result))):
         row.outcome = bind_validation_input(snapshot, {'outcome': row.outcome})['outcome']
+        from ai_stock_sentinel.daily_radar.window_identity import identity
+        days = [d for d in cal.sessions if d > row.signal_date][:row.window_days]
+        row.outcome = row.outcome | {'validation_window': identity(row.signal_date, days, 'next_open')}
         payload = deepcopy(row.outcome) | {'observation_diagnostic': {
             'version': 'daily-radar-observation-v1', 'status': 'confirmed',
             'first_seen_date': snapshot['record_date'], 'lead_trading_days': 3,
             'waiting_max_adverse_excursion_pct': -2}}
+        payload['validation_window'] = identity(row.signal_date, days, 'signal_close')
         db.add(Result(candidate_id=row.candidate_id, signal_date=row.signal_date,
                       window_days=row.window_days, target_date=row.target_date,
                       benchmark_symbol='TAIEX', status='validated', evaluation_as_of_date=DAY,

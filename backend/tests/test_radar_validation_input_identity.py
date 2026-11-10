@@ -102,6 +102,8 @@ def test_both_evaluators_bind_all_five_complete_windows(basis):
             for w in (5,10,20,40,60)]
     assert {r['window_days'] for r in rows} == {5,10,20,40,60}
     assert all(r['status'] == 'validated' and r['outcome']['validation_input'] == proof(candidate) for r in rows)
+    from ai_stock_sentinel.daily_radar.window_identity import identity
+    assert all(r['outcome']['validation_window'] == identity(days[0], days[1:1+r['window_days']], basis) for r in rows)
 
 
 def test_writer_keeps_collected_revision_and_never_stamps_current_inputs(db):

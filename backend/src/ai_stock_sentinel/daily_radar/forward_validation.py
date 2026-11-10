@@ -94,6 +94,10 @@ def build_forward_validation_report(
         benchmark_prices=diagnostic_benchmark, as_of_date=as_of_date,
     )
     outcomes = bind_validation_inputs(candidate_list, outcomes)
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window
+    calculation_days = (trading_calendar if trading_calendar is not None else
+        shared_forward_validation.normalize_price_series(benchmark_prices).keys())
+    outcomes = [bind_window(row, calculation_days, 'signal_close') for row in outcomes]
 
     report = _build_report_from_outcomes(
         candidate_list,
@@ -266,10 +270,12 @@ def evaluate_forward_window(
     results = _with_market_lifecycle_diagnostics(
         [result], price_series_by_symbol=prices, benchmark_prices=benchmark_prices, as_of_date=as_of_date,
     )
-    return _with_observation_diagnostics(
+    diagnosed = _with_observation_diagnostics(
         [candidate], results, price_series_by_symbol=prices,
         benchmark_prices=benchmark_prices, as_of_date=as_of_date,
     )[0]
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window
+    return bind_window(diagnosed, shared_forward_validation.normalize_price_series(benchmark_prices).keys(), 'signal_close')
 
 
 def _with_market_lifecycle_diagnostics(outcomes, *, price_series_by_symbol, benchmark_prices, as_of_date, trading_calendar=None):
@@ -756,7 +762,8 @@ def persisted_forward_validation_outcomes(
     results = session.execute(
         select(model.candidate_id, model.signal_date, model.window_days, model.validation_version,
                model.benchmark_symbol, model.evaluation_as_of_date, model.status, model.target_date,
-               model.skip_reason, _summary_outcome(model.outcome, session.get_bind().dialect.name).label('outcome'))
+               model.skip_reason, _summary_outcome(model.outcome, session.get_bind().dialect.name).label('outcome'),
+               model.outcome['reviewed_official_window']['session_dates'].label('window_session_dates'))
         .where(
             DailyRadarForwardValidationResult.candidate_id.in_(candidate_by_id),
             DailyRadarForwardValidationResult.window_days.in_(active_windows),
@@ -813,6 +820,7 @@ def persisted_forward_validation_outcomes(
                 "target_date": result.target_date.isoformat() if result.target_date else None,
                 "skip_reason": result.skip_reason,
                 "outcome": dict(result.outcome or {}),
+                "window_session_dates": result.window_session_dates,
             }
         )
     return checked_validation_inputs(candidate_by_id.values(), outcomes)
@@ -848,6 +856,7 @@ def exclude_persisted_daily_radar_windows(
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
     terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
     as_of_date: date | None = None,
+    calendar=None,
 ) -> dict[str, list[int]]:
     candidate_ids = [
         int(key.removeprefix("id:"))
@@ -866,6 +875,17 @@ def exclude_persisted_daily_radar_windows(
     # after its large value is omitted. Test key existence, including JSON null.
     prior_present = (payload['historical_repair'].has_key('prior_evidence') if dialect == 'postgresql'
                      else func.json_type(payload, '$.historical_repair.prior_evidence').is_not(None))
+    def complete_window(row):
+        if row['status'] != 'validated' or row['historical_prior_present'] or _mapping(row['outcome']).get('historical_repair'):
+            return True  # Reviewed rows require explicit manual repair, never ordinary overwrite.
+        if benchmark_symbol != 'TAIEX':
+            return True  # Do not apply Taiwan sessions to other benchmarks.
+        if calendar is None:
+            return False
+        from ai_stock_sentinel.daily_radar.window_identity import window_error
+        expected = [d for d in calendar.sessions if d > row['signal_date']][:row['window_days']]
+        return len(expected) == row['window_days'] and window_error(row, signal=row['signal_date'], sessions=expected,
+            basis='next_open' if validation_version.startswith('daily-radar-next-open') else 'signal_close') is None
     terminal = {
         (row["candidate_id"], row["window_days"])
         for row in session.execute(
@@ -893,7 +913,7 @@ def exclude_persisted_daily_radar_windows(
             .execution_options(yield_per=128)
         ).mappings()
         if (
-            row["signal_date"] == row["run_date"]
+            complete_window(row) and row["signal_date"] == row["run_date"]
             and row["benchmark_symbol"] == benchmark_symbol
             and row["benchmark_symbol"] == str(row["candidate_benchmark"] or DEFAULT_BENCHMARK_SYMBOL)
             and (as_of_date is None

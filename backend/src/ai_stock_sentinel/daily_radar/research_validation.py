@@ -214,8 +214,9 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             "net_excess_return_pct": round(gross - cost - benchmark_return, 4),
         } for cost in RESEARCH_COSTS},
     }
-    return bind_validation_input(candidate, base | {"status": "validated", "target_date": days[-1].isoformat(),
-                   "skip_reason": None, "outcome": payload})
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window
+    return bind_window(bind_validation_input(candidate, base | {"status": "validated", "target_date": days[-1].isoformat(),
+                   "skip_reason": None, "outcome": payload}), days, 'next_open')
 
 
 def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *, as_of_date, scoped, provider,
@@ -327,9 +328,13 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     pending = {candidate_key(c): (sorted(resume[c["candidate_id"]])
                if scoped or (start and parse_date(c["record_date"]) < start) else windows) for c in candidates}
     if request.mode == "due":
+        from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
+        saved_calendar = load_calendar(session, start_date=min(
+            (parse_date(c['record_date']) for c in candidates), default=as_of_date), as_of_date=as_of_date)
         pending = exclude_persisted_daily_radar_windows(
             session, pending, validation_version=RESEARCH_VALIDATION_VERSION,
-            benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS)
+            benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
+            calendar=saved_calendar)
     active = [c for c in candidates if pending.get(candidate_key(c))]
     outcomes = []
     recovery_checks = []

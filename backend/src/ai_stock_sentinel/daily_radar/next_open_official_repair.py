@@ -232,6 +232,8 @@ def verify_evidence(candidate, after, *, calendar, prior, require_scope=True):
             return
         if checked['status'] != 'validated' or any(payload.get(k) != checked['outcome'].get(k) for k in fields):
             raise ValueError('next_open_official_metrics_mismatch')
+        if 'validation_window' not in payload:
+            checked['outcome'].pop('validation_window', None)  # Legacy full session proof remains authoritative.
         if action_scope.KEY in proof and event_kind is None and {
                 k: v for k, v in payload.items() if k not in (KEY, 'historical_repair')} != checked['outcome']:
             raise ValueError('next_open_official_metrics_mismatch')
@@ -264,6 +266,8 @@ def _verify_event(candidate, after, frozen, kind, calendar, target):
         if result is not None and (result['status'] != 'skipped' or result['skip_reason'] not in actions.TERMINAL_REASONS):
             raise ValueError('next_open_official_event_replay_mismatch')
     derived = {k:v for k,v in after['outcome'].items() if k not in (KEY, 'historical_repair')}
+    if result is not None and 'validation_window' not in derived:
+        result['outcome'].pop('validation_window', None)
     if (result is None or replay.offset != len(replay.calls)
             or any(result.get(k) != after.get(k) for k in ('status', 'skip_reason', 'target_date'))
             or result['outcome'] != derived):
