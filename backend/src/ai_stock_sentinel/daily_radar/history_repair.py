@@ -6,6 +6,7 @@ the reviewed manifest hash. Original candidates/raw prices are never rewritten.
 """
 from copy import deepcopy
 from datetime import date
+from decimal import Decimal
 from hashlib import sha256
 import json
 import math
@@ -251,6 +252,8 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
     # mutually dependent when planned from the same database snapshot.
     if plan["results"] and plan["prepared"]["before"] != step_after:
         raise ValueError("repair_calendar_phase_required")
+    for entry in plan['results']:
+        _verify_repair_marker(plan, entry)
     plan["sha256"] = fingerprint(plan)
     return plan
 
@@ -258,6 +261,55 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
 def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
     return _apply_result_manifest(session, plan, expected_sha256=expected_sha256, rollback=rollback,
                                   manifest_version=VERSION, result_version=FORWARD_VALIDATION_VERSION)
+
+
+def _storage_fingerprint(value):
+    """JSONB normalizes numeric spelling/sign of zero, but not JSON types.
+
+    Tag every node so user strings/objects cannot collide with numeric tags.
+    Decimal tuples avoid rounding large integers under the ambient context.
+    Source/capture hashes keep their original canonical representation.
+    """
+    def encode(item):
+        if item is None: return ['null']
+        if type(item) is bool: return ['bool', item]
+        if type(item) in (int, float):
+            number = Decimal(str(item))
+            if not number.is_finite(): raise ValueError('repair_snapshot_json_invalid')
+            sign, digits, exponent = number.as_tuple(); digits = list(digits)
+            if not any(digits): return ['number', 0, [0], 0]
+            while len(digits) > 1 and digits[-1] == 0:
+                digits.pop(); exponent += 1
+            return ['number', sign, digits, exponent]
+        if isinstance(item, str): return ['string', item]
+        if isinstance(item, (list, tuple)): return ['array', [encode(v) for v in item]]
+        if isinstance(item, dict) and all(isinstance(k, str) for k in item):
+            return ['object', [[k, encode(item[k])] for k in sorted(item)]]
+        raise ValueError('repair_snapshot_json_invalid')
+    return fingerprint(encode(value))
+
+
+def _verify_repair_marker(plan, entry):
+    """Bind ownership to the same preimage and sources as the reviewed manifest."""
+    def digest(value):
+        return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
+    marker = entry['after']['outcome'].get('historical_repair')
+    if not isinstance(marker, dict) or not digest(plan.get('repair_id')) or entry['operation'] not in ('recompute', 'diagnostic'):
+        raise ValueError('repair_marker_invalid')
+    expected = {'repair_id': plan['repair_id'], 'operation': entry['operation'],
+        'before_sha256': fingerprint(entry['before']), 'calendar_sha256': fingerprint(plan['calendar'])}
+    if plan['version'] == 'daily-radar-next-open-repair-v2':
+        if entry['operation'] != 'recompute' or not digest(plan.get('capture_sha256')):
+            raise ValueError('repair_marker_invalid')
+        expected.update(version=plan['version'], capture_sha256=plan['capture_sha256'],
+                        prior_evidence=entry['before']['outcome'])
+    else:
+        expected.update(as_of_date=plan['calendar']['covered_through'], observation_origin=entry['observation_origin'])
+        if not digest(marker.get('price_evidence_sha256')):
+            raise ValueError('repair_marker_invalid')
+    if (any(key not in marker for key in expected)
+            or fingerprint({key: marker[key] for key in expected}) != fingerprint(expected)):
+        raise ValueError('repair_marker_invalid')
 
 
 def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest_version,
@@ -268,6 +320,11 @@ def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest
     TradingCalendar.parse(plan["calendar"])
     if len(plan["results"]) > MAX_RESULTS or len(plan["runs"]) > 20:
         raise ValueError("repair_allowlist_too_large")
+    if not rollback:
+        for entry in plan['results']:
+            _verify_repair_marker(plan, entry)
+    # Legacy applied snapshots can rollback without new marker requirements;
+    # every current row must still match its exact frozen pre/postimage below.
     # Row locks cannot prevent a new public revision (or a candidate change)
     # from changing the first observation between the origin read and commit.
     # Reserve the publication relations before any origin/canonical reads.
@@ -352,9 +409,10 @@ def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest
                         raise ValueError("diagnostic_repair_changed_returns")
             current = snapshot(row)
             source, target = ("after","before") if rollback else ("before","after")
-            if current not in (entry[source],entry[target]):
+            current_sha, source_sha, target_sha = (_storage_fingerprint(v) for v in (current, entry[source], entry[target]))
+            if current_sha not in (source_sha, target_sha):
                 raise ValueError("repair_row_changed")
-            locked.append((kind,row,entry[target],current == entry[target]))
+            locked.append((kind,row,entry[target],current_sha == target_sha))
     entry = plan["prepared"]
     prepared = session.scalar(select(DailyRadarPreparedRun).where(DailyRadarPreparedRun.id==entry["id"])
         .with_for_update().execution_options(populate_existing=True))
@@ -362,11 +420,11 @@ def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest
     if prepared is None or str(prepared.run_date) != entry["run_date"] or prepared.market != "TW":
         raise ValueError("repair_prepared_changed")
     current_steps = {k:(prepared.step_statuses or {}).get(k) for k in entry["before"]}
-    if current_steps not in (entry[source],entry[target]):
+    if _storage_fingerprint(current_steps) not in (_storage_fingerprint(entry[source]), _storage_fingerprint(entry[target])):
         raise ValueError("repair_calendar_changed")
     if verify_context is not None:
         verify_context()
-    if rollback and (plan["runs"] or entry["before"] != entry["after"]):
+    if rollback and (plan["runs"] or _storage_fingerprint(entry["before"]) != _storage_fingerprint(entry["after"])):
         dependency = session.scalar(select(DailyRadarForwardValidationResult.id).where(
             DailyRadarForwardValidationResult.id.not_in([r["id"] for r in plan["results"]]),
             DailyRadarForwardValidationResult.outcome["historical_repair"]["calendar_sha256"].as_string()
@@ -386,7 +444,7 @@ def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest
             steps.pop(key,None)
         else:
             steps[key] = deepcopy(value)
-    metadata_written = steps != prepared.step_statuses
+    metadata_written = _storage_fingerprint(steps) != _storage_fingerprint(prepared.step_statuses)
     if metadata_written:
         prepared.step_statuses = steps
     session.flush()

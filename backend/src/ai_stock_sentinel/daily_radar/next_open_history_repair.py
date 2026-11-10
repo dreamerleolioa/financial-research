@@ -16,7 +16,7 @@ from ai_stock_sentinel.daily_radar.collection_transactions import read_only_coll
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
 from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
 from ai_stock_sentinel.daily_radar.history_repair import (
-    MAX_RESULTS, MUTABLE_FIELDS, _apply_result_manifest, candidate_snapshot, fingerprint, result_snapshot,
+    MAX_RESULTS, MUTABLE_FIELDS, _apply_result_manifest, _verify_repair_marker, candidate_snapshot, fingerprint, result_snapshot,
 )
 from ai_stock_sentinel.daily_radar.readiness import classify_window
 from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION, run_research_validation
@@ -297,6 +297,8 @@ def build_repair_plan(bind, request, *, calendar, evidence):
             'calendar_sha256': fingerprint(calendar.payload()), 'capture_sha256': evidence['sha256'],
             'before_sha256': fingerprint(before), 'prior_evidence': deepcopy(before['outcome'])}}
         plan['results'].append(entry | {'after': after})
+    for entry in plan['results']:
+        _verify_repair_marker(plan, entry)
     plan['sha256'] = fingerprint(plan)
     return plan
 

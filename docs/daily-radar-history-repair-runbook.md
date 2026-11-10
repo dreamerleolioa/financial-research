@@ -99,3 +99,5 @@ uv run python scripts/repair_daily_radar_next_open.py rollback --manifest /tmp/n
 apply／rollback 共用既有補修的鎖定、雜湊、版本、candidate revision 與全批 preimage 檢查。新結果的 `historical_repair.prior_evidence` 保留原始 outcome，manifest 另保存完整原列供回復；不把舊企業行動證據直接當成新報酬證明。回復後仍可能需要人工處理，必須重新檢查完整 365 日 inventory、兩種 basis 與所有窗口，而非只看本批 receipt。
 
 完整窗口另保存 `validation_window` 輕量指紋，包含 basis、信號日、窗口長度、進場日、目標日及實際計算交易日序列的 hash；readiness、公開驗證結果及續跑核對整段日期，不因目標日相同就延用舊結果。舊補修可使用已保存的完整官方窗口日期，摘要 SQL 僅投影小型日期清單；沒有完整日期證據時列為待核實，不由目標日或價格稀疏程度推算。日曆變更後，受保護結果進人工補修，一般 writer 仍不得覆蓋。
+
+向前 apply 另驗證 `historical_repair` 擁有權：repair_id、operation、calendar hash 與完整 before hash 必須對應同一份 manifest；next_open v2 的版本、capture hash 及 `prior_evidence` 也必須一致。移除、清空或改寫標記後即使重算根雜湊仍拒絕整批。標記以原 canonical fingerprint 核對；持久化前後快照另採符合 JSONB 數值語意的 fingerprint，允許 `-0.0`／`0.0` 及同值數字表示的正規化，仍區分 JSON 布林、數字與字串，避免把 `true` 與 `1` 視為同一份證據。來源、capture 及 before 證據雜湊維持原規則。舊版已套用的資料可受控 rollback，但仍須通過原有雜湊、candidate revision、來源／日曆及精確前後快照檢查，不替舊資料補造新證據。
