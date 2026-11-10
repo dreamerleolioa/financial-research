@@ -133,6 +133,24 @@ def _unadjusted_rows(rows, action_source):
 
 
 def recover_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flagged_dates, capture, load_history):
+    return _verify_window(symbol, signal, sessions, yahoo_rows=yahoo_rows, benchmark_rows=benchmark_rows,
+                          flagged_dates=flagged_dates, capture=capture, load_history=load_history,
+                          reviewed=False)
+
+
+def verify_reviewed_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flagged_dates, capture, load_history):
+    """Certify matching raw prices or recover a proved cash-rights adjustment.
+
+    Only the explicit historical repair uses this mode. Ordinary recovery still
+    requires an actual discrepancy, and both modes prove the same entire window
+    and cash-only event before evaluating official unadjusted prices.
+    """
+    return _verify_window(symbol, signal, sessions, yahoo_rows=yahoo_rows, benchmark_rows=benchmark_rows,
+                          flagged_dates=flagged_dates, capture=capture, load_history=load_history,
+                          reviewed=True)
+
+
+def _verify_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flagged_dates, capture, load_history, reviewed):
     event, sources = _rights_issue(symbol, sessions, capture)
     target = sessions[-1]
     all_dates = (signal, *sessions)
@@ -165,7 +183,7 @@ def recover_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flag
                 isclose(raw[field] * factor, observed[field], rel_tol=1e-7, abs_tol=0.00005) for field in OHLC):
             raise ValueError("twse_rights_unexplained_price_conflict")
         adjusted.append(day)
-    if not adjusted or not flagged_dates.issubset(adjusted):
+    if (not adjusted and not reviewed) or not flagged_dates.issubset(adjusted):
         raise ValueError("twse_rights_unexplained_price_conflict")
 
     months = sorted({day.strftime("%Y%m01") for day in all_dates})
@@ -180,5 +198,7 @@ def recover_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flag
         "session_dates": sorted(dates), "yahoo_factor": factor, "yahoo_adjusted_dates": adjusted,
         "rights_value_included": False, "subscription_cash_flow_included": False,
     }
+    if reviewed:
+        evidence["verification_mode"] = "adjustment_recovered" if adjusted else "raw_prices_matched"
     return (_unadjusted_rows((official_stock[day] for day in sorted(dates)), "twse_official_rights_window"),
             _unadjusted_rows(official_index.values(), "index_not_applicable"), evidence)

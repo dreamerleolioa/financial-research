@@ -291,7 +291,8 @@ def test_common_calendar_check_is_once_per_locked_batch(db,monkeypatch):
 
 
 @pytest.mark.parametrize('gap',[None,'nested_prior','missing_announcement','stock_gap','index_gap'])
-def test_unmarked_yahoo_cannot_downgrade_existing_official_rights(scenario,monkeypatch,gap):
+@pytest.mark.parametrize('price_state',['adjusted','matching','matching_precision'])
+def test_unmarked_yahoo_cannot_downgrade_existing_official_rights(scenario,monkeypatch,gap,price_state):
     from datetime import timedelta
     from test_twse_rights_recovery import SIGNAL as signal,TARGET,DAYS
     from ai_stock_sentinel.db.models import TaiwanDailyBar
@@ -303,6 +304,13 @@ def test_unmarked_yahoo_cannot_downgrade_existing_official_rights(scenario,monke
     client=run.__closure__[0].cell_contents
     old=client.app.dependency_overrides[get_research_price_provider]()
     provider=RecoveringResearchPriceProvider(official_getter=old.official_getter)
+    if price_state != 'adjusted':
+        for symbol in quotes:
+            quotes[symbol]=[deepcopy(r)|{'price_source':'yfinance','dividends':0,'stock_splits':0}
+                            for r in prices[symbol]]
+            if price_state == 'matching_precision':
+                for row in quotes[symbol]:
+                    row.update({field:row[field]+0.000001 for field in ('open','high','low','close')})
     def yahoo(self,symbols,**kwargs):
         return {s:[deepcopy(r)|{'price_basis':'unadjusted_price','corporate_actions_checked':True}
                    for r in quotes[s]] for s in symbols}
@@ -336,10 +344,14 @@ def test_unmarked_yahoo_cannot_downgrade_existing_official_rights(scenario,monke
             for entry in plan['results']:
                 assert entry['after']['outcome']['forward_return_pct']==returns[entry['id']]
                 assert entry['after']['outcome'].get('official_rights_recovery')
-            for defect in ('date','subscription','report_hash'):
+                proof=entry['after']['outcome']['official_rights_recovery']
+                assert proof['verification_mode']==('adjustment_recovered' if price_state=='adjusted' else 'raw_prices_matched')
+            for defect in ('date','subscription','report_hash','verification_mode','replay_mode'):
                 changed=deepcopy(plan);outcome=changed['results'][0]['after']['outcome']
                 if defect=='date':outcome['official_rights_recovery']['event']['ex_date']=str(TARGET)
                 if defect=='subscription':outcome['official_rights_recovery']['event']['subscription_price']+=1
+                if defect=='verification_mode':outcome['official_rights_recovery']['verification_mode']='raw_prices_matched' if price_state=='adjusted' else 'adjustment_recovered'
+                if defect=='replay_mode':outcome['reviewed_official_window']['event_replay'].pop('rights_verification')
                 if defect=='report_hash':
                     call=next(c for c in outcome['reviewed_official_window']['event_replay']['calls']
                         if c['request']['method']=='capture_twse_report')
@@ -349,6 +361,21 @@ def test_unmarked_yahoo_cannot_downgrade_existing_official_rights(scenario,monke
                     tool.apply_repair_plan(db,changed,expected_sha256=changed['sha256'])
                 db.rollback()
         assert {r.id:result_snapshot(r) for r in rows}==before
+        if gap in {None,'nested_prior'}:
+            tool.apply_repair_plan(db,plan,expected_sha256=plan['sha256']);db.commit()
+            assert validation_inventory(db,as_of_date=TARGET)['next_open']['input_unverified_count']==0
+            tool.apply_repair_plan(db,plan,expected_sha256=plan['sha256'],rollback=True);db.commit()
+            assert {r.id:result_snapshot(r) for r in rows}==before
+            if price_state=='adjusted':
+                legacy=deepcopy(plan)
+                for entry in legacy['results']:
+                    payload=entry['after']['outcome']
+                    payload['official_rights_recovery'].pop('verification_mode')
+                    payload['reviewed_official_window']['event_replay'].pop('rights_verification')
+                legacy['sha256']=tool.fingerprint({k:v for k,v in legacy.items() if k!='sha256'})
+                tool.apply_repair_plan(db,legacy,expected_sha256=legacy['sha256']);db.commit()
+                tool.apply_repair_plan(db,legacy,expected_sha256=legacy['sha256'],rollback=True);db.commit()
+                assert {r.id:result_snapshot(r) for r in rows}==before
 
 
 @pytest.mark.parametrize('defect',['missing_day','wrong_symbol','wrong_return'])

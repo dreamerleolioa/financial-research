@@ -218,7 +218,8 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
                    "skip_reason": None, "outcome": payload})
 
 
-def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *, as_of_date, scoped, provider):
+def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *, as_of_date, scoped, provider,
+                           reviewed=False):
     symbol = candidate["symbol"]
     signal = parse_date(candidate["record_date"])
     window = row["window_days"]
@@ -233,7 +234,8 @@ def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *
     if not scoped and not flags:
         return None
     try:
-        prices, index, evidence = rights.recover_window(
+        verifier = rights.verify_reviewed_window if reviewed else rights.recover_window
+        prices, index, evidence = verifier(
             symbol, signal, sessions, yahoo_rows=yahoo, benchmark_rows=benchmark,
             flagged_dates=flags, capture=capture, load_history=load_history,
         )

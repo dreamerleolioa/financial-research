@@ -285,3 +285,40 @@ def test_reviewed_recovery_rejects_out_of_scope_requests(scenario, overrides):
     _, run, _, _, calls, _ = scenario
     assert run(**overrides).status_code == 422
     assert calls == []
+
+
+@pytest.mark.parametrize('window', [5, 10, 20, 40, 60])
+@pytest.mark.parametrize('defect', [None, 'stock_gap', 'index_gap', 'unexplained', 'action', 'stale_flag'])
+def test_reviewed_raw_matching_preserves_entire_window_and_strict_recovery(monkeypatch, window, defect):
+    from copy import deepcopy
+    from ai_stock_sentinel.calibration import twse_rights_recovery as rights
+    signal = date(2026, 1, 5)
+    sessions = [signal + timedelta(days=i) for i in range(1, 100)
+                if (signal + timedelta(days=i)).weekday() < 5][:window]
+    event = {'ex_date': str(sessions[2]), 'previous_close': 100,
+             'subscription_shares_per_thousand': 50, 'subscription_price': 60}
+    # Parser/source coverage is exercised by the integration fixture above.
+    # This isolates the full-window price contract at every supported length.
+    monkeypatch.setattr(rights, '_rights_issue', lambda *args: (deepcopy(event), []))
+    stock = [dict(date=str(d), open=100, high=101, low=99, close=100, price_source='twse_stock_day')
+             for d in [signal, *sessions]]
+    index = [row | {'price_source': 'twse_index_history'} for row in stock]
+    yahoo = [row | {'price_source': 'yfinance'} for row in stock[1:]]
+    if defect == 'stock_gap': stock.pop(window // 2)
+    if defect == 'index_gap': index.pop(window // 2)
+    if defect == 'unexplained': yahoo[-1]['close'] += 0.01
+    if defect == 'action': yahoo[-1]['stock_splits'] = 2
+    kwargs = dict(yahoo_rows=yahoo, benchmark_rows=index,
+                  flagged_dates={str(sessions[0])} if defect == 'stale_flag' else set(),
+                  capture=None, load_history=lambda symbol, **kw: stock if symbol != 'TAIEX' else index)
+    if defect:
+        with pytest.raises(ValueError, match='twse_rights_'):
+            rights.verify_reviewed_window('1727.TW', signal, sessions, **kwargs)
+    else:
+        prices, benchmark, proof = rights.verify_reviewed_window('1727.TW', signal, sessions, **kwargs)
+        assert [r['date'] for r in prices] == [str(d) for d in sessions]
+        assert [r['date'] for r in benchmark] == [str(d) for d in [signal, *sessions]]
+        assert proof['verification_mode'] == 'raw_prices_matched'
+        assert proof['yahoo_adjusted_dates'] == []
+        with pytest.raises(ValueError, match='twse_rights_unexplained_price_conflict'):
+            rights.recover_window('1727.TW', signal, sessions, **kwargs)

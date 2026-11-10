@@ -75,6 +75,8 @@ capture 使用自己的唯讀 session，先凍結相關官方 archive，再於 p
 
 新版取證必須另有完整官方股票與 TAIEX 窗口（含信號日），不能因 Yahoo 完整或 archive 為空而省略。過往現金增資／配股／減資證據即使藏在 `historical_repair.prior_evidence`，仍須重新通過既有事件、價格、精度與完整窗口判定；停牌缺日只接受同一官方事件已證明的 halt 範圍。來源不足時 preview 留下 `next_open_official_evidence_incomplete` 與 `official_repair_error.code`，plan 拒絕整批。
 
+現金增資補修另可認證 Yahoo 原始行情已與官方全窗口一致的情況，包含既有容差內的精度差異。此分支仍重新查核現金增資條件、參考收盤價、其他公司行動與完整官方股票／TAIEX 行情，使用官方未還原價格計算；`verification_mode` 區分 `raw_prices_matched` 與 `adjustment_recovered`，取證與離線重播採同一模式。一般增資衝突 recovery 仍要求實際可還原價差；舊取證沒有此模式時維持原判定。
+
 目前 capture 與 manifest 契約為 v2，manifest 的 `reviewed_official_window` 保存完整官方價格、來源及實際計算輸入，沿用既有浮點容差。必要事件另保存原始報告與行情供離線重播；plan 與 apply 都重新執行窗口、標的、來源、事件、精度及報酬驗證，apply 交易內不連 provider。事件重播輸入由候選、窗口及行情重新建立，不採用 manifest 可改寫的狀態與報酬欄位。既有分割事件也不能因後來的行情漏標而變回已驗證報酬。v1 capture 必須重新取證，v1 manifest 禁止 apply，不能只改版號或重算 SHA256 延用舊證據。已套用的 v1 manifest 保留 rollback，仍須通過原雜湊、輸入版本、前後值與共用日曆檢查。
 
 審閱 manifest 的完整前後值、候選 revision、官方事件與來源證據及 SHA256，另取得正式寫入授權後才執行：

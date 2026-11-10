@@ -17,6 +17,7 @@ from ai_stock_sentinel.daily_radar.validation_inputs import PROOF_KEY
 
 KEY = 'reviewed_official_window'
 VERSION = 'next-open-reviewed-official-window-v1'
+RIGHTS_VERIFICATION = 'full-window-recovery-or-matching-v1'
 
 
 def prior_actions(outcome):
@@ -100,13 +101,15 @@ def collect_window(candidate, before, row, *, calendar, provider):
         start = provider.position()
         if kind == 'rights':
             result = _recover_rights_window(candidate, event_row, stock_rows, marked_rows, benchmark_rows,
-                calendar.sessions, as_of_date=target, scoped=True, provider=provider)
+                calendar.sessions, as_of_date=target, scoped=True, provider=provider, reviewed=True)
         else:
             result = _classify_corporate_action(event_row, stock_rows, marked_rows, benchmark_rows,
                 as_of_date=target, provider=provider)
         frozen = {'kind': kind, 'row': deepcopy(event_row), 'yahoo': deepcopy(stock_rows),
             'marked': deepcopy(marked_rows), 'benchmark': deepcopy(benchmark_rows),
             'capabilities': list(provider.capabilities), 'calls': deepcopy(provider.calls[start:provider.position()])}
+        if kind == 'rights':
+            frozen['rights_verification'] = RIGHTS_VERIFICATION
         return result, frozen
     if 'rights' in kind:
         # Explicit scope makes prior official rights evidence mandatory even
@@ -234,8 +237,12 @@ def _verify_event(candidate, after, frozen, kind, calendar, target):
                 raise ValueError('next_open_official_event_report_hash_invalid')
     replay = _Tape(evidence=frozen)
     if kind == 'rights':
+        mode = frozen.get('rights_verification')
+        if mode not in (None, RIGHTS_VERIFICATION):
+            raise ValueError('next_open_official_event_verification_invalid')
         result = _recover_rights_window(candidate, row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
-            calendar.sessions, as_of_date=target, scoped=True, provider=replay)
+            calendar.sessions, as_of_date=target, scoped=True, provider=replay,
+            reviewed=mode == RIGHTS_VERIFICATION)
     else:
         result = _classify_corporate_action(row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
             as_of_date=target, provider=replay)
