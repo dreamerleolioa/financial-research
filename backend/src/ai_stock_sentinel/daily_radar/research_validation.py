@@ -325,16 +325,24 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         if {c["candidate_id"] for c in candidates} != set(candidate_ids):
             raise ValueError("validation_candidate_scope_unavailable")
     validate_forward_validation_benchmark(candidates, benchmark_symbol=request.benchmark_symbol)
+    official_calendar = None
+    if candidates and request.market == 'TW' and request.benchmark_symbol == 'TAIEX':
+        from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar, require_calendar
+        first_signal = min(parse_date(c['record_date']) for c in candidates)
+        official_calendar = load_calendar(session, start_date=first_signal, as_of_date=as_of_date)
+        missing_coverage = official_calendar is None or official_calendar.through < as_of_date
+        if calendar_provider is not None and (missing_coverage or request.mode != 'due' or scoped):
+            session.rollback()  # The router-owned collection transaction ends before source I/O.
+            official_calendar = require_calendar(calendar_provider, start_date=first_signal, end_date=as_of_date)
+        elif missing_coverage:
+            official_calendar = None
     pending = {candidate_key(c): (sorted(resume[c["candidate_id"]])
                if scoped or (start and parse_date(c["record_date"]) < start) else windows) for c in candidates}
     if request.mode == "due":
-        from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
-        saved_calendar = load_calendar(session, start_date=min(
-            (parse_date(c['record_date']) for c in candidates), default=as_of_date), as_of_date=as_of_date)
         pending = exclude_persisted_daily_radar_windows(
             session, pending, validation_version=RESEARCH_VALIDATION_VERSION,
             benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
-            calendar=saved_calendar)
+            calendar=official_calendar)
     active = [c for c in candidates if pending.get(candidate_key(c))]
     outcomes = []
     recovery_checks = []
@@ -359,12 +367,9 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             session, market=request.market, benchmark_symbol=request.benchmark_symbol,
             start_date=price_start, as_of_date=as_of_date)) |
             {day for day in _index(reference) if price_start <= day <= as_of_date})
-        official_calendar = None
-        if calendar_provider is not None:
-            session.rollback()
-            from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
-            official_calendar = require_calendar(calendar_provider,start_date=price_start,end_date=as_of_date)
-            reference_days = list(official_calendar.sessions)
+        if official_calendar is not None:
+            reference_days = [day for day in official_calendar.sessions if price_start <= day <= as_of_date]
+        session.rollback()  # Pending-window/reference reads may have opened a new collection transaction.
         benchmark = list(price_provider.fetch(
             [request.benchmark_symbol], start_date=price_start, end_date=as_of_date
         ).get(request.benchmark_symbol, []))
@@ -436,14 +441,18 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, reserve_validation_commit
     if prepare_only:
         return ValidationPreparation(candidates=candidates, outcomes=outcomes,
-            calendar=official_calendar if fresh and calendar_provider is not None else None,
+            calendar=official_calendar,
             as_of_date=as_of_date, return_basis="next_open", diagnostics=list(getattr(price_provider, "diagnostics", [])))
     reserve_validation_commit(session)
-    summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
-                                               require_existing_conflict=scoped)
-    if fresh and calendar_provider is not None:
-        from ai_stock_sentinel.daily_radar.trading_calendar import save_calendar
-        save_calendar(session,official_calendar)
+    # Keep result -> prepared lock order. A missing checkpoint must not leave
+    # accepted result writes behind if the caller handles the exception.
+    with session.begin_nested():
+        summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
+                                                   require_existing_conflict=scoped)
+        if official_calendar is not None:
+            from ai_stock_sentinel.daily_radar.trading_calendar import save_calendar
+            if not save_calendar(session, official_calendar):
+                raise ValueError('calendar_checkpoint_unavailable')
     remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
     persisted = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date,

@@ -12,7 +12,7 @@ from ai_stock_sentinel.calibration.research_prices import _mark_conflicts
 from ai_stock_sentinel.daily_radar import maintenance_router
 from ai_stock_sentinel.daily_radar.forward_validation import upsert_forward_validation_results
 from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
-from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult as Result
+from ai_stock_sentinel.db.models import DailyRadarPreparedRun, DailyRadarForwardValidationResult as Result
 from ai_stock_sentinel.db.session import get_db
 from test_daily_radar_forward_validation import _add_candidate, _add_run
 from test_forward_validation_memory import engine_with_tables
@@ -143,8 +143,19 @@ def scenario(monkeypatch):
     monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "rights-test")
     with TestClient(app) as client:
         def run(**overrides):
+            payload = BODY | overrides
+            # The daily workflow prepares this checkpoint before validation.
+            try:
+                cutoff = date.fromisoformat(payload['as_of_date'])
+            except (TypeError, ValueError):
+                cutoff = None  # Invalid requests must still reach API validation.
+            with Session(engine) as db:
+                if cutoff is not None and db.scalar(select(DailyRadarPreparedRun).where(DailyRadarPreparedRun.run_date == cutoff)) is None:
+                    db.add(DailyRadarPreparedRun(run_date=cutoff, market='TW', symbol_count=0,
+                        selected_symbols=[], universe=[], step_statuses={}))
+                    db.commit()
             return client.post("/internal/daily-radar/forward-validation/run",
-                               json=BODY | overrides, headers={"Authorization": "Bearer rights-test"})
+                               json=payload, headers={"Authorization": "Bearer rights-test"})
         yield engine, run, prices, quotes, calls, faults
     engine.dispose()
 

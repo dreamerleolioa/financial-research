@@ -127,9 +127,10 @@ def get_trading_calendar_provider(db: Session = Depends(get_db)):
 
 
 def save_calendar(session, calendar):
+    """Return whether a prepared-run checkpoint actually retained this proof."""
     calendar = TradingCalendar.parse(calendar.payload())
     if not inspect(session.connection()).has_table(DailyRadarPreparedRun.__tablename__):
-        return
+        return False
     if session.get_bind().dialect.name == "postgresql":
         session.execute(text("SELECT pg_advisory_xact_lock(904240106)"))
     for previous in stored_calendars(session):
@@ -150,8 +151,10 @@ def save_calendar(session, calendar):
                     d for d in calendar.sessions if lo <= d <= hi}:
                 raise ValueError("calendar_evidence_conflict")
             if previous.start <= calendar.start and previous.through == calendar.through:
-                return
+                return True
         prepared.step_statuses = dict(prepared.step_statuses or {}) | {CALENDAR_STEP: calendar.payload()}
+        return True
+    return False
 
 
 def stored_calendars(session, *, as_of_date=None):

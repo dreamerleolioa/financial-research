@@ -327,8 +327,8 @@ def test_unmarked_yahoo_cannot_downgrade_existing_official_rights(scenario,monke
                 prior=deepcopy(value);value.pop('official_rights_recovery')
                 value['historical_repair']={'prior_evidence':prior}
             row.outcome=value
-        db.add(DailyRadarPreparedRun(run_date=TARGET,market='TW',symbol_count=0,selected_symbols=[],universe=[],
-            step_statuses={'validation-calendar':cal.payload()}));db.commit()
+        db.scalar(select(DailyRadarPreparedRun).where(DailyRadarPreparedRun.run_date==TARGET)).step_statuses = {
+            'validation-calendar':cal.payload()};db.commit()
         before={r.id:result_snapshot(r) for r in rows}
         if gap=='missing_announcement':faults.add(gap)
         if gap=='stock_gap':prices['2890.TW']=[p for p in prices['2890.TW'] if p['date']!=str(DAYS[10])]

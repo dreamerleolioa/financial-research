@@ -577,8 +577,8 @@ def test_calendar_correction_recomputes_rights_window_and_preserves_original(mon
             row = db.scalar(select(Result).where(Result.status == 'validated',
                 Result.outcome['official_rights_recovery']['event']['symbol'].as_string() == '1727.TW'))
             before = tool.result_snapshot(row)
-            db.add(DailyRadarPreparedRun(run_date=cutoff, market='TW', symbol_count=0,
-                selected_symbols=[], universe=[], step_statuses={'validation-calendar': cal.payload()}))
+            db.scalar(select(DailyRadarPreparedRun).where(DailyRadarPreparedRun.run_date == cutoff)).step_statuses = {
+                'validation-calendar': cal.payload()}
             db.commit()
             request = tool.inventory(db, calendar=cal)
             request['results'] = [r for r in request['results'] if r['id'] == row.id]
