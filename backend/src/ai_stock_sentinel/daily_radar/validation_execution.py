@@ -11,10 +11,13 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     exclude_persisted_daily_radar_windows, forward_validation_candidates_from_runs,
     load_benchmark_prices_from_prepared_market_context, load_price_series_from_raw_data,
     persisted_forward_validation_outcomes, validate_forward_validation_benchmark,
+    FORWARD_VALIDATION_VERSION,
 )
 from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
 from ai_stock_sentinel.daily_radar.schemas import DailyRadarForwardValidationRunResponse
-from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, accept_validation_results
+from ai_stock_sentinel.daily_radar.validation_preparation import (
+    ValidationPreparation, accept_validation_results, capture_validation_acceptance,
+)
 
 logger = logging.getLogger("ai_stock_sentinel.daily_radar.maintenance_router")
 
@@ -45,6 +48,8 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    acceptance = None if prepare_only else capture_validation_acceptance(db, candidates,
+        market=request.market, windows=request.windows, validation_version=FORWARD_VALIDATION_VERSION)
     symbols = {str(candidate["symbol"]) for candidate in candidates}
     metrics.counts["symbol_count"] = len(symbols)
     candidate_record_dates = [
@@ -146,7 +151,7 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         return ValidationPreparation(candidates=candidates, outcomes=evaluation.outcomes, calendar=calendar,
             as_of_date=as_of_date, return_basis="signal_close", benchmark_prices=benchmark_prices)
     with metrics.stage("upsert"):
-        write_summary = accept_validation_results(db, evaluation.outcomes, calendar=calendar)
+        write_summary = accept_validation_results(db, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
         metrics.counts["records_written"] = write_summary["records_written"]
     with metrics.stage("read_persisted"):
         persisted_outcomes = persisted_forward_validation_outcomes(

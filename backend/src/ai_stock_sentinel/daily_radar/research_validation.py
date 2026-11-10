@@ -325,6 +325,9 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         if {c["candidate_id"] for c in candidates} != set(candidate_ids):
             raise ValueError("validation_candidate_scope_unavailable")
     validate_forward_validation_benchmark(candidates, benchmark_symbol=request.benchmark_symbol)
+    from ai_stock_sentinel.daily_radar.validation_preparation import capture_validation_acceptance
+    acceptance = None if prepare_only else capture_validation_acceptance(session, candidates,
+        market=request.market, windows=windows, validation_version=RESEARCH_VALIDATION_VERSION)
     official_calendar = None
     if candidates and request.market == 'TW' and request.benchmark_symbol == 'TAIEX':
         from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar, require_calendar
@@ -443,7 +446,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         return ValidationPreparation(candidates=candidates, outcomes=outcomes,
             calendar=official_calendar,
             as_of_date=as_of_date, return_basis="next_open", diagnostics=list(getattr(price_provider, "diagnostics", [])))
-    summary = accept_validation_results(session, outcomes, calendar=official_calendar,
+    summary = accept_validation_results(session, outcomes, calendar=official_calendar, acceptance=acceptance,
         terminal_skip_reasons=RESEARCH_TERMINAL_REASONS, require_existing_conflict=scoped)
     remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
     persisted = persisted_forward_validation_outcomes(

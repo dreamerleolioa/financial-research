@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 import pytest
+from sqlalchemy import select
 
 from ai_stock_sentinel.calibration import price_provider
 from ai_stock_sentinel.daily_radar.research_validation import (
@@ -312,10 +313,16 @@ def test_retryable_missing_open_recovers_and_split_skip_is_terminal():
             result = run_research_validation(session, request, as_of_date=date(2026, 6, 9), price_provider=provider)
             assert result["terminal_skipped_count"] == int(terminal)
             assert result["retryable_skipped_count"] == int(not terminal)
+            # The router commits each completed request before another retry.
+            session.commit()
             calls = provider.calls
             provider.issue = {}
             result = run_research_validation(session, request, as_of_date=date(2026, 6, 9), price_provider=provider)
             assert result["records_written"] == int(not terminal)
             assert result["validated_count"] == int(not terminal)
             assert (provider.calls == calls) is terminal
+            session.commit()
+            from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
+            saved = session.scalar(select(DailyRadarForwardValidationResult))
+            assert saved.status == ("skipped" if terminal else "validated")
         engine.dispose()

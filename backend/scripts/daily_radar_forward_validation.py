@@ -12,13 +12,16 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_FORWARD_WINDOWS,
+    FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
     default_due_start_date,
     forward_validation_candidates_from_runs,
     forward_validation_fixture_inputs,
     load_price_series_from_raw_data,
-    upsert_forward_validation_results,
     write_report,
+)
+from ai_stock_sentinel.daily_radar.validation_preparation import (
+    accept_validation_results, capture_validation_acceptance,
 )
 from ai_stock_sentinel.db.session import _get_session_local
 
@@ -52,6 +55,8 @@ def main() -> None:
                 start_date=start_date,
                 end_date=args.end_date or args.as_of_date,
             )
+            acceptance = capture_validation_acceptance(session, candidates, market=args.market,
+                windows=windows, validation_version=FORWARD_VALIDATION_VERSION) if args.write_results else None
             symbols = {str(candidate["symbol"]) for candidate in candidates}
             benchmark_symbol = args.benchmark_symbol
             price_series = load_price_series_from_raw_data(
@@ -60,6 +65,8 @@ def main() -> None:
                 start_date=start_date,
                 end_date=args.as_of_date,
             )
+            if args.write_results:
+                session.rollback()  # Plain inputs are collected; acceptance owns a fresh short transaction.
             evaluation = build_forward_validation_report(
                 candidates,
                 price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
@@ -71,7 +78,7 @@ def main() -> None:
                 benchmark_symbol=benchmark_symbol,
             )
             if args.write_results:
-                upsert_forward_validation_results(session, evaluation.outcomes)
+                accept_validation_results(session, evaluation.outcomes, calendar=None, acceptance=acceptance)
                 session.commit()
 
     if args.output is not None:

@@ -28,6 +28,7 @@ from ai_stock_sentinel.daily_radar.dependencies import (
     get_taiwan_institutional_report_provider,
 )
 from ai_stock_sentinel.daily_radar.forward_validation import load_price_series_from_raw_data
+from ai_stock_sentinel.daily_radar.validation_preparation import ValidationAcceptanceConflict
 from ai_stock_sentinel.daily_radar.institutional_archive_universe import (
     InstitutionalArchiveUniverseError,
 )
@@ -330,6 +331,8 @@ def run_daily_radar_forward_validation_endpoint(
             result = run_research_validation(db, request, as_of_date=as_of_date, price_provider=research_price_provider, calendar_provider=calendar_provider)
         except CalendarUnavailableError as exc:
             raise HTTPException(status_code=503, detail={"code": str(exc)}) from exc
+        except ValidationAcceptanceConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         db.commit()
@@ -339,6 +342,8 @@ def run_daily_radar_forward_validation_endpoint(
         return run_signal_close_validation(db, request, as_of_date=as_of_date,
             price_provider=price_provider, calendar_provider=calendar_provider,
             raw_price_loader=load_price_series_from_raw_data)
+    except ValidationAcceptanceConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

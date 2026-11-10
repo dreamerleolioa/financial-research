@@ -544,6 +544,32 @@ def forward_validation_result_revision(row):
         for value in [getattr(row, key)]})
 
 
+def is_original_rights_conflict_recovery(existing, outcome):
+    """Existing official recovery may revisit its exact original conflict target.
+
+    This exception only concerns the cutoff guard. Candidate/result revisions,
+    canonical ownership and the writer's official evidence guards still apply.
+    """
+    if existing is None or outcome is None:
+        return False
+    target = _parse_date(outcome.get('target_date'))
+    proof = _mapping(_mapping(outcome.get('outcome')).get(rights.PROVENANCE_KEY))
+    event = _mapping(proof.get('event'))
+    symbol = str(outcome.get('symbol') or '')
+    return (outcome.get('validation_version') == rights.RESEARCH_VERSION
+        and existing.validation_version == rights.RESEARCH_VERSION
+        and existing.candidate_id == outcome.get('candidate_id') and existing.window_days == outcome.get('window_days')
+        and outcome.get('status') == 'validated' and existing.status == 'skipped'
+        and existing.skip_reason == rights.CONFLICT_REASON
+        and target is not None and target == _parse_date(outcome.get('evaluation_as_of_date'))
+        and existing.signal_date == _parse_date(outcome.get('signal_date')) and existing.signal_date < target
+        and existing.benchmark_symbol == outcome.get('benchmark_symbol') == 'TAIEX'
+        and _mapping(existing.outcome).get('expected_target_date') == str(target)
+        and existing.evaluation_as_of_date is not None and existing.evaluation_as_of_date >= target
+        and proof.get('evidence_version') == 'twse-cash-rights-v1'
+        and event.get('type') == 'cash_rights_issue' and event.get('symbol') == symbol and symbol.endswith('.TW'))
+
+
 def upsert_forward_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
@@ -619,8 +645,9 @@ def upsert_forward_validation_results(
         statement = statement.with_for_update().execution_options(populate_existing=True)
         existing = session.execute(statement).scalar_one_or_none()
         incoming_cutoff = _parse_date(outcome.get('evaluation_as_of_date'))
-        if expected_revisions is not None and existing is not None and existing.evaluation_as_of_date is not None and (
-                incoming_cutoff is None or existing.evaluation_as_of_date > incoming_cutoff):
+        if (expected_revisions is not None and existing is not None and existing.evaluation_as_of_date is not None
+                and (incoming_cutoff is None or existing.evaluation_as_of_date > incoming_cutoff)
+                and not is_original_rights_conflict_recovery(existing, outcome)):
             continue
         key = (int(candidate_id), int(outcome['window_days']), str(outcome['validation_version']))
         if expected_revisions is not None and (key not in expected_revisions

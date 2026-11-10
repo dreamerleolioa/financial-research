@@ -16,6 +16,8 @@ Daily Radar 的執行狀態、當日發布、兩種歷史 validation 與輔助�
 
 公開觀察診斷與兩種 validation 的 pool 統計，只有在可信日曆涵蓋信號日至查詢截止日、且未滿指定交易日數時，才將缺結果或已保存的 `skipped / window_not_mature` 歸為未成熟。窗口成熟後，舊 `window_not_mature` 重新列為待補缺口；其他失敗、已驗證結果及缺診斷不因較窄日曆而被隱藏。此分類只影響讀取，不改寫歷史結果。
 
+Legacy 的 signal_close／next_open 驗證在收集階段凍結完整 candidate／origin revision 與各窗口結果的 preimage（包含不存在的結果），取資料時不持有接受交易。接受時依 relation → result → prepared 的順序鎖定，在短交易內重新核對 canonical candidate、輸入版本、結果版本與計算截止日，再以 SAVEPOINT 原子保存結果與日曆。輸入變更回 HTTP 409 `validation_inputs_changed`，結果變更回 `validation_results_changed`，一般驗證遇到較新截止日則回 `newer_validation_result_preserved`；整批不寫入，也不回 `completed`。重跑須重新收集現況，正常且版本未變的 range 重算仍允許；已審核歷史覆寫仍走既有補修流程。Durable worker 保留原本的 lease 與接受版本保護。
+
 Workflow 以不同 lane 回報 publication、signal_close、next_open；repair 最後仍對整體完整度檢查。可讀取摘要與保存的 JSON 追查缺口，而非將 validation 缺口誤判為當日 scoring 失敗。
 
 Legacy validation runner 的 `completed` 也需要同日共用 readiness 的該 basis 為 ready；零 current skips 或零剩餘 retryable 不能代表完整。舊報告出現 `validation_input_unverified` 時直接回報 `needs_review`；其他 readiness 缺口回報 `readiness_not_ready`，保留完整 readiness JSON 供追查。唯讀請求使用剩餘 basis 預算、上限 180 秒，失敗不沿用暫定成功；錯誤另存 `readiness_error`，保留已成功 POST 的寫入筆數與來源診斷，且另一種 basis 仍獨立執行。原 workflow 最後的 readiness gate 保留不變。
@@ -99,3 +101,7 @@ AVWAP provider 不 commit 或 rollback 呼叫者的 session；ORM 的 `new`／`d
 `refresh-avwap` 與單次 Radar 的 AVWAP 呼叫入口在已知只讀的 prepare phase 後明確結束交易；durable worker 同樣在取得來源 lease 前準備 archive inputs。共用 refresh 函式保留呼叫者已 flush 的寫入，持久化階段只 flush，commit／rollback 仍由呼叫者負責。回歸會在新 session 重讀已提交資料，核對整批 fresh、missing、reused 狀態與 API 計數，而非只檢查回應筆數。
 
 本次 AVWAP 修正驗證：原問題的 6 個回歸案例先失敗，修正後完整 gate 為 2,106 passed、1 skipped（48.12 秒），包含 PostgreSQL 提交後重讀與無 DB 連線的 fallback；唯一 skip 仍需指定 runtime Docker image。完成一輪乾淨自行 review 與一輪完整 Codex 獨立 review，無剩餘 findings。測試準備另修正 fixture 必填欄位與隔離 socket 路徑，未放寬檢查；production 未補跑，usage 與可比較的任務基準未取得。
+
+既有官方配股衝突補修可回到原窗口截止日：只限同一 candidate、版本與窗口、仍為 `conflicting_price_records` 的原紀錄，且官方配股證據、標的及原 `expected_target_date` 全部相符。自動與明確指定標的的官方補修共用此判定；完整窗口驗證、canonical／candidate／結果版本比對和既有官方證據 guard 仍全部執行。這個例外不能覆蓋已驗證結果，也不能忽略收集後的版本變更。
+
+`backend/scripts/daily_radar_forward_validation.py --source db --write-results` 與 legacy API 共用收集時版本快照和接受鎖定；CLI 在計算後才取得短寫入交易，版本變更時失敗退出，不輸出成功報告。未指定 `--write-results` 的唯讀報告模式保留。
