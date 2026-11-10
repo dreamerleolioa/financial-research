@@ -4,6 +4,7 @@ Persisted JSON is used by reads/scoring; only the preparation/maintenance provid
 performs HTTP. Calendar coverage includes closed dates, not just price dates.
 """
 from dataclasses import dataclass
+from bisect import bisect_left
 from datetime import date, timedelta
 import re
 
@@ -209,6 +210,68 @@ def load_calendar(session, *, start_date, as_of_date):
         if calendars_conflict(best, other):
             return None
     return best
+
+
+class CalendarEvidenceIndex:
+    """Select one existing proof per signal; never synthesize coverage.
+
+    Input proofs must already be parsed and visible at the requested cutoff.
+    Daily claims only index contradictions, including claims of closed dates.
+    This avoids comparing every proof pair for every outcome in a long cohort.
+    """
+    def __init__(self, calendars):
+        self._ordered = sorted(calendars, key=lambda c: c.through, reverse=True)
+        claims, conflicts = {}, set()
+        for calendar in self._ordered:
+            sessions = set(calendar.sessions)
+            day = calendar.start
+            while day <= calendar.through:
+                opened = day in sessions
+                if claims.setdefault(day, opened) != opened:
+                    conflicts.add(day)
+                day += timedelta(days=1)
+        conflicts = sorted(conflicts)
+        self._invalid = set()
+        for calendar in self._ordered:
+            offset = bisect_left(conflicts, calendar.start)
+            if offset < len(conflicts) and conflicts[offset] <= calendar.through:
+                self._invalid.add(id(calendar))
+        self._by_signal = {}
+
+    def for_signal(self, signal):
+        if signal not in self._by_signal:
+            best = next((c for c in self._ordered if signal is not None and c.start <= signal <= c.through), None)
+            # Retain load_calendar's conservative conflict policy; do not fall
+            # back to an older proof when the newest covering one conflicts.
+            self._by_signal[signal] = best if best is not None and id(best) not in self._invalid else None
+        return self._by_signal[signal]
+
+    def latest(self):
+        return max((c for c in self._ordered if id(c) not in self._invalid),
+            key=lambda c: (c.through, -c.start.toordinal()), default=None)
+
+
+def check_outcome_calendars(outcomes, evidence):
+    """Project outcomes by proof, normalizing each calendar once per batch."""
+    from ai_stock_sentinel.calibration.forward_validation import parse_date
+    checked, buckets, invalid_by_position = list(outcomes), {}, {}
+    for position, row in enumerate(checked):
+        if row['status'] != 'validated':
+            continue
+        calendar = evidence.for_signal(parse_date(row['signal_date']))
+        key = id(calendar) if calendar is not None else None
+        buckets.setdefault(key, (calendar, []))[1].append((position, row))
+    for calendar, entries in buckets.values():
+        rows, gaps = check_outcome_calendar([row for _, row in entries], calendar.sessions if calendar else None,
+            covered_through=calendar.through if calendar else None)
+        gaps = iter(gaps)
+        for (position, _), row in zip(entries, rows):
+            checked[position] = row
+            # Buckets contain validated inputs only, so each projected skip
+            # corresponds to the next gap returned by the existing checker.
+            if row['status'] == 'skipped':
+                invalid_by_position[position] = next(gaps)
+    return checked, [invalid_by_position[i] for i in range(len(checked)) if i in invalid_by_position]
 
 
 def check_outcome_calendar(outcomes, sessions, *, covered_through=None):

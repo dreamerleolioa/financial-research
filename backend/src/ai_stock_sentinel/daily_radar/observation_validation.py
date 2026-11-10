@@ -197,11 +197,13 @@ def _summarize(ranked, outcomes, window, calendar):
                 and first <= signal and (first != signal or origin.get("candidate_id") != c.get("candidate_id"))):
             repeats += 1
             continue
-        if calendar is not None and signal is not None and sum(day > signal for day in calendar) < window:
-            immature += 1
-            continue
         row = outcomes.get((candidate_key(c), window))
         if row is None:
+            # Saved validated/skipped results take precedence. A calendar that
+            # starts after the signal cannot certify an absent window as immature.
+            if calendar is not None and signal in calendar and sum(day > signal for day in calendar) < window:
+                immature += 1
+                continue
             missing_outcomes += 1
             continue
         if row.get("status") != "validated":

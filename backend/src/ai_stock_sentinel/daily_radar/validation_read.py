@@ -14,7 +14,9 @@ from ai_stock_sentinel.daily_radar.observation_validation import (
     OBSERVATION_DIAGNOSTIC_VERSION, STRATEGY_FIELDS,
     observation_report, strategy_cohort,
 )
-from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar, check_outcome_calendar
+from ai_stock_sentinel.daily_radar.trading_calendar import (
+    CalendarEvidenceIndex, stored_calendars, check_outcome_calendars,
+)
 from ai_stock_sentinel.daily_radar.pool_quality import pool_comparisons
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
 from ai_stock_sentinel.daily_radar.research_quality import research_pool_comparisons
@@ -45,12 +47,12 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
         if (evaluated := parse_date(row.get("evaluation_as_of_date"))) is None or evaluated <= as_of_date]
     benchmark = []
     # Price availability cannot certify missing outcomes as immature, including
-    # when old or conflicting calendar evidence was rejected by load_calendar.
+    # when old or conflicting calendar evidence cannot cover today's cutoff.
     calendar_days = research_calendar_days = set()
     calendar_through = None
     calendar_usable = research_calendar_usable = False
-    official = load_calendar(session, start_date=min(
-        (date.fromisoformat(c["record_date"]) for c in candidates), default=as_of_date), as_of_date=as_of_date)
+    evidence = CalendarEvidenceIndex(stored_calendars(session, as_of_date=as_of_date))
+    official = evidence.latest()
     if official is not None:
         calendar_days = research_calendar_days = set(official.sessions)
         calendar_through = max(calendar_days, default=None)
@@ -60,10 +62,8 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
         # Only observation maturity consumes these synthetic date markers;
         # performance continues to use persisted, independently checked prices.
         benchmark = [{"date": str(d), "close": 1} for d in official.sessions]
-    sessions = official.sessions if official is not None else None
-    covered_through = official.through if official is not None else None
-    outcomes, close_invalid = check_outcome_calendar(outcomes, sessions, covered_through=covered_through)
-    research_outcomes, research_invalid = check_outcome_calendar(research_outcomes, sessions, covered_through=covered_through)
+    outcomes, close_invalid = check_outcome_calendars(outcomes, evidence)
+    research_outcomes, research_invalid = check_outcome_calendars(research_outcomes, evidence)
     calendar_invalid = close_invalid + research_invalid
     report = observation_report(candidates, outcomes, windows, as_of_date=as_of_date,
                                 benchmark_prices=benchmark if calendar_usable else None)
