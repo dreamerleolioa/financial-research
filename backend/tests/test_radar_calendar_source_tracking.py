@@ -11,7 +11,7 @@ from ai_stock_sentinel.daily_radar.jobs import create_job
 from ai_stock_sentinel.daily_radar.source_snapshots import SourceSnapshotStore, fingerprint
 from ai_stock_sentinel.daily_radar.work_handlers import WorkHandlers
 from ai_stock_sentinel.daily_radar.work_queue import ensure_work
-from ai_stock_sentinel.db.models import Base, DailyRadarPreparedRun, RadarSourceSnapshot, RadarWorkItem
+from ai_stock_sentinel.db.models import Base, DailyRadarPreparedRun, RadarSourceSnapshot, RadarWorkItem, RadarWorkAttempt
 from test_radar_job_postgres import pg_engine
 
 DAY = date(2026, 6, 8)
@@ -76,6 +76,19 @@ def test_month_revision_changed_after_collection_is_not_accepted(local, monkeypa
     assert owner(db).state == 'waiting_provider'
     assert owner(db).reason == 'radar_source_lease_lost'
     assert 'validation-calendar' not in prepared.step_statuses
+    result=owner(db).result
+    assert len(result['source_observations'])==13
+    assert result['source_captured_count']==13
+    assert isinstance(result['source_dependencies'],dict)
+    rejection=result['source_rejection']
+    assert rejection['reason']=='radar_source_revision_changed'
+    expected=next(p for p in result['source_observations'] if p['request_hash']==rejection['request_hash'])
+    latest=db.scalar(select(RadarSourceSnapshot).where(RadarSourceSnapshot.request_hash==rejection['request_hash'])
+        .order_by(RadarSourceSnapshot.captured_at.desc(),RadarSourceSnapshot.id.desc()).limit(1))
+    assert rejection['expected_snapshot_sha256']==expected['snapshot_sha256']
+    assert rejection['actual_snapshot_sha256']==latest.payload_hash!=rejection['expected_snapshot_sha256']
+    attempt=db.scalar(select(RadarWorkAttempt).where(RadarWorkAttempt.work_id==owner(db).id))
+    assert attempt.result==result
 
 
 def test_cached_months_still_record_observations_without_new_requests(local):

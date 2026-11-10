@@ -1,5 +1,7 @@
 """One bounded claim/collect/accept cycle. No background work after HTTP return."""
 from datetime import timedelta
+from copy import deepcopy
+import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar.collection_transactions import read_only_collection, CollectionMutationError
@@ -12,6 +14,23 @@ from ai_stock_sentinel.daily_radar.work_handlers import WorkHandlers, prepared
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 
 
+class SourceRevisionChanged(LostLease):
+    """Safe rejection metadata; never persist arbitrary exception text."""
+    def __init__(self, request_hash, expected, actual):
+        super().__init__('radar_source_revision_changed')
+        def digest(value):
+            return value if isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) else None
+        self.rejection = {'reason': 'radar_source_revision_changed', 'request_hash': digest(request_hash),
+            'expected_snapshot_sha256': digest(expected), 'actual_snapshot_sha256': digest(actual)}
+
+
+def _source_result(handlers):
+    store = getattr(handlers, 'store', None)
+    return {'source_observations': deepcopy(list(store.seen.values())) if store else [],
+            'source_captured_count': store.captured_count if store else 0,
+            'source_dependencies': deepcopy(dict(store.dependencies)) if store else {}}
+
+
 def fence_sources(db, store):
     if store is None:
         return
@@ -20,7 +39,7 @@ def fence_sources(db, store):
         previous = db.scalar(select(RadarSourceSnapshot).where(RadarSourceSnapshot.request_hash == key)
             .order_by(RadarSourceSnapshot.captured_at.desc(), RadarSourceSnapshot.id.desc()).limit(1))
         if previous is None:
-            raise LostLease('radar_source_revision_changed')
+            raise SourceRevisionChanged(key, proof['snapshot_sha256'], None)
         ensure_work(db, identity={'kind': 'source_capture', 'request_hash': key}, stage='source-capture',
             lane='source', run_date=None, scope={'request': previous.request}, input_revision=key,
             retry_at=database_now(db))
@@ -28,7 +47,7 @@ def fence_sources(db, store):
         latest = db.scalar(select(RadarSourceSnapshot).where(RadarSourceSnapshot.request_hash == key)
             .order_by(RadarSourceSnapshot.captured_at.desc(), RadarSourceSnapshot.id.desc()).limit(1))
         if latest is None or latest.payload_hash != proof['snapshot_sha256']:
-            raise LostLease('radar_source_revision_changed')
+            raise SourceRevisionChanged(key, proof['snapshot_sha256'], latest.payload_hash if latest else None)
 
 
 def _reason(exc):
@@ -80,10 +99,7 @@ def advance_job(db, job_id, *, handlers=None, now=None):
         accepted = collected.apply(db)
         state = accepted.get('state', 'ready')
         result = dict(accepted.get('result') or {})
-        store = getattr(handlers, 'store', None)
-        result['source_observations'] = list(store.seen.values()) if store else []
-        result['source_captured_count'] = store.captured_count if store else 0
-        result['source_dependencies'] = dict(store.dependencies) if store else {}
+        result.update(_source_result(handlers))
         work = db.get(RadarWorkItem, claim.work_id)
         retry_at = None
         if state == 'waiting_provider':
@@ -102,7 +118,11 @@ def advance_job(db, job_id, *, handlers=None, now=None):
         # recovery must not resurrect it. Another owner remains untouched.
         try:
             changed = str(exc) in {'radar_prepared_generation_changed', 'radar_window_inputs_changed'}
+            result = _source_result(handlers)
+            if isinstance(exc, SourceRevisionChanged):
+                result['source_rejection'] = deepcopy(exc.rejection)
             finish_work(db, claim, state='superseded' if changed else 'waiting_provider',
+                result=result,
                 reason='radar_inputs_changed' if changed else 'radar_source_lease_lost',
                 retry_at=None if changed else database_now(db, now) + timedelta(minutes=1), now=now)
             db.commit()
@@ -120,12 +140,8 @@ def advance_job(db, job_id, *, handlers=None, now=None):
             if explicit is not None and due is not None:
                 from ai_stock_sentinel.daily_radar.work_queue import aware
                 due = max(due, aware(explicit))
-            store = getattr(handlers, 'store', None)
             finish_work(db, claim, state=state, reason=reason, retry_at=due,
-                result={'error_type': type(exc).__name__,
-                    'source_observations': list(store.seen.values()) if store else [],
-                    'source_captured_count': store.captured_count if store else 0,
-                    'source_dependencies': dict(store.dependencies) if store else {}}, now=now)
+                result={'error_type': type(exc).__name__, **_source_result(handlers)}, now=now)
             db.commit()
         except LostLease:
             db.rollback()

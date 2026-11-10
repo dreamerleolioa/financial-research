@@ -18,6 +18,8 @@ Workflow 以不同 lane 回報 publication、signal_close、next_open；repair �
 
 Legacy validation runner 的 `completed` 也需要同日共用 readiness 的該 basis 為 ready；零 current skips 或零剩餘 retryable 不能代表完整。舊報告出現 `validation_input_unverified` 時直接回報 `needs_review`；其他 readiness 缺口回報 `readiness_not_ready`，保留完整 readiness JSON 供追查。唯讀請求使用剩餘 basis 預算、上限 180 秒，失敗不沿用暫定成功；錯誤另存 `readiness_error`，保留已成功 POST 的寫入筆數與來源診斷，且另一種 basis 仍獨立執行。原 workflow 最後的 readiness gate 保留不變。
 
+Durable executor 因來源版本漂移而拒絕結果時，domain 寫入仍全部 rollback；只在 claim 的 lease、input revision 及期限仍有效時，於 work 與 attempt 同步保存本次 `source_observations`、`source_dependencies`、`source_captured_count`。`source_rejection` 只包含固定 reason、request hash、預期與實際 snapshot SHA256（來源不存在時 actual 為 null），不保存任意例外文字，也不合併上次嘗試的診斷。已持久化的來源快照保留，重試時間與新 owner 的保護不變。
+
 來源延遲與 transport 失敗等待來源；預算用盡續跑；價格衝突保留證據待裁決；缺診斷與日曆問題走指定修復。不能將未知資料改成 terminal 來取得完整狀態。`adjusted_history_changed` 提供第一筆衝突日期、欄位及兩側價格；完整歷史檢查與容差不變。
 
 ## 第二階段：來源快照與輸入版本

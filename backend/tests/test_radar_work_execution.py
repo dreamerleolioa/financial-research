@@ -185,6 +185,55 @@ def test_new_source_revision_rejects_old_collected_result_before_domain_mutation
     db.rollback()
 
 
+def test_owned_rejection_retains_current_attempt_dependencies_after_domain_rollback(db):
+    from ai_stock_sentinel.daily_radar.work_queue import LostLease
+    jid=create_job(db,run_date=date(2026,11,6),lanes=['publication'],now=NOW).id
+    previous=db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage=='market-session'))
+    previous.result={'source_observations':[{'request_hash':'previous-attempt'}],'source_captured_count':999}
+    db.commit()
+    store=SimpleNamespace(seen={},captured_count=0,dependencies={'source-key':{'state':'waiting_provider'}})
+    def collect(claim):
+        def apply(session):
+            session.add(DailyRadarRun(run_date=claim.run_date,market='TW',status='completed'))
+            session.flush()
+            raise LostLease('radar_prepared_generation_changed')
+        return Collected(apply)
+    advance_job(db,jid,handlers=SimpleNamespace(collect=collect,store=store),now=NOW)
+    assert db.scalar(select(func.count()).select_from(DailyRadarRun))==0
+    attempt=db.scalar(select(RadarWorkAttempt))
+    work=db.get(RadarWorkItem,attempt.work_id)
+    assert attempt.state==work.state=='superseded'
+    assert attempt.result==work.result=={'source_observations':[],'source_captured_count':0,
+        'source_dependencies':store.dependencies}
+
+
+def test_rejected_old_owner_cannot_replace_new_owner_diagnostics(db):
+    from sqlalchemy.orm import Session
+    jid=create_job(db,run_date=date(2026,11,6),lanes=['publication'],now=NOW).id
+    def collect(claim):
+        with Session(db.get_bind()) as other:
+            work=other.get(RadarWorkItem,claim.work_id)
+            work.lease_token='new-owner';work.result={'owner':'new'};other.commit()
+        def forbidden(session): raise AssertionError('must not accept old owner')
+        return Collected(forbidden)
+    advance_job(db,jid,handlers=SimpleNamespace(collect=collect),now=NOW)
+    attempt=db.scalar(select(RadarWorkAttempt))
+    work=db.get(RadarWorkItem,attempt.work_id)
+    assert work.lease_token=='new-owner' and work.result=={'owner':'new'}
+    assert attempt.state=='running' and attempt.result=={}
+
+
+def test_missing_source_snapshot_reports_hashes_without_exception_text(db):
+    from ai_stock_sentinel.daily_radar.work_executor import fence_sources,SourceRevisionChanged
+    with pytest.raises(SourceRevisionChanged) as caught:
+        fence_sources(db,SimpleNamespace(seen={'a'*64:{'snapshot_sha256':'b'*64}}))
+    assert caught.value.rejection=={'reason':'radar_source_revision_changed','request_hash':'a'*64,
+        'expected_snapshot_sha256':'b'*64,'actual_snapshot_sha256':None}
+    unsafe=SourceRevisionChanged('SECRET private URL','SECRET token','private symbol')
+    assert unsafe.rejection=={'reason':'radar_source_revision_changed','request_hash':None,
+        'expected_snapshot_sha256':None,'actual_snapshot_sha256':None}
+
+
 def test_avwap_reuses_fresh_target_and_keeps_auxiliary_partial(db,monkeypatch):
     from ai_stock_sentinel.db.models import Phase1AvwapSnapshot
     from ai_stock_sentinel.daily_radar.work_handlers import WorkHandlers
