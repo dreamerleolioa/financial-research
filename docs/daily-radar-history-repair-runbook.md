@@ -73,6 +73,10 @@ uv run python scripts/repair_daily_radar_next_open.py plan --calendar /tmp/radar
 
 capture 使用自己的唯讀 session，先凍結相關官方 archive，再於 provider I/O 前釋放交易；完整 Yahoo 行情仍須與該 archive 交叉檢查。封存行情、archive、官方報告呼叫結果及輸入前置值，不寫 DB。plan 只重播封存資料，沿用現行 next-open、現金增資與企業行動驗證，完整檢查各筆 5／10／20／40／60 日窗口；有缺價、來源衝突或證據不足時拒絕整批，不會產出可套用的成功 manifest。失敗 capture 不等於資料 ready。預設每批 50、上限 250，capture／plan 須使用相同固定 inventory 與 offset／limit。輸出檔採 0600 權限且拒絕覆寫。
 
+新版取證必須另有完整官方股票與 TAIEX 窗口（含信號日），不能因 Yahoo 完整或 archive 為空而省略。過往現金增資／配股／減資證據即使藏在 `historical_repair.prior_evidence`，仍須重新通過既有事件、價格、精度與完整窗口判定；停牌缺日只接受同一官方事件已證明的 halt 範圍。來源不足時 preview 留下 `next_open_official_evidence_incomplete` 與 `official_repair_error.code`，plan 拒絕整批。
+
+目前 capture 與 manifest 契約為 v2，manifest 的 `reviewed_official_window` 保存完整官方價格、來源及實際計算輸入，沿用既有浮點容差。必要事件另保存原始報告與行情供離線重播；plan 與 apply 都重新執行窗口、標的、來源、事件、精度及報酬驗證，apply 交易內不連 provider。事件重播輸入由候選、窗口及行情重新建立，不採用 manifest 可改寫的狀態與報酬欄位。既有分割事件也不能因後來的行情漏標而變回已驗證報酬。v1 capture 必須重新取證，v1 manifest 禁止 apply，不能只改版號或重算 SHA256 延用舊證據。已套用的 v1 manifest 保留 rollback，仍須通過原雜湊、輸入版本、前後值與共用日曆檢查。
+
 審閱 manifest 的完整前後值、候選 revision、官方事件與來源證據及 SHA256，另取得正式寫入授權後才執行：
 
 ```sh

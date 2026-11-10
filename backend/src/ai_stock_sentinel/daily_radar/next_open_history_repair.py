@@ -26,8 +26,9 @@ from ai_stock_sentinel.daily_radar.validation_inputs import validation_candidate
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, DailyRadarPreparedRun
 from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult as Result
 
-VERSION = 'daily-radar-next-open-repair-v1'
-CAPTURE_VERSION = 'daily-radar-next-open-capture-v1'
+LEGACY_VERSION = 'daily-radar-next-open-repair-v1'
+VERSION = 'daily-radar-next-open-repair-v2'
+CAPTURE_VERSION = 'daily-radar-next-open-capture-v2'
 METHODS = ('fetch', 'repair', 'official_research_history', 'capture_twse_report', 'capture_tpex_report')
 MAX_BYTES = 64 * 1024 * 1024
 
@@ -131,6 +132,15 @@ class _Tape:
         self.calls = [] if evidence is None else deepcopy(evidence['calls'])
         self.offset = 0
         self.diagnostics = []
+        self.fetched, self.repaired = {}, {}
+
+    def _remember(self, name, value):
+        if name in ('fetch', 'repair') and isinstance(value, dict):
+            (self.fetched if name == 'fetch' else self.repaired).update(deepcopy(value))
+        return value
+
+    def position(self):
+        return len(self.calls) if self.provider is not None else self.offset
 
     def __getattr__(self, name):
         if name not in self.capabilities:
@@ -143,7 +153,7 @@ class _Tape:
                 call = self.calls[self.offset]; self.offset += 1
                 if call.get('failed'):
                     raise RuntimeError('next_open_captured_provider_failure')
-                return deepcopy(call['value'])
+                return self._remember(name, deepcopy(call['value']))
             if len(self.calls) >= 4096:
                 raise ValueError('next_open_capture_too_many_calls')
             try:
@@ -152,7 +162,7 @@ class _Tape:
                 self.calls.append({'request': signature, 'failed': True})
                 raise RuntimeError('next_open_captured_provider_failure') from None
             self.calls.append({'request': signature, 'value': _json(value)})
-            return value
+            return self._remember(name, value)
         return invoke
 
 
@@ -166,9 +176,32 @@ def _evaluate(reader, context, calendar, tape):
     req = DailyRadarForwardValidationRunRequest(mode='range', return_basis='next_open', market='TW',
         start_date=start, end_date=calendar.through, as_of_date=calendar.through, benchmark_symbol='TAIEX',
         windows=sorted({r['before']['window_days'] for r in context['results']}))
-    return run_research_validation(reader, req, as_of_date=calendar.through, price_provider=tape,
+    bundle = run_research_validation(reader, req, as_of_date=calendar.through, price_provider=tape,
         calendar_provider=SimpleNamespace(fetch=lambda **kwargs: scoped), prepare_only=True,
         candidate_ids={r['before']['candidate_id'] for r in context['results']})
+    from ai_stock_sentinel.daily_radar.next_open_official_repair import collect_window
+    candidates = {c['candidate_id']: c for c in bundle.candidates}
+    outcomes = {(r['candidate_id'], r['window_days']): r for r in bundle.outcomes}
+    reader.rollback()  # Core can return signal-level skips without entering its I/O phase.
+    verified = []
+    for entry in context['results']:
+        before = entry['before']; row = outcomes.get((before['candidate_id'], before['window_days']))
+        if row is None:
+            continue
+        try:
+            row = collect_window(candidates[before['candidate_id']], before, row, calendar=calendar, provider=tape)
+        except (ValueError, RuntimeError, OSError) as exc:
+            codes = {'next_open_official_provider_unavailable', 'next_open_official_rights_unverified',
+                'next_open_official_action_unverified', 'next_open_official_source_invalid',
+                'next_open_official_split_unverified',
+                'next_open_official_source_identity_invalid', 'twse_rights_incomplete_price_window',
+                'twse_rights_invalid_price_row', 'next_open_captured_provider_failure'}
+            code = str(exc) if str(exc) in codes else 'next_open_official_evidence_unavailable'
+            row = dict(row) | {'status': 'skipped', 'skip_reason': 'next_open_official_evidence_incomplete',
+                'outcome': dict(row['outcome']) | {'official_repair_error': {'code': code}}}
+        verified.append(row)
+    bundle.outcomes = verified
+    return bundle
 
 
 def capture_evidence(bind, request, *, calendar, provider=None):
@@ -209,13 +242,18 @@ def capture_evidence(bind, request, *, calendar, provider=None):
     return artifact
 
 
-def _verify_after(candidate, after, calendar):
+def _verify_after(candidate, after, calendar, *, prior=None, require_official=True):
     state, _, _ = classify_window(candidate, after, basis='next_open', window=after['window_days'],
                                   as_of_date=calendar.through, calendar=calendar)
     if state not in {'validated', 'terminal'} or after['status'] not in {'validated', 'skipped'}:
         raise ValueError('next_open_repair_incomplete')
+    if require_official and after['status'] == 'validated' and after.get('skip_reason') is not None:
+        raise ValueError('next_open_repair_incomplete')
     if after['evaluation_as_of_date'] != str(calendar.through):
         raise ValueError('next_open_repair_cutoff_invalid')
+    if require_official:
+        from ai_stock_sentinel.daily_radar.next_open_official_repair import verify_evidence
+        verify_evidence(candidate, after, calendar=calendar, prior=prior or {})
     if state == 'validated':
         outcome = after['outcome']
         days = [d for d in calendar.sessions if d > date.fromisoformat(candidate['record_date'])]
@@ -251,7 +289,7 @@ def build_repair_plan(bind, request, *, calendar, evidence):
         if row is None:
             raise ValueError('next_open_repair_incomplete')
         after = before | {k: row[k] for k in MUTABLE_FIELDS}
-        _verify_after(candidates[before['candidate_id']], after, calendar)
+        _verify_after(candidates[before['candidate_id']], after, calendar, prior=before['outcome'])
         after['outcome'] = after['outcome'] | {'historical_repair': {
             'version': VERSION, 'repair_id': repair_id, 'operation': 'recompute',
             'calendar_sha256': fingerprint(calendar.payload()), 'capture_sha256': evidence['sha256'],
@@ -262,12 +300,18 @@ def build_repair_plan(bind, request, *, calendar, evidence):
 
 
 def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
+    legacy = plan.get('version') == LEGACY_VERSION
+    if legacy and not rollback:
+        raise ValueError('next_open_legacy_manifest_apply_disabled')
     calendar = TradingCalendar.parse(plan['calendar'])
     if (not plan.get('results') or plan.get('runs') != []
             or plan['prepared']['before'] != {CALENDAR_STEP: calendar.payload()}
             or plan['prepared']['after'] != plan['prepared']['before']):
         raise ValueError('next_open_repair_manifest_scope_invalid')
+    priors = {(entry['before']['candidate_id'], entry['before']['window_days']): entry['before']['outcome']
+              for entry in plan['results']}
     return _apply_result_manifest(session, plan, expected_sha256=expected_sha256, rollback=rollback,
-        manifest_version=VERSION, result_version=RESEARCH_VALIDATION_VERSION,
-        verify_after=lambda candidate, after: _verify_after(candidate, after, calendar),
+        manifest_version=LEGACY_VERSION if legacy else VERSION, result_version=RESEARCH_VALIDATION_VERSION,
+        verify_after=lambda candidate, after: _verify_after(candidate, after, calendar,
+            prior=priors[(after['candidate_id'], after['window_days'])], require_official=not legacy),
         verify_context=lambda: _calendar_context(session, calendar))
