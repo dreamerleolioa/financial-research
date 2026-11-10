@@ -203,8 +203,9 @@ def test_public_research_long_calendar_gap_still_blocks_confidence(storage):
     research = client.get("/daily-radar/validation?lookback_days=365").json()[
         "cohorts"][0]["research_pool_comparison"]["20"]
     confidence = research["cost_scenarios"]["0"]["confidence"]
-    assert confidence["status"] == "calendar_missing"
-    assert confidence["paired_date_count"] == 200
+    assert confidence["status"] == "incomplete_coverage"
+    assert confidence["paired_date_count"] == 0
+    assert research['cost_scenarios']['0']['selected']['evaluated_count'] == 0
     assert confidence["lower_pct"] is None and confidence["upper_pct"] is None
 
 
@@ -217,7 +218,7 @@ def test_raw_dates_cannot_replace_official_calendar_evidence(storage):
     session.commit()
     research = client.get("/daily-radar/validation?lookback_days=365").json()[
         "cohorts"][0]["research_pool_comparison"]["20"]
-    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "calendar_missing"
+    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "incomplete_coverage"
     prepared = session.scalar(select(DailyRadarPreparedRun).where(DailyRadarPreparedRun.run_date == end))
     prepared.step_statuses = {'validation-calendar': calendar(end-timedelta(days=364),end).payload()}
     session.commit()
@@ -226,7 +227,7 @@ def test_raw_dates_cannot_replace_official_calendar_evidence(storage):
     assert research['cost_scenarios']['0']['confidence']['status'] == 'estimated'
 
 
-def test_calendar_rejects_future_proof_but_preserves_saved_legacy_results(storage):
+def test_calendar_rejects_future_proof_without_certifying_saved_results(storage):
     from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
     session, client, engine = storage
     candidate = add_candidate(session, add_run(session))
@@ -242,9 +243,10 @@ def test_calendar_rejects_future_proof_but_preserves_saved_legacy_results(storag
     session.commit()
     body = client.get("/daily-radar/validation").json()
     research = body["cohorts"][0]["research_pool_comparison"]["5"]
-    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "calendar_missing"
+    assert research["cost_scenarios"]["0"]["confidence"]["status"] == "incomplete_coverage"
     assert body["calendar_through_date"] is None
-    assert groups(body)['all_selected']['evaluated_observation_count'] == 1
+    assert groups(body)['all_selected']['evaluated_observation_count'] == 0
+    assert research['cost_scenarios']['0']['selected']['coverage_complete'] is False
 
 
 def test_public_validation_includes_medium_term_windows_and_longer_sample_period(storage):
@@ -404,20 +406,24 @@ def test_cohorts_are_separate_and_default_to_latest_signal_strategy(storage):
     assert latest["windows"]["5"]["all_selected"]["confirmation_rate"] is None
 
 
-def test_legacy_diagnostics_are_missing_not_zero_and_unknown_calendar_is_disclosed(storage):
+@pytest.mark.parametrize('calendar_known', [False, True])
+def test_legacy_diagnostics_are_missing_not_zero_and_unknown_calendar_is_disclosed(storage, calendar_known):
     session, client, _ = storage
     row = add_candidate(session, add_run(session))
     add_result(session, row, diagnostic=False)
+    if calendar_known: add_calendar(session)
     session.commit()
     body = client.get("/daily-radar/validation").json()
-    assert body["calendar_through_date"] is None
+    assert (body["calendar_through_date"] is not None) is calendar_known
     summary = groups(body)["all_selected"]
-    assert summary["missing_diagnostic_count"] == 1
+    assert summary["missing_diagnostic_count"] == int(calendar_known)
+    if not calendar_known:
+        assert summary['missing_reasons']['official_calendar_unavailable'] == 1
     assert summary["confirmation_rate"] is None
     assert summary["evaluated_observation_count"] == 0
 
 
-def test_partial_calendar_cannot_hide_an_already_saved_mature_observation(storage):
+def test_sparse_price_dates_cannot_certify_an_already_saved_observation(storage):
     session, client, _ = storage
     row = add_candidate(session, add_run(session))
     add_result(session, row)
@@ -428,9 +434,10 @@ def test_partial_calendar_cannot_hide_an_already_saved_mature_observation(storag
     session.commit()
     body = client.get("/daily-radar/validation").json()
     assert body["calendar_through_date"] is None
-    assert groups(body)["all_selected"]["evaluated_observation_count"] == 1
+    assert groups(body)["all_selected"]["evaluated_observation_count"] == 0
     assert groups(body)["all_selected"]["immature_observation_count"] == 0
-    assert groups(body)["all_selected"]["confirmation_rate"] == 1
+    assert groups(body)["all_selected"]["confirmation_rate"] is None
+    assert groups(body)["all_selected"]['missing_reasons']['official_calendar_unavailable'] == 1
 
 
 def test_read_does_not_flush_pending_work_or_include_future_or_wrong_identity_results(storage):

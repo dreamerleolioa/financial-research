@@ -211,23 +211,33 @@ def load_calendar(session, *, start_date, as_of_date):
     return best
 
 
-def check_outcome_calendar(outcomes, sessions):
-    """Classify saved malformed windows without changing any persisted prices."""
+def check_outcome_calendar(outcomes, sessions, *, covered_through=None):
+    """Require independent calendar proof without changing persisted prices.
+
+    None means unavailable evidence; an empty sequence is a known calendar.
+    """
     from ai_stock_sentinel.calibration.forward_validation import parse_date
-    days = sorted(set(sessions))
+    days = sorted(set(sessions)) if sessions is not None else None
     checked, invalid = [], []
     for row in outcomes:
+        reason = None
         if row["status"] == "validated":
-            from ai_stock_sentinel.daily_radar.window_identity import window_error
-            signal, target = parse_date(row["signal_date"]), parse_date(row.get("target_date"))
-            expected = [d for d in days if signal is not None and d > signal][:int(row["window_days"])]
-            error = (window_error(row, signal=signal, sessions=expected,
-                basis='next_open' if row['validation_version'].startswith('daily-radar-next-open') else 'signal_close')
-                if signal in days and len(expected) == row['window_days'] else None)
-            if signal not in days or len(expected) != row["window_days"] or target != expected[-1] or error:
-                reason = "historical_window_calendar_mismatch"
-                invalid.append({"candidate_id":row["candidate_id"],"window_days":row["window_days"],
-                                "validation_version":row["validation_version"],"reason":reason})
-                row = dict(row) | {"status":"skipped","skip_reason":reason}
+            if days is None or (covered_through is not None and any(
+                    day is not None and day > covered_through for day in
+                    (parse_date(row['signal_date']), parse_date(row.get('target_date'))))):
+                reason = 'official_calendar_unavailable'
+            else:
+                from ai_stock_sentinel.daily_radar.window_identity import window_error
+                signal, target = parse_date(row["signal_date"]), parse_date(row.get("target_date"))
+                expected = [d for d in days if signal is not None and d > signal][:int(row["window_days"])]
+                error = (window_error(row, signal=signal, sessions=expected,
+                    basis='next_open' if row['validation_version'].startswith('daily-radar-next-open') else 'signal_close')
+                    if signal in days and len(expected) == row['window_days'] else None)
+                if signal not in days or len(expected) != row["window_days"] or target != expected[-1] or error:
+                    reason = "historical_window_calendar_mismatch"
+        if reason:
+            invalid.append({"candidate_id":row["candidate_id"],"window_days":row["window_days"],
+                            "validation_version":row["validation_version"],"reason":reason})
+            row = dict(row) | {"status":"skipped","skip_reason":reason}
         checked.append(row)
     return checked, invalid

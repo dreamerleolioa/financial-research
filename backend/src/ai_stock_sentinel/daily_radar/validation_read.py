@@ -51,24 +51,20 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     calendar_usable = research_calendar_usable = False
     official = load_calendar(session, start_date=min(
         (date.fromisoformat(c["record_date"]) for c in candidates), default=as_of_date), as_of_date=as_of_date)
-    calendar_invalid = []
-    required_through = max([date.fromisoformat(c["record_date"]) for c in candidates] + [
-        parse_date(r["target_date"]) for r in outcomes + research_outcomes
-        if r["status"] == "validated" and r.get("target_date")], default=start)
-    if official is not None and official.through < required_through:
-        official = None
     if official is not None:
         calendar_days = research_calendar_days = set(official.sessions)
         calendar_through = max(calendar_days, default=None)
         # A complete proof through yesterday can establish saved targets, but
         # cannot establish that a missing result is still immature today.
         calendar_usable = research_calendar_usable = official.through >= as_of_date
-        outcomes, close_invalid = check_outcome_calendar(outcomes,official.sessions)
-        research_outcomes, research_invalid = check_outcome_calendar(research_outcomes,official.sessions)
-        calendar_invalid = close_invalid + research_invalid
         # Only observation maturity consumes these synthetic date markers;
         # performance continues to use persisted, independently checked prices.
         benchmark = [{"date": str(d), "close": 1} for d in official.sessions]
+    sessions = official.sessions if official is not None else None
+    covered_through = official.through if official is not None else None
+    outcomes, close_invalid = check_outcome_calendar(outcomes, sessions, covered_through=covered_through)
+    research_outcomes, research_invalid = check_outcome_calendar(research_outcomes, sessions, covered_through=covered_through)
+    calendar_invalid = close_invalid + research_invalid
     report = observation_report(candidates, outcomes, windows, as_of_date=as_of_date,
                                 benchmark_prices=benchmark if calendar_usable else None)
     comparisons = pool_comparisons(candidates, outcomes, windows,
