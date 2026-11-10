@@ -252,7 +252,13 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
 
 
 def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
-    if (plan.get("version") != VERSION or plan.get("sha256") != expected_sha256
+    return _apply_result_manifest(session, plan, expected_sha256=expected_sha256, rollback=rollback,
+                                  manifest_version=VERSION, result_version=FORWARD_VALIDATION_VERSION)
+
+
+def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest_version,
+                           result_version, verify_after=None, verify_context=None):
+    if (plan.get("version") != manifest_version or plan.get("sha256") != expected_sha256
             or fingerprint({k:v for k,v in plan.items() if k != "sha256"}) != expected_sha256):
         raise ValueError("repair_manifest_hash_mismatch")
     TradingCalendar.parse(plan["calendar"])
@@ -311,6 +317,8 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
                 if entry["before"][key] != entry["after"][key]:
                     raise ValueError("repair_immutable_identity_changed")
             if kind == "results":
+                if row.validation_version != result_version:
+                    raise ValueError("repair_result_identity_invalid")
                 c = session.get(DailyRadarCandidate, row.candidate_id)
                 run = session.get(DailyRadarRun, c.run_id)
                 if fingerprint(candidate_snapshot(c,run)) != entry["candidate_sha256"]:
@@ -331,6 +339,8 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
                         raise ValueError('repair_validation_proof_invalid')
                 elif entry['operation'] == 'recompute' and proof is not None:
                     raise ValueError('repair_validation_proof_missing_revision')
+                if verify_after is not None:
+                    verify_after(current_inputs[row.candidate_id], entry['after'])
                 if entry["operation"] == "diagnostic":
                     def returns(payload):
                         return {k:v for k,v in payload.items() if k not in ("observation_diagnostic","historical_repair")}
@@ -350,6 +360,8 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
     current_steps = {k:(prepared.step_statuses or {}).get(k) for k in entry["before"]}
     if current_steps not in (entry[source],entry[target]):
         raise ValueError("repair_calendar_changed")
+    if verify_context is not None:
+        verify_context()
     if rollback and (plan["runs"] or entry["before"] != entry["after"]):
         dependency = session.scalar(select(DailyRadarForwardValidationResult.id).where(
             DailyRadarForwardValidationResult.id.not_in([r["id"] for r in plan["results"]]),

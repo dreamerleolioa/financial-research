@@ -60,3 +60,24 @@ uv run python scripts/repair_daily_radar_history.py rollback --manifest /tmp/rad
 依套用順序反向回復各批，最後回復隔離／日曆 manifest。若其他已修補窗口仍依賴該日曆，工具拒絕移除共用 metadata，須先回復相依批次。工具不刪除 run、候選、raw data 或既有 next-open 企業行動證據。
 
 每批提交後唯讀核對精確 IDs、before／after、官方窗口長度及信號日期；全部完成後重新 inventory，分別報告日期偏移、缺診斷、診斷 insufficient_data、成熟缺結果與可重試缺口。核對兩種 validation 的 5／10／20／40／60 日、scoring 日期／數量及 next-open 既有企業行動證據。任何剩餘行情缺失或價格基準衝突都保持可見，不以 HTTP 成功或 cursor 結束宣稱 coverage 完整。
+
+## 受保護的 next-open 舊結果
+
+一般 writer 保留企業行動與人工補修的覆寫保護。若舊 next-open 報酬缺少有效 `validation_input`，或已受保護的結果需要重算，使用獨立的 `repair_daily_radar_next_open.py`，不要手動刪除舊證據或放寬 writer。先完成上述共用日曆階段，並確認 cutoff prepared row 保存完全相同的日曆；此入口不改日曆、不隔離 run、不改 signal-close。
+
+```sh
+uv run python scripts/repair_daily_radar_next_open.py inventory --calendar /tmp/radar-calendar.json --output /tmp/next-open-inventory.json
+uv run python scripts/repair_daily_radar_next_open.py capture --calendar /tmp/radar-calendar.json --request /tmp/next-open-inventory.json --offset 0 --limit 50 --output /tmp/next-open-capture-0000.json
+uv run python scripts/repair_daily_radar_next_open.py plan --calendar /tmp/radar-calendar.json --request /tmp/next-open-inventory.json --evidence /tmp/next-open-capture-0000.json --offset 0 --limit 50 --output /tmp/next-open-plan-0000.json
+```
+
+capture 使用自己的唯讀 session，先凍結相關官方 archive，再於 provider I/O 前釋放交易；完整 Yahoo 行情仍須與該 archive 交叉檢查。封存行情、archive、官方報告呼叫結果及輸入前置值，不寫 DB。plan 只重播封存資料，沿用現行 next-open、現金增資與企業行動驗證，完整檢查各筆 5／10／20／40／60 日窗口；有缺價、來源衝突或證據不足時拒絕整批，不會產出可套用的成功 manifest。失敗 capture 不等於資料 ready。預設每批 50、上限 250，capture／plan 須使用相同固定 inventory 與 offset／limit。輸出檔採 0600 權限且拒絕覆寫。
+
+審閱 manifest 的完整前後值、候選 revision、官方事件與來源證據及 SHA256，另取得正式寫入授權後才執行：
+
+```sh
+uv run python scripts/repair_daily_radar_next_open.py apply --manifest /tmp/next-open-plan-0000.json --apply-sha256 REVIEWED_SHA256 --output /tmp/next-open-receipt-0000.json
+uv run python scripts/repair_daily_radar_next_open.py rollback --manifest /tmp/next-open-plan-0000.json --apply-sha256 REVIEWED_SHA256 --output /tmp/next-open-rollback-0000.json
+```
+
+apply／rollback 共用既有補修的鎖定、雜湊、版本、candidate revision 與全批 preimage 檢查。新結果的 `historical_repair.prior_evidence` 保留原始 outcome，manifest 另保存完整原列供回復；不把舊企業行動證據直接當成新報酬證明。回復後仍可能需要人工處理，必須重新檢查完整 365 日 inventory、兩種 basis 與所有窗口，而非只看本批 receipt。

@@ -313,7 +313,8 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             resume[cid].add(window)
     candidates = forward_validation_candidates_from_runs(
         session, market=request.market, start_date=start, end_date=request.end_date or as_of_date,
-        include_candidate_ids=list(resume), symbols=request.conflict_recovery_symbols)
+        include_candidate_ids=list(resume), symbols=request.conflict_recovery_symbols,
+        candidate_ids=candidate_ids)
     candidates = [c for c in candidates if c["selection_status"] == "selected"
                   or (c["selection_status"] == "shadow" and c["shadow_cohort"] == "comparable")]
     if candidate_ids is not None:

@@ -80,8 +80,11 @@ def _json(response):
 
 class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
     def __init__(self, session=None, *, official_getter=None, actions_getter=None,
-                 total_timeout=60, max_requests=64, clock=monotonic, source_store=None):
+                 total_timeout=60, max_requests=64, clock=monotonic, source_store=None, archived_prices=None):
         self.session = session
+        # Explicit frozen collection input; detached callers still compare
+        # complete Yahoo rows against official prices without holding a reader.
+        self.archived_prices = archived_prices
         self.official_getter = official_getter or official_request_get
         self.actions_getter = actions_getter or requests.get
         self.total_timeout = total_timeout
@@ -357,6 +360,9 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         return result
 
     def _archive_prices(self, symbol, required):
+        if self.archived_prices is not None:
+            return {day: dict(row) for day, row in self.archived_prices.get(symbol, {}).items()
+                    if str(min(required)) <= day <= str(max(required))}
         def load(reader):
             return {str(row.trade_date): {"date": str(row.trade_date),
                 **{f: float(getattr(row, f)) for f in OHLC_FIELDS},
@@ -382,14 +388,15 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             original = {str(r["date"])[:10]: r for r in result.get(symbol, [])}
             missing = [d for d in required if not _complete(original.get(str(d), {}))
                        or original[str(d)].get("corporate_actions_checked") is not True]
-            if not missing and (self.session is None or symbol == "TAIEX"):
+            has_archive = self.session is not None or self.archived_prices is not None
+            if not missing and (not has_archive or symbol == "TAIEX"):
                 continue
             stage = "official_prices"
             conflicting_prices = []
             conflict_date_count = 0
             try:
                 official = {}
-                if self.session is not None and symbol != "TAIEX":
+                if has_archive and symbol != "TAIEX":
                     official = self._archive_prices(symbol, required)
                 # Archived overlaps are authoritative even if a different date
                 # requires a remote request that fails or overlaps the archive.
