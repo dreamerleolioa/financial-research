@@ -125,6 +125,12 @@ def collect_window(candidate, before, row, *, calendar, provider):
         row, event_replay = event('corporate', yahoo, benchmark, marked)
         if row is None:
             raise ValueError('next_open_official_action_unverified')
+    elif scope and any(e['family'] == 'reduction' for e in scope['current_events']):
+        # Prove the current halt before demanding prices for its closed days.
+        # Only the existing reason-specific validator may exempt those dates.
+        row, event_replay = event('corporate', yahoo, benchmark, marked)
+        if row is None:
+            raise ValueError('next_open_official_action_unverified')
     else:
         stock = provider.official_research_history(symbol, start_date=signal, end_date=target)
         index = provider.official_research_history('TAIEX', start_date=signal, end_date=target)
