@@ -2,6 +2,7 @@ import importlib.util
 import json
 from functools import partial
 from pathlib import Path
+import pytest
 
 
 def complete_readiness(endpoint,token):
@@ -243,14 +244,63 @@ def test_complete_http_request_is_bounded_and_other_basis_keeps_its_budget(tmp_p
         if payload["return_basis"] == "signal_close":
             now[0] += 901
         return {"status": "completed", "as_of_date": "2026-11-03",
-                "retryable_skipped_count": 0,
-                "report": {"remaining_retryable_window_count": 0}}
+                "retryable_skipped_count": 0, 'records_written':3,
+                "report": {"remaining_retryable_window_count": 0,
+                    'source_recovery':[{'stage':'official_prices','recovered_dates':['2026-11-02']}]}}
     assert runner().run(endpoint="test", token="private", run_date="2026-11-03",
         output_dir=tmp_path, request=post, sleep=lambda _: None, clock=lambda: now[0]) == 1
     assert calls == ["signal_close", "next_open"]
     summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert summaries[0]["stop_reason"] == "budget_exhausted"
     assert summaries[1]["status"] == "completed"
+    artifact=json.loads((tmp_path/'signal_close-attempt-1.json').read_text())
+    assert artifact['records_written']==3
+    assert artifact['report']['source_recovery'][0]['recovered_dates']==['2026-11-02']
+    assert artifact['validation_response_received'] is True
+    assert artifact['validation_error']=={'error_type':'TimeoutError'}
+    assert artifact['readiness_error'] is None
+
+
+def test_post_deadline_exit_retains_response_without_carrying_it_into_the_next_attempt(tmp_path,monkeypatch):
+    from contextlib import contextmanager
+    from urllib.error import HTTPError
+    module=runner();entered=[0];calls=[]
+    @contextmanager
+    def deadline(seconds):
+        entered[0]+=1;current=entered[0]
+        yield
+        if current==1:raise TimeoutError('private')
+    monkeypatch.setattr(module,'request_deadline',deadline)
+    def post(endpoint,token,payload):
+        calls.append(payload['return_basis'])
+        if calls==['signal_close','signal_close']:raise HTTPError(endpoint,403,'private',None,None)
+        return {'status':'completed','as_of_date':'2026-11-03','retryable_skipped_count':0,
+            'records_written':3,'echo':'private','report':{'remaining_retryable_window_count':0}}
+    assert module.run(endpoint='test',token='private',run_date='2026-11-03',output_dir=tmp_path,
+        request=post,sleep=lambda _:None)==1
+    assert calls==['signal_close','signal_close','next_open']
+    first=json.loads((tmp_path/'signal_close-attempt-1.json').read_text())
+    second=json.loads((tmp_path/'signal_close-attempt-2.json').read_text())
+    assert first['records_written']==3 and first['validation_response_received'] is True
+    assert first['validation_error']=={'error_type':'TimeoutError'}
+    assert second['validation_response_received'] is False and second['validation_response'] is None
+    assert second['validation_error']=={'error_type':'HTTPError','http_status':403}
+    assert json.loads((tmp_path/'next_open-attempt-1.json').read_text())['runner']['stop_reason']=='completed'
+    assert all('private' not in path.read_text() for path in tmp_path.glob('*.json'))
+
+
+@pytest.mark.parametrize('body,expected',[(None,None),(['private'],['[redacted]']),('private','[redacted]')])
+def test_received_invalid_post_body_is_retained_as_evidence_without_completion(tmp_path,body,expected):
+    def post(endpoint,token,payload):return body
+    assert runner().run(endpoint='test',token='private',run_date='2026-11-03',output_dir=tmp_path,
+        request=post,sleep=lambda _:None)==1
+    artifacts=[json.loads(path.read_text()) for path in tmp_path.glob('*.json')]
+    assert len(artifacts)==2
+    for artifact in artifacts:
+        assert artifact['validation_response_received'] is True
+        assert artifact['validation_response']==expected
+        assert artifact['validation_error']=={'error_type':'ValueError'}
+        assert artifact['runner']['stop_reason']=='non_retryable_response'
 
 
 def test_recovery_errors_are_visible_and_secrets_remain_redacted(tmp_path, capsys):

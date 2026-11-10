@@ -38,7 +38,11 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
             valid = False
             readiness = None
             validation_response = None
+            validation_response_received = False
+            validation_error = None
             readiness_error = None
+            phase = 'validation'
+            failure = None
             needs_review = False
             readiness_blocked = False
             try:
@@ -47,6 +51,10 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                     raise TimeoutError("validation_budget_exhausted")
                 with request_deadline(min(300, remaining_time)):
                     response = request(endpoint, token, payload)
+                    # Save before context exit: the deadline can expire after
+                    # the server's complete response has already been decoded.
+                    validation_response = response
+                    validation_response_received = True
                 if clock() > deadline:
                     raise TimeoutError("validation_budget_exhausted")
                 if not isinstance(response, dict):
@@ -57,6 +65,8 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                          and type(response.get("retryable_skipped_count")) is int
                          and response["retryable_skipped_count"] >= 0
                          and type(remaining) is int and remaining >= 0)
+                if not valid:
+                    raise ValueError('validation_response_invalid')
                 ready = valid and response["retryable_skipped_count"] == 0 and remaining == 0
                 # Compatibility with deployed reports predating the readiness
                 # gate: protected legacy returns must never be called completed.
@@ -67,7 +77,7 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                     needs_review |= reasons.get('validation_input_unverified', 0) > 0
                 ready = ready and not needs_review
                 if ready:
-                    validation_response = response
+                    phase = 'readiness'
                     remaining_time = deadline - clock()
                     if remaining_time <= 0:
                         raise TimeoutError('validation_budget_exhausted')
@@ -98,19 +108,24 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 transport_failures = 0
             except HTTPError as exc:
                 ready = valid = False
-                response = {"error_type": "HTTPError", "http_status": exc.code}
+                failure = response = {"error_type": "HTTPError", "http_status": exc.code}
                 retryable = exc.code in (408, 425, 429) or 500 <= exc.code < 600
                 transport_failures += 1
             except (OSError, HTTPException) as exc:
                 ready = valid = False
-                response = {"error_type": type(exc).__name__}
+                failure = response = {"error_type": type(exc).__name__}
                 retryable = True
                 transport_failures += 1
             except (ValueError, TypeError) as exc:
                 ready = valid = False
-                response = {"error_type": type(exc).__name__}
-            if validation_response is not None and not valid:
-                readiness_error, response = response, validation_response
+                failure = response = {"error_type": type(exc).__name__}
+            if failure is not None:
+                if phase == 'readiness':
+                    readiness_error = failure
+                else:
+                    validation_error = failure
+                if validation_response_received and isinstance(validation_response, dict):
+                    response = validation_response
             stop_reason = None
             if ready:
                 stop_reason = "completed"
@@ -130,6 +145,9 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
             elif attempt == attempt_limit:
                 stop_reason = "attempt_limit"
             diagnostic = response | {"readiness": readiness, "readiness_error": readiness_error,
+                                    'validation_response': validation_response,
+                                    'validation_response_received': validation_response_received,
+                                    'validation_error': validation_error,
                                     "runner": {"return_basis": basis, "attempt": attempt,
                                                  "stop_reason": stop_reason}}
             (output_dir / f"{basis}-attempt-{attempt}.json").write_text(diagnostic_json(diagnostic, token))
@@ -143,7 +161,9 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 "skipped_count", "retryable_skipped_count", "terminal_skipped_count", "error_type", "http_status")}
             summary.update(return_basis=basis, attempt=attempt,
                 stop_reason=stop_reason,
-                readiness_ready=ready if validation_response is not None else None,
+                readiness_ready=ready if phase == 'readiness' else None,
+                validation_response_received=validation_response_received,
+                validation_error=validation_error,
                 readiness_error=readiness_error,
                 current_run_skip_reasons=report.get("current_run_skip_reasons"),
                 remaining_retryable_window_count=report.get("remaining_retryable_window_count"),
