@@ -12,14 +12,18 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_FORWARD_WINDOWS,
+    FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
     default_due_start_date,
     forward_validation_candidates_from_runs,
     forward_validation_fixture_inputs,
     load_price_series_from_raw_data,
-    upsert_forward_validation_results,
     write_report,
 )
+from ai_stock_sentinel.daily_radar.validation_preparation import (
+    accept_validation_results, capture_validation_acceptance,
+)
+from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
 from ai_stock_sentinel.db.session import _get_session_local
 
 
@@ -52,6 +56,8 @@ def main() -> None:
                 start_date=start_date,
                 end_date=args.end_date or args.as_of_date,
             )
+            acceptance = capture_validation_acceptance(session, candidates, market=args.market,
+                windows=windows, validation_version=FORWARD_VALIDATION_VERSION) if args.write_results else None
             symbols = {str(candidate["symbol"]) for candidate in candidates}
             benchmark_symbol = args.benchmark_symbol
             price_series = load_price_series_from_raw_data(
@@ -60,6 +66,17 @@ def main() -> None:
                 start_date=start_date,
                 end_date=args.as_of_date,
             )
+            calendar = None
+            if args.write_results:
+                if args.market != "TW" or benchmark_symbol != "TAIEX":
+                    raise ValueError("official_trading_calendar_scope_unsupported")
+                signals = [date.fromisoformat(c["record_date"]) for c in candidates]
+                first_signal = min(signals, default=start_date)
+                calendar = load_calendar(session, start_date=first_signal, as_of_date=args.as_of_date)
+                if (calendar is None or calendar.through < args.as_of_date
+                        or any(not calendar.start <= signal <= calendar.through for signal in signals)):
+                    raise ValueError("official_trading_calendar_unavailable")
+                session.rollback()  # Plain inputs are collected; acceptance owns a fresh short transaction.
             evaluation = build_forward_validation_report(
                 candidates,
                 price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
@@ -69,9 +86,10 @@ def main() -> None:
                 as_of_date=args.as_of_date,
                 windows=windows,
                 benchmark_symbol=benchmark_symbol,
+                trading_calendar=calendar.sessions if calendar is not None else None,
             )
             if args.write_results:
-                upsert_forward_validation_results(session, evaluation.outcomes)
+                accept_validation_results(session, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
                 session.commit()
 
     if args.output is not None:
@@ -101,7 +119,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--write-results",
         action="store_true",
-        help="Persist db-mode validation rows. Official production writes should normally use the internal API.",
+        help="Persist db-mode validation rows with stored official TW/TAIEX calendar coverage. "
+             "Official production writes should normally use the internal API.",
     )
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()

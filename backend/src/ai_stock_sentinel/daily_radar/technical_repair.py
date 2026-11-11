@@ -14,7 +14,17 @@ PRICE_FIELDS = ("Open", "High", "Low", "Close")
 
 
 class TechnicalRepairRejected(ValueError):
-    """A stable reason code; never include symbols or provider response bodies."""
+    """Stable reason plus bounded numeric evidence; never raw response bodies."""
+
+    def __init__(self, reason, *, details=None):
+        super().__init__(reason)
+        self.details = details or {}
+
+
+def _history_changed(day, field, accepted, observed, source):
+    return TechnicalRepairRejected("adjusted_history_changed", details={"conflict": {
+        "date": str(day), "field": field, "accepted": float(accepted),
+        "observed": float(observed), "source": source}})
 
 
 def _number(value: Any) -> float:
@@ -129,13 +139,13 @@ def verified_repaired_frame(
                 if not math.isclose(
                     _number(baseline[field]), prices[field] * ratio, rel_tol=1e-6, abs_tol=1e-6,
                 ):
-                    raise TechnicalRepairRejected("adjusted_history_changed")
+                    raise _history_changed(data_date, field, baseline[field], prices[field] * ratio, "unrepaired_adjusted")
             candidate = repaired.iloc[by_date[data_date]]
             for field in history_fields:
                 if pd.notna(candidate[field]) and not math.isclose(
                     _number(candidate[field]), prices[field], rel_tol=1e-6, abs_tol=0.0,
                 ):
-                    raise TechnicalRepairRejected("adjusted_history_changed")
+                    raise _history_changed(data_date, field, prices[field], candidate[field], "repaired_raw")
     # Every existing price must retain its adjustment basis. Never replace the
     # accepted history with the library's dividend/split repair heuristics.
     history_rows: dict[date, Any] = {}
@@ -161,7 +171,7 @@ def verified_repaired_frame(
                 _number(baseline[field]), _number(candidate[field]) * ratio,
                 rel_tol=1e-6, abs_tol=1e-6,
             ):
-                raise TechnicalRepairRejected("adjusted_history_changed")
+                raise _history_changed(data_date, field, baseline[field], candidate[field] * ratio, "candidate_adjusted")
         history_rows[data_date] = candidate
     # A changed daily factor needs a reported ex-dividend event. Matching the
     # existing history alone cannot validate a corrupt target-day Adj Close.

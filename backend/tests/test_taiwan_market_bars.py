@@ -513,7 +513,7 @@ def test_market_bar_manual_backfill_is_not_gated_by_current_market_session() -> 
     text = workflow.read_text(encoding="utf-8")
 
     assert (
-        "if: (needs.resolve-run-context.outputs.market_open == 'true' && "
+        "if: (vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && needs.resolve-run-context.outputs.market_open == 'true' && "
         "github.event.schedule == '45 9 * * 1-5') || "
         "(github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars')"
         in text

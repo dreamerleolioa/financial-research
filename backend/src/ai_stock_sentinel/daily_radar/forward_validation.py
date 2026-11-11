@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import JSON, and_, func, or_, select
 from sqlalchemy.orm import Session
 from ai_stock_sentinel.taiwan_symbols import taiwan_stock_symbol_predicate
 from ai_stock_sentinel.data_sources.reviewed_market_lifecycle import termination_evidence
@@ -33,6 +33,7 @@ from ai_stock_sentinel.daily_radar.observation_validation import (
     canonical_radar_run_ids, evaluate_observation, load_observation_origins, observation_report, strategy_cohort,
 )
 from ai_stock_sentinel.daily_radar.scoring import RULE_VERSION, SCORING_VERSION
+from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_inputs, checked_validation_inputs
 from ai_stock_sentinel.db.models import (
     DailyRadarCandidate,
     DailyRadarForwardValidationResult,
@@ -92,6 +93,11 @@ def build_forward_validation_report(
         candidate_list, diagnosed_outcomes, price_series_by_symbol=price_series_by_symbol,
         benchmark_prices=diagnostic_benchmark, as_of_date=as_of_date,
     )
+    outcomes = bind_validation_inputs(candidate_list, outcomes)
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window
+    calculation_days = (trading_calendar if trading_calendar is not None else
+        shared_forward_validation.normalize_price_series(benchmark_prices).keys())
+    outcomes = [bind_window(row, calculation_days, 'signal_close') for row in outcomes]
 
     report = _build_report_from_outcomes(
         candidate_list,
@@ -264,10 +270,12 @@ def evaluate_forward_window(
     results = _with_market_lifecycle_diagnostics(
         [result], price_series_by_symbol=prices, benchmark_prices=benchmark_prices, as_of_date=as_of_date,
     )
-    return _with_observation_diagnostics(
+    diagnosed = _with_observation_diagnostics(
         [candidate], results, price_series_by_symbol=prices,
         benchmark_prices=benchmark_prices, as_of_date=as_of_date,
     )[0]
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window
+    return bind_window(diagnosed, shared_forward_validation.normalize_price_series(benchmark_prices).keys(), 'signal_close')
 
 
 def _with_market_lifecycle_diagnostics(outcomes, *, price_series_by_symbol, benchmark_prices, as_of_date, trading_calendar=None):
@@ -350,6 +358,29 @@ def _with_observation_diagnostics(candidates, outcomes, *, price_series_by_symbo
     return enriched
 
 
+def forward_validation_snapshot_columns():
+    """Shared input projection for snapshots and bounded-planner epochs."""
+    return (
+        DailyRadarCandidate.id.label("candidate_id"), DailyRadarCandidate.run_id,
+        DailyRadarRun.run_date, DailyRadarRun.candidate_count.label("daily_selected_pool_count"),
+        *[getattr(DailyRadarCandidate, field) for field in (
+            "symbol", "name", "primary_bucket", "secondary_buckets", "observation_score",
+            "bucket_scores", "risk_labels", "matched_rules", "repeat_status",
+            "data_dates", "selection_status", "prefilter_status", "prefilter_reasons", "shadow_cohort",
+        )],
+        DailyRadarCandidate.input_snapshot["ohlcv"]["close"].as_json().label("close"),
+        *[DailyRadarCandidate.input_snapshot["indicators"][field].as_json().label(field)
+          for field in ("support_level", "resistance_level", "ma20", "ma60")],
+        DailyRadarCandidate.input_snapshot["versions"].as_json().label("versions"),
+        DailyRadarCandidate.input_snapshot["selection_version"].as_json().label("selection_version"),
+        DailyRadarCandidate.input_snapshot["market_context"]["regime"].as_json().label("market_regime"),
+        _candidate_benchmark_column().label("candidate_benchmark"),
+        DailyRadarCandidate.score_breakdown["relative_strength"]["freshness"].as_json().label("relative_freshness"),
+        DailyRadarCandidate.score_breakdown["relative_strength"]["relative_value"].as_json().label("relative_value"),
+        DailyRadarCandidate.score_breakdown["market_context"]["details"]["regime"].as_json().label("score_market_regime"),
+    )
+
+
 def forward_validation_candidates_from_runs(
     session: Session,
     *,
@@ -359,27 +390,11 @@ def forward_validation_candidates_from_runs(
     statuses: tuple[str, ...] = PUBLIC_RUN_STATUSES,
     include_candidate_ids: Sequence[int] = (),
     symbols: Sequence[str] | None = None,
+    candidate_ids: Sequence[int] | None = None,
+    comparable_pool_only: bool = False,
 ) -> list[dict[str, Any]]:
     query = (
-        select(
-            DailyRadarCandidate.id.label("candidate_id"), DailyRadarCandidate.run_id,
-            DailyRadarRun.run_date, DailyRadarRun.candidate_count.label("daily_selected_pool_count"),
-            *[getattr(DailyRadarCandidate, field) for field in (
-                "symbol", "name", "primary_bucket", "secondary_buckets", "observation_score",
-                "bucket_scores", "risk_labels", "matched_rules", "repeat_status",
-                "data_dates", "selection_status", "prefilter_status", "prefilter_reasons", "shadow_cohort",
-            )],
-            DailyRadarCandidate.input_snapshot["ohlcv"]["close"].as_json().label("close"),
-            *[DailyRadarCandidate.input_snapshot["indicators"][field].as_json().label(field)
-              for field in ("support_level", "resistance_level", "ma20", "ma60")],
-            DailyRadarCandidate.input_snapshot["versions"].as_json().label("versions"),
-            DailyRadarCandidate.input_snapshot["selection_version"].as_json().label("selection_version"),
-            DailyRadarCandidate.input_snapshot["market_context"]["regime"].as_json().label("market_regime"),
-            _candidate_benchmark_column().label("candidate_benchmark"),
-            DailyRadarCandidate.score_breakdown["relative_strength"]["freshness"].as_json().label("relative_freshness"),
-            DailyRadarCandidate.score_breakdown["relative_strength"]["relative_value"].as_json().label("relative_value"),
-            DailyRadarCandidate.score_breakdown["market_context"]["details"]["regime"].as_json().label("score_market_regime"),
-        )
+        select(*forward_validation_snapshot_columns())
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
         .where(or_(DailyRadarRun.id.in_(canonical_radar_run_ids(
             market=market, start_date=start_date, end_date=end_date, statuses=statuses,
@@ -390,6 +405,11 @@ def forward_validation_candidates_from_runs(
         query = query.where(taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
     if symbols is not None:
         query = query.where(DailyRadarCandidate.symbol.in_(symbols))
+    if candidate_ids is not None:
+        query = query.where(DailyRadarCandidate.id.in_(candidate_ids))
+    if comparable_pool_only:
+        query = query.where(or_(DailyRadarCandidate.selection_status == 'selected', and_(
+            DailyRadarCandidate.selection_status == 'shadow', DailyRadarCandidate.shadow_cohort == 'comparable')))
     rows = session.execute(
         query.order_by(
             DailyRadarRun.run_date.asc(),
@@ -514,12 +534,49 @@ def _candidate_benchmark_column():
     return DailyRadarCandidate.input_snapshot["replay_input"]["market_context"]["benchmark"]["symbol"].as_json()
 
 
+def forward_validation_result_revision(row):
+    if row is None:
+        return None
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+    return fingerprint({key: (value.isoformat() if isinstance(value, (date, datetime)) else value)
+        for key in ('id', 'status', 'signal_date', 'target_date', 'benchmark_symbol',
+                    'evaluation_as_of_date', 'skip_reason', 'outcome', 'updated_at')
+        for value in [getattr(row, key)]})
+
+
+def is_original_rights_conflict_recovery(existing, outcome):
+    """Existing official recovery may revisit its exact original conflict target.
+
+    This exception only concerns the cutoff guard. Candidate/result revisions,
+    canonical ownership and the writer's official evidence guards still apply.
+    """
+    if existing is None or outcome is None:
+        return False
+    target = _parse_date(outcome.get('target_date'))
+    proof = _mapping(_mapping(outcome.get('outcome')).get(rights.PROVENANCE_KEY))
+    event = _mapping(proof.get('event'))
+    symbol = str(outcome.get('symbol') or '')
+    return (outcome.get('validation_version') == rights.RESEARCH_VERSION
+        and existing.validation_version == rights.RESEARCH_VERSION
+        and existing.candidate_id == outcome.get('candidate_id') and existing.window_days == outcome.get('window_days')
+        and outcome.get('status') == 'validated' and existing.status == 'skipped'
+        and existing.skip_reason == rights.CONFLICT_REASON
+        and target is not None and target == _parse_date(outcome.get('evaluation_as_of_date'))
+        and existing.signal_date == _parse_date(outcome.get('signal_date')) and existing.signal_date < target
+        and existing.benchmark_symbol == outcome.get('benchmark_symbol') == 'TAIEX'
+        and _mapping(existing.outcome).get('expected_target_date') == str(target)
+        and existing.evaluation_as_of_date is not None and existing.evaluation_as_of_date >= target
+        and proof.get('evidence_version') == 'twse-cash-rights-v1'
+        and event.get('type') == 'cash_rights_issue' and event.get('symbol') == symbol and symbol.endswith('.TW'))
+
+
 def upsert_forward_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
     *,
     terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
     require_existing_conflict: bool = False,
+    expected_revisions: Mapping[tuple, str | None] | None = None,
 ) -> dict[str, int]:
     outcome_rows = sorted(
         (row for row in outcomes if row.get("candidate_id") is not None),
@@ -587,6 +644,15 @@ def upsert_forward_validation_results(
         # reviewed history after the discovery-time exclusion has already run.
         statement = statement.with_for_update().execution_options(populate_existing=True)
         existing = session.execute(statement).scalar_one_or_none()
+        incoming_cutoff = _parse_date(outcome.get('evaluation_as_of_date'))
+        if (expected_revisions is not None and existing is not None and existing.evaluation_as_of_date is not None
+                and (incoming_cutoff is None or existing.evaluation_as_of_date > incoming_cutoff)
+                and not is_original_rights_conflict_recovery(existing, outcome)):
+            continue
+        key = (int(candidate_id), int(outcome['window_days']), str(outcome['validation_version']))
+        if expected_revisions is not None and (key not in expected_revisions
+                or forward_validation_result_revision(existing) != expected_revisions[key]):
+            continue
         if existing is not None and _mapping(existing.outcome).get("historical_repair"):
             continue
         payload = dict(_mapping(outcome.get("outcome")))
@@ -686,6 +752,23 @@ def upsert_forward_validation_results(
     }
 
 
+def _summary_outcome(column, dialect):
+    """Remove archived repair inputs in SQL, before JSON reaches the process.
+
+    Keep current input identity, terminal/action proofs and repair ownership.
+    Repair manifests, write revisions and rollback use full ORM snapshots,
+    never this projection. No evidence is changed in the database.
+    """
+    if dialect == 'postgresql':
+        from sqlalchemy.dialects.postgresql import array
+        return column.op('-')('reviewed_official_window').op('#-')(
+            array(['historical_repair', 'prior_evidence']))
+    if dialect == 'sqlite':
+        return func.json_remove(column, '$.reviewed_official_window',
+                                '$.historical_repair.prior_evidence', type_=JSON)
+    raise ValueError('unsupported_validation_summary_dialect')
+
+
 def persisted_forward_validation_outcomes(
     session: Session,
     candidates: Iterable[Mapping[str, Any]],
@@ -702,8 +785,12 @@ def persisted_forward_validation_outcomes(
     if not candidate_by_id:
         return []
     active_windows = _ordered_positive_values(windows)
+    model = DailyRadarForwardValidationResult
     results = session.execute(
-        select(DailyRadarForwardValidationResult)
+        select(model.candidate_id, model.signal_date, model.window_days, model.validation_version,
+               model.benchmark_symbol, model.evaluation_as_of_date, model.status, model.target_date,
+               model.skip_reason, _summary_outcome(model.outcome, session.get_bind().dialect.name).label('outcome'),
+               model.outcome['reviewed_official_window']['session_dates'].label('window_session_dates'))
         .where(
             DailyRadarForwardValidationResult.candidate_id.in_(candidate_by_id),
             DailyRadarForwardValidationResult.window_days.in_(active_windows),
@@ -714,7 +801,7 @@ def persisted_forward_validation_outcomes(
             DailyRadarForwardValidationResult.candidate_id.asc(),
             DailyRadarForwardValidationResult.window_days.asc(),
         )
-    ).scalars()
+    )
     outcomes: list[dict[str, Any]] = []
     for result in results:
         candidate = candidate_by_id[result.candidate_id]
@@ -760,9 +847,10 @@ def persisted_forward_validation_outcomes(
                 "target_date": result.target_date.isoformat() if result.target_date else None,
                 "skip_reason": result.skip_reason,
                 "outcome": dict(result.outcome or {}),
+                "window_session_dates": result.window_session_dates,
             }
         )
-    return outcomes
+    return checked_validation_inputs(candidate_by_id.values(), outcomes)
 
 
 def default_due_start_date(as_of_date: date, max_window: int = max(DEFAULT_FORWARD_WINDOWS)) -> date:
@@ -795,6 +883,7 @@ def exclude_persisted_daily_radar_windows(
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
     terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
     as_of_date: date | None = None,
+    calendar=None,
 ) -> dict[str, list[int]]:
     candidate_ids = [
         int(key.removeprefix("id:"))
@@ -807,6 +896,23 @@ def exclude_persisted_daily_radar_windows(
             for key, windows in windows_by_candidate.items()
             if windows
         }
+    dialect = session.get_bind().dialect.name
+    payload = DailyRadarForwardValidationResult.outcome
+    # A legacy marker containing only prior_evidence is still nonempty/owned
+    # after its large value is omitted. Test key existence, including JSON null.
+    prior_present = (payload['historical_repair'].has_key('prior_evidence') if dialect == 'postgresql'
+                     else func.json_type(payload, '$.historical_repair.prior_evidence').is_not(None))
+    def complete_window(row):
+        if row['status'] != 'validated' or row['historical_prior_present'] or _mapping(row['outcome']).get('historical_repair'):
+            return True  # Reviewed rows require explicit manual repair, never ordinary overwrite.
+        if benchmark_symbol != 'TAIEX':
+            return True  # Do not apply Taiwan sessions to other benchmarks.
+        if calendar is None:
+            return False
+        from ai_stock_sentinel.daily_radar.window_identity import window_error
+        expected = [d for d in calendar.sessions if d > row['signal_date']][:row['window_days']]
+        return len(expected) == row['window_days'] and window_error(row, signal=row['signal_date'], sessions=expected,
+            basis='next_open' if validation_version.startswith('daily-radar-next-open') else 'signal_close') is None
     terminal = {
         (row["candidate_id"], row["window_days"])
         for row in session.execute(
@@ -819,7 +925,8 @@ def exclude_persisted_daily_radar_windows(
                 DailyRadarForwardValidationResult.evaluation_as_of_date,
                 DailyRadarForwardValidationResult.skip_reason,
                 DailyRadarForwardValidationResult.target_date,
-                DailyRadarForwardValidationResult.outcome,
+                _summary_outcome(payload, dialect).label('outcome'),
+                prior_present.label('historical_prior_present'),
                 DailyRadarCandidate.symbol,
                 DailyRadarRun.run_date,
                 _candidate_benchmark_column().label("candidate_benchmark"),
@@ -833,7 +940,7 @@ def exclude_persisted_daily_radar_windows(
             .execution_options(yield_per=128)
         ).mappings()
         if (
-            row["signal_date"] == row["run_date"]
+            complete_window(row) and row["signal_date"] == row["run_date"]
             and row["benchmark_symbol"] == benchmark_symbol
             and row["benchmark_symbol"] == str(row["candidate_benchmark"] or DEFAULT_BENCHMARK_SYMBOL)
             and (as_of_date is None
@@ -848,6 +955,7 @@ def exclude_persisted_daily_radar_windows(
             and (
                 row["status"] == "validated"
                 or bool(_mapping(row["outcome"]).get("historical_repair"))
+                or bool(row['historical_prior_present'])
                 or (
                     row["status"] == "skipped"
                     and row["evaluation_as_of_date"] is not None

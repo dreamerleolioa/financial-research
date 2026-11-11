@@ -6,6 +6,7 @@ the reviewed manifest hash. Original candidates/raw prices are never rewritten.
 """
 from copy import deepcopy
 from datetime import date
+from decimal import Decimal
 from hashlib import sha256
 import json
 import math
@@ -128,9 +129,24 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
         loaded.append((item, row, candidate_snapshot(c, run)))
     origins = load_observation_origins(session, [c for _,_,c in loaded], market="TW",
                                        through_date=calendar.through, excluded_dates=invalid_dates)
+    # Only a complete recomputation may certify return inputs. Diagnostic-only
+    # repair preserves the original return and its existing (or absent) proof.
+    from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
+    from ai_stock_sentinel.daily_radar.validation_inputs import (
+        bind_validation_input, validation_candidate_revision, validation_inputs_match,
+    )
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window, window_error
+    input_ids = [row.candidate_id for _, row, _ in loaded]
+    evaluation_inputs = {c['candidate_id']: c | {'observation_origin':
+        origins.get((c['symbol'], strategy_cohort(c)))} for c in forward_validation_candidates_from_runs(
+            session, market='TW', end_date=calendar.through, candidate_ids=input_ids)} if input_ids else {}
+    if set(input_ids) != set(evaluation_inputs):
+        raise ValueError('repair_candidate_input_unavailable')
+    revisions = {cid: validation_candidate_revision(c) for cid, c in evaluation_inputs.items()}
     seed = {"version": VERSION, "calendar": calendar.payload(),
             "results": [{"id": row.id, "operation": item["operation"], "before": result_snapshot(row),
                          "candidate_sha256": fingerprint(c),
+                         "validation_candidate_revision": revisions[row.candidate_id],
                          "observation_origin": origins.get((c["symbol"],strategy_cohort(c)))} for item,row,c in loaded],
             "runs": [{"id": run.id, "before": run_snapshot(run)} for run in runs]}
     repair_id = fingerprint(seed)
@@ -159,7 +175,10 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
         c["observation_origin"] = origin
         if operation == "recompute":
             if (row.status == "validated" and row.target_date == target
-                    and before["outcome"].get("target_date",str(target)) == str(target)):
+                    and before["outcome"].get("target_date",str(target)) == str(target)
+                    and validation_inputs_match(evaluation_inputs[row.candidate_id], before)
+                    and window_error(
+                        before, signal=row.signal_date, sessions=days, basis='signal_close') is None):
                 raise ValueError("recompute_requires_historical_mismatch")
             # Avoid using valid-looking but inconsistent OHLC or ambiguous prices.
             from ai_stock_sentinel.calibration.forward_validation import price_conflict_fields, number
@@ -202,8 +221,12 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
             "observation_origin": deepcopy(origin),
             "calendar_sha256": fingerprint(calendar.payload()),
             "price_evidence_sha256": fingerprint(evidence.get(str(row.id)))}
+        if operation == 'recompute':
+            after = bind_window(after, calendar.sessions, 'signal_close')
+            after['outcome'] = bind_validation_input(evaluation_inputs[row.candidate_id], after)['outcome']
         plan["results"].append({"id": row.id, "operation": operation, "before": before, "after": after,
                                 "observation_origin": deepcopy(origin),
+                                "validation_candidate_revision": revisions[row.candidate_id],
                                 "candidate_sha256": fingerprint(candidate_snapshot(session.get(DailyRadarCandidate, row.candidate_id),
                                     session.get(DailyRadarRun, session.get(DailyRadarCandidate, row.candidate_id).run_id)))})
     for run in runs:
@@ -229,17 +252,79 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
     # mutually dependent when planned from the same database snapshot.
     if plan["results"] and plan["prepared"]["before"] != step_after:
         raise ValueError("repair_calendar_phase_required")
+    for entry in plan['results']:
+        _verify_repair_marker(plan, entry)
     plan["sha256"] = fingerprint(plan)
     return plan
 
 
 def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
-    if (plan.get("version") != VERSION or plan.get("sha256") != expected_sha256
+    return _apply_result_manifest(session, plan, expected_sha256=expected_sha256, rollback=rollback,
+                                  manifest_version=VERSION, result_version=FORWARD_VALIDATION_VERSION)
+
+
+def _storage_fingerprint(value):
+    """JSONB normalizes numeric spelling/sign of zero, but not JSON types.
+
+    Tag every node so user strings/objects cannot collide with numeric tags.
+    Decimal tuples avoid rounding large integers under the ambient context.
+    Source/capture hashes keep their original canonical representation.
+    """
+    def encode(item):
+        if item is None: return ['null']
+        if type(item) is bool: return ['bool', item]
+        if type(item) in (int, float):
+            number = Decimal(str(item))
+            if not number.is_finite(): raise ValueError('repair_snapshot_json_invalid')
+            sign, digits, exponent = number.as_tuple(); digits = list(digits)
+            if not any(digits): return ['number', 0, [0], 0]
+            while len(digits) > 1 and digits[-1] == 0:
+                digits.pop(); exponent += 1
+            return ['number', sign, digits, exponent]
+        if isinstance(item, str): return ['string', item]
+        if isinstance(item, (list, tuple)): return ['array', [encode(v) for v in item]]
+        if isinstance(item, dict) and all(isinstance(k, str) for k in item):
+            return ['object', [[k, encode(item[k])] for k in sorted(item)]]
+        raise ValueError('repair_snapshot_json_invalid')
+    return fingerprint(encode(value))
+
+
+def _verify_repair_marker(plan, entry):
+    """Bind ownership to the same preimage and sources as the reviewed manifest."""
+    def digest(value):
+        return isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
+    marker = entry['after']['outcome'].get('historical_repair')
+    if not isinstance(marker, dict) or not digest(plan.get('repair_id')) or entry['operation'] not in ('recompute', 'diagnostic'):
+        raise ValueError('repair_marker_invalid')
+    expected = {'repair_id': plan['repair_id'], 'operation': entry['operation'],
+        'before_sha256': fingerprint(entry['before']), 'calendar_sha256': fingerprint(plan['calendar'])}
+    if plan['version'] == 'daily-radar-next-open-repair-v2':
+        if entry['operation'] != 'recompute' or not digest(plan.get('capture_sha256')):
+            raise ValueError('repair_marker_invalid')
+        expected.update(version=plan['version'], capture_sha256=plan['capture_sha256'],
+                        prior_evidence=entry['before']['outcome'])
+    else:
+        expected.update(as_of_date=plan['calendar']['covered_through'], observation_origin=entry['observation_origin'])
+        if not digest(marker.get('price_evidence_sha256')):
+            raise ValueError('repair_marker_invalid')
+    if (any(key not in marker for key in expected)
+            or fingerprint({key: marker[key] for key in expected}) != fingerprint(expected)):
+        raise ValueError('repair_marker_invalid')
+
+
+def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest_version,
+                           result_version, verify_after=None, verify_context=None):
+    if (plan.get("version") != manifest_version or plan.get("sha256") != expected_sha256
             or fingerprint({k:v for k,v in plan.items() if k != "sha256"}) != expected_sha256):
         raise ValueError("repair_manifest_hash_mismatch")
     TradingCalendar.parse(plan["calendar"])
     if len(plan["results"]) > MAX_RESULTS or len(plan["runs"]) > 20:
         raise ValueError("repair_allowlist_too_large")
+    if not rollback:
+        for entry in plan['results']:
+            _verify_repair_marker(plan, entry)
+    # Legacy applied snapshots can rollback without new marker requirements;
+    # every current row must still match its exact frozen pre/postimage below.
     # Row locks cannot prevent a new public revision (or a candidate change)
     # from changing the first observation between the origin read and commit.
     # Reserve the publication relations before any origin/canonical reads.
@@ -277,6 +362,14 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
             current_origins = load_observation_origins(session,list(contexts.values()),market="TW",
                                                        through_date=cutoff,excluded_dates=excluded)
             current_public = set(session.scalars(canonical_radar_run_ids(market="TW",end_date=cutoff)))
+            from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
+            from ai_stock_sentinel.daily_radar.validation_inputs import (
+                validation_candidate_revision, PROOF_KEY, VERSION as INPUT_VERSION,
+            )
+            current_inputs = {c['candidate_id']: c | {'observation_origin':
+                current_origins.get((c['symbol'], strategy_cohort(c)))}
+                for c in forward_validation_candidates_from_runs(session, market='TW',
+                    end_date=cutoff, candidate_ids=list(contexts))}
         for entry in plan[kind]:
             row = rows.get(entry["id"])
             if row is None:
@@ -285,6 +378,8 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
                 if entry["before"][key] != entry["after"][key]:
                     raise ValueError("repair_immutable_identity_changed")
             if kind == "results":
+                if row.validation_version != result_version:
+                    raise ValueError("repair_result_identity_invalid")
                 c = session.get(DailyRadarCandidate, row.candidate_id)
                 run = session.get(DailyRadarRun, c.run_id)
                 if fingerprint(candidate_snapshot(c,run)) != entry["candidate_sha256"]:
@@ -293,16 +388,42 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
                 if (run.id not in current_public or current_origins.get((context["symbol"],strategy_cohort(context)))
                         != entry["observation_origin"]):
                     raise ValueError("repair_observation_origin_changed")
+                expected_revision = entry.get('validation_candidate_revision')
+                proof = entry['after']['outcome'].get(PROOF_KEY)
+                if expected_revision is not None:
+                    current_input = current_inputs.get(row.candidate_id)
+                    if current_input is None or validation_candidate_revision(current_input) != expected_revision:
+                        raise ValueError('repair_validation_inputs_changed')
+                    if entry['operation'] == 'recompute' and (not isinstance(proof, dict)
+                            or proof.get('version') != INPUT_VERSION
+                            or proof.get('candidate_revision') != expected_revision):
+                        raise ValueError('repair_validation_proof_invalid')
+                elif entry['operation'] == 'recompute' and proof is not None:
+                    raise ValueError('repair_validation_proof_missing_revision')
+                if verify_after is not None:
+                    verify_after(current_inputs[row.candidate_id], entry['after'])
                 if entry["operation"] == "diagnostic":
                     def returns(payload):
                         return {k:v for k,v in payload.items() if k not in ("observation_diagnostic","historical_repair")}
-                    if returns(entry["before"]["outcome"]) != returns(entry["after"]["outcome"]):
+                    before_returns = returns(entry["before"]["outcome"])
+                    after_returns = returns(entry["after"]["outcome"])
+                    before_state = entry['before'] | {'outcome': before_returns}
+                    after_state = entry['after'] | {'outcome': after_returns}
+                    unchanged = _storage_fingerprint(before_state) == _storage_fingerprint(after_state)
+                    # Old applied manifests could also change mutable scalar
+                    # fields. Permit restoring their exact typed postimage,
+                    # retaining the original outcome-value rollback contract.
+                    if rollback and not unchanged:
+                        unchanged = (_storage_fingerprint(before_returns) == _storage_fingerprint(after_returns)
+                            or before_returns == after_returns)
+                    if not unchanged:
                         raise ValueError("diagnostic_repair_changed_returns")
             current = snapshot(row)
             source, target = ("after","before") if rollback else ("before","after")
-            if current not in (entry[source],entry[target]):
+            current_sha, source_sha, target_sha = (_storage_fingerprint(v) for v in (current, entry[source], entry[target]))
+            if current_sha not in (source_sha, target_sha):
                 raise ValueError("repair_row_changed")
-            locked.append((kind,row,entry[target],current == entry[target]))
+            locked.append((kind,row,entry[target],current_sha == target_sha))
     entry = plan["prepared"]
     prepared = session.scalar(select(DailyRadarPreparedRun).where(DailyRadarPreparedRun.id==entry["id"])
         .with_for_update().execution_options(populate_existing=True))
@@ -310,9 +431,11 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
     if prepared is None or str(prepared.run_date) != entry["run_date"] or prepared.market != "TW":
         raise ValueError("repair_prepared_changed")
     current_steps = {k:(prepared.step_statuses or {}).get(k) for k in entry["before"]}
-    if current_steps not in (entry[source],entry[target]):
+    if _storage_fingerprint(current_steps) not in (_storage_fingerprint(entry[source]), _storage_fingerprint(entry[target])):
         raise ValueError("repair_calendar_changed")
-    if rollback and (plan["runs"] or entry["before"] != entry["after"]):
+    if verify_context is not None:
+        verify_context()
+    if rollback and (plan["runs"] or _storage_fingerprint(entry["before"]) != _storage_fingerprint(entry["after"])):
         dependency = session.scalar(select(DailyRadarForwardValidationResult.id).where(
             DailyRadarForwardValidationResult.id.not_in([r["id"] for r in plan["results"]]),
             DailyRadarForwardValidationResult.outcome["historical_repair"]["calendar_sha256"].as_string()
@@ -332,7 +455,7 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
             steps.pop(key,None)
         else:
             steps[key] = deepcopy(value)
-    metadata_written = steps != prepared.step_statuses
+    metadata_written = _storage_fingerprint(steps) != _storage_fingerprint(prepared.step_statuses)
     if metadata_written:
         prepared.step_statuses = steps
     session.flush()

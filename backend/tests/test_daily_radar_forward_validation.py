@@ -515,6 +515,7 @@ def test_forward_validation_internal_api_writes_idempotent_results(monkeypatch) 
         ],
     )
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 6, 8))
         run = _add_run(session)
         _add_candidate(session, run)
         for row_date, close in [
@@ -607,6 +608,7 @@ def test_forward_validation_due_mode_only_writes_matured_windows(monkeypatch) ->
         ],
     )
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 6, 8))
         matured_run = _add_run(session, run_date=date(2026, 6, 1))
         matured_candidate = _add_candidate(session, matured_run, symbol="2330.TW", close=100)
         recent_run = _add_run(session, run_date=date(2026, 6, 5))
@@ -686,6 +688,7 @@ def test_forward_validation_due_mode_uses_official_sessions_not_weekdays(monkeyp
         ],
     )
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 6, 8))
         run = _add_run(session, run_date=date(2026, 6, 1))
         _add_candidate(session, run, symbol="2330.TW", close=100)
         # 2026-06-04 is intentionally absent from both series. Weekday count reaches
@@ -1139,7 +1142,7 @@ def test_benchmark_price_loader_rejects_non_finite_newest_complete_run() -> None
     assert prices[-1]["close"] == 1010.0
 
 
-def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal() -> None:
+def test_retryable_and_unverified_calendar_windows_are_retried_but_stale_is_terminal() -> None:
     engine = _forward_validation_sqlite_engine()
     Base.metadata.create_all(
         engine,
@@ -1210,7 +1213,7 @@ def test_retryable_skip_is_retried_but_stale_and_validated_windows_are_terminal(
     assert terminal_summary["terminal_skipped_count"] == 1
     assert pending == {f"id:{candidate.id}": [5]}
     assert stale == {}
-    assert completed == {}
+    assert completed == {f"id:{candidate.id}": [5]}
 
 
 def test_legacy_terminal_skip_without_evaluation_date_is_requeued() -> None:
@@ -1604,6 +1607,7 @@ def test_forward_validation_due_mode_waits_for_incomplete_benchmark_window(monke
         ],
     )
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 6, 8))
         run = _add_run(session, run_date=date(2026, 6, 1))
         _add_candidate(session, run, symbol="2330.TW", close=100)
         for row_date, close in [
@@ -1674,6 +1678,7 @@ def test_due_mode_recomputes_candidate_refresh_after_benchmark_expands(monkeypat
         ],
     )
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 6, 5))
         run = _add_run(session, run_date=date(2026, 6, 1))
         _add_candidate(session, run, symbol="2330.TW", close=100)
         for symbol, rows in {
@@ -1813,6 +1818,7 @@ def test_due_api_persists_proven_terminal_but_keeps_unknown_gaps_retryable(monke
         DailyRadarForwardValidationResult.__table__, StockRawData.__table__])
     days = ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-29", "2026-09-30"]
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 10, 21))
         run = _add_run(session, run_date=date(2026, 9, 21))
         known = _add_candidate(session, run, symbol="8183.TWO")
         unknown = _add_candidate(session, run, symbol="9999.TWO")
@@ -1871,6 +1877,7 @@ def test_backdated_due_run_preserves_completed_window_evaluated_later(monkeypatc
         DailyRadarForwardValidationResult.__table__, StockRawData.__table__])
     days = ["2026-09-11", "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"]
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 10, 14))
         run = _add_run(session, run_date=date(2026, 9, 11))
         candidate = _add_candidate(session, run, symbol="8183.TWO")
         candidate_id = candidate.id
@@ -1944,6 +1951,13 @@ def _candidate_snapshot(*, data_dates: dict[str, Any] | None = None) -> dict[str
 
 def _price(row_date: str, open_: float, high: float, low: float, close: float) -> dict[str, Any]:
     return {"date": row_date, "open": open_, "high": high, "low": low, "close": close}
+
+
+def _add_validation_checkpoint(session: Session, as_of_date: date) -> None:
+    """Normal legacy workflow prepares this row before accepting validation."""
+    DailyRadarPreparedRun.__table__.create(session.connection(), checkfirst=True)
+    session.add(DailyRadarPreparedRun(run_date=as_of_date, market='TW', symbol_count=0,
+        selected_symbols=[], universe=[], step_statuses={}))
 
 
 def _add_run(session: Session, *, run_date: date = date(2026, 6, 1)) -> DailyRadarRun:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 import logging
 import math
@@ -9,6 +9,7 @@ import os
 from typing import Any, Protocol
 
 import yfinance as yf
+import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -50,10 +51,12 @@ class YFinanceBatchTechnicalFetcher:
         *,
         name_resolver: Callable[[str], str | None] = resolve_symbol_name,
         official_bar_loader: OfficialDailyBarLoader | None = None,
+        source_store=None,
     ) -> None:
         self._name_resolver = name_resolver
         self._official_bar_loader = official_bar_loader
         self.diagnostics: dict[str, dict[str, Any]] = {}
+        self.source_store = source_store
 
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ordered_symbols = _ordered_unique_symbols(symbols)
@@ -129,6 +132,17 @@ class YFinanceBatchTechnicalFetcher:
                 payload["refresh_diagnostics"] = self.diagnostics[symbol]
                 if symbol in provenance_by_symbol:
                     payload["source_provenance"] = provenance_by_symbol[symbol]
+                if self.source_store is not None:
+                    frame = frames[symbol]
+                    rows = [{"date": str(index.date()), **{
+                        str(key): None if pd.isna(value) else value.item() if hasattr(value, "item") else value
+                        for key, value in row.items()}} for index, row in frame.iterrows()]
+                    _, proof = self.source_store.capture_sdk(operation="technical-adjusted-history",
+                        params={"symbol": symbol, "run_date": str(run_date), "start_date": str(start_date),
+                                "stage": "accepted_after_existing_integrity_checks", "price_basis": "adjusted_price"},
+                        fetch=lambda: {"records": rows, "price_basis": "adjusted_price"}, reuse=False)
+                    payload["source_provenance"] = dict(payload.get("source_provenance") or {}) | {
+                        "accepted_adjusted_history": proof}
                 payloads[symbol] = payload
         return payloads
 
@@ -136,6 +150,8 @@ class YFinanceBatchTechnicalFetcher:
         detail = {"stage": stage, "reason": reason}
         if exc is not None:
             detail["error_type"] = type(exc).__name__
+            if isinstance(exc, TechnicalRepairRejected) and exc.details:
+                detail["evidence"] = exc.details
         self.diagnostics[symbol]["attempts"].append(detail)
         logger.info("Daily Radar technical recovery symbol=%s stage=%s reason=%s", symbol, stage, reason)
 
@@ -181,7 +197,7 @@ class YFinanceBatchTechnicalFetcher:
                         run_date=run_date, adjustment_from_repaired_data=False,
                     )
                 except TechnicalRepairRejected as exc:
-                    self._record_attempt(symbol, "raw_adjustment", str(exc))
+                    self._record_attempt(symbol, "raw_adjustment", str(exc), exc)
                     continue
                 frames[symbol], provenance[symbol] = frame, source
                 self._record_attempt(symbol, "raw_adjustment", "accepted")
@@ -221,7 +237,7 @@ class YFinanceBatchTechnicalFetcher:
                         symbol=symbol, run_date=run_date, unrepaired_history=raw_frames[symbol],
                     )
             except TechnicalRepairRejected as exc:
-                self._record_attempt(symbol, "repaired_adjustment", str(exc))
+                self._record_attempt(symbol, "repaired_adjustment", str(exc), exc)
                 continue
             except Exception as exc:
                 self._record_attempt(symbol, "repaired_adjustment", "yahoo_repair_validation_unavailable", exc)
@@ -252,8 +268,10 @@ class LocalFirstBatchTechnicalFetcher:
         name_resolver: Callable[[str], str | None] = resolve_symbol_name,
     ) -> None:
         self._session = session
+        from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
         self._fallback_fetcher = fallback_fetcher or YFinanceBatchTechnicalFetcher(
             name_resolver=name_resolver, official_bar_loader=self._load_official_bars,
+            source_store=store_for_session(session),
         )
         self._provider_mode = provider_mode or os.getenv(
             "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE",
@@ -356,22 +374,42 @@ class LocalFirstBatchTechnicalFetcher:
             return None
 
 
-def fetch_daily_radar_raw_payloads(
+@dataclass(frozen=True)
+class RawPayloadCollection:
+    run_date: date
+    symbols: tuple[str, ...]
+    technical_fetcher: BatchTechnicalFetcher
+
+    def fetch(self) -> Mapping[str, Mapping[str, Any]]:
+        return self.technical_fetcher.fetch(list(self.symbols), run_date=self.run_date) if self.symbols else {}
+
+
+def prepare_daily_radar_raw_payloads(
     session: Session, run_date: date, symbols: Iterable[str], *,
     technical_fetcher: BatchTechnicalFetcher,
     official_bars: Sequence[MarketDailyBar] = (),
-) -> Mapping[str, Mapping[str, Any]]:
-    """Read-only collection phase; no pending writes may be discarded by rollback."""
-    if session.new or session.dirty or session.deleted:
-        raise ValueError("raw_refresh_requires_clean_read_transaction")
+) -> RawPayloadCollection:
+    """Freeze archive inputs; the caller owns release of its read transaction."""
     ordered = _ordered_unique_symbols(symbols)
     existing = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered)
     reusable = {row.symbol for row in current_daily_radar_raw_rows(existing, run_date=run_date)}
     missing = [symbol for symbol in ordered if symbol not in reusable]
     if missing and isinstance(technical_fetcher, LocalFirstBatchTechnicalFetcher):
         technical_fetcher.prepare_fetch(missing, run_date=run_date, official_bars=official_bars)
-    session.rollback()
-    return technical_fetcher.fetch(missing, run_date=run_date) if missing else {}
+    return RawPayloadCollection(run_date, tuple(missing), technical_fetcher)
+
+
+def fetch_daily_radar_raw_payloads(
+    session: Session, run_date: date, symbols: Iterable[str], *,
+    technical_fetcher: BatchTechnicalFetcher,
+    official_bars: Sequence[MarketDailyBar] = (),
+) -> Mapping[str, Mapping[str, Any]]:
+    """Compatibility collector; never commit or roll back the caller's work.
+
+    Network owners should prepare, release their read transaction, then fetch.
+    """
+    return prepare_daily_radar_raw_payloads(session, run_date, symbols,
+        technical_fetcher=technical_fetcher, official_bars=official_bars).fetch()
 
 
 def ensure_daily_radar_raw_rows(

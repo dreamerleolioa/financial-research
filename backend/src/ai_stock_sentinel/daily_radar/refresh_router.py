@@ -58,7 +58,7 @@ from ai_stock_sentinel.daily_radar.pipeline_support import (
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
-    fetch_daily_radar_raw_payloads,
+    prepare_daily_radar_raw_payloads,
     insufficient_history_daily_radar_raw_rows,
     reusable_daily_radar_raw_rows,
 )
@@ -89,7 +89,9 @@ from ai_stock_sentinel.db.models import StockRawData
 from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.phase1_avwap.service import (
     DailyPriceProvider,
-    refresh_phase1_avwap_snapshots_for_symbols,
+    prepare_phase1_avwap_refresh_for_symbols,
+    collect_phase1_avwap_refresh,
+    persist_phase1_avwap_refresh,
 )
 from ai_stock_sentinel.phase1_avwap.universe import resolve_phase1_refresh_symbol_set
 
@@ -114,6 +116,11 @@ def prepare_daily_radar_universe_endpoint(
     request = payload or DailyRadarPreparedRunRequest()
     run_date = request.run_date or dependencies._backend_today()
     session_proof = require_open_session(market_session_provider, run_date=run_date, market=request.market)
+    return persist_prepared_universe(db, request=request, run_date=run_date,
+        universe_provider=universe_provider, session_proof=session_proof)
+
+
+def persist_prepared_universe(db, *, request, run_date, universe_provider, session_proof, commit=True):
     institutional_archive = _required_institutional_archive_details(
         db,
         run_date=run_date,
@@ -196,7 +203,8 @@ def prepare_daily_radar_universe_endpoint(
         status="completed",
         details={"symbol_count": len(selected_symbols), "market_exploration": exploration_audit},
     )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarPreparedRunResponse(
         status="prepared",
         run_date=prepared.run_date,
@@ -223,12 +231,14 @@ def refresh_daily_radar_avwap_endpoint(
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
     refresh_symbol_set = resolve_phase1_refresh_symbol_set(db, seed_symbols=list(prepared.selected_symbols))
     refresh_symbols = refresh_symbol_set.symbols
-    result = refresh_phase1_avwap_snapshots_for_symbols(
+    preparation = prepare_phase1_avwap_refresh_for_symbols(
         db,
         symbols=refresh_symbols,
         data_date=run_date,
         provider=provider,
     )
+    db.rollback()
+    result = persist_phase1_avwap_refresh(db, collect_phase1_avwap_refresh(preparation))
     status = "failed" if result.missing_symbols else "completed"
     missing_symbol_reasons = dict(result.missing_symbol_reasons)
     skipped_symbol_reasons = {**refresh_symbol_set.skipped_symbol_reasons, **result.skipped_symbol_reasons}
@@ -428,9 +438,11 @@ def refresh_daily_radar_ohlcv_endpoint(
                     market_bars.extend(market_bar_provider.fetch_market(market=market, trade_date=run_date))
                 except OfficialMarketBarProviderError as exc:
                     logger.warning("OHLCV official archive refresh failed market=%s code=%s", market, exc.code)
-        fetched_payloads = fetch_daily_radar_raw_payloads(
+        collection = prepare_daily_radar_raw_payloads(
             db, run_date, selected_symbols, technical_fetcher=technical_fetcher, official_bars=market_bars,
         )
+        db.rollback()
+        fetched_payloads = collection.fetch()
         return _persist_ohlcv_refresh(db, request=request, run_date=run_date, snapshot=snapshot,
             technical_fetcher=technical_fetcher, fetched_payloads=fetched_payloads, market_bars=market_bars)
     except Exception:
@@ -438,7 +450,7 @@ def refresh_daily_radar_ohlcv_endpoint(
         raise
 
 
-def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher, fetched_payloads, market_bars):
+def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher, fetched_payloads, market_bars, commit=True):
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
     db.refresh(prepared, with_for_update=True)
     if (prepared.id, prepared.selected_symbols, prepared.universe) != snapshot:
@@ -529,7 +541,8 @@ def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher
             "skipped_symbol_reasons": skipped_symbol_reasons,
         },
     )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarRefreshStepResponse(
         status=status,
         step="refresh-ohlcv",
@@ -558,9 +571,14 @@ def refresh_daily_radar_market_context_endpoint(
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
-    market_context = dict(
-        market_context_provider.build(run_date=run_date, market=request.market)
-    )
+    db.rollback()
+    market_context = dict(market_context_provider.build(run_date=run_date, market=request.market))
+    return persist_market_context(db, request=request, run_date=run_date, market_context=market_context)
+
+
+def persist_market_context(db, *, request, run_date, market_context, commit=True):
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    db.refresh(prepared, with_for_update=True)
     error = market_context_refresh_error(market_context, run_date=run_date)
     reused_existing_context = False
     if error is not None and prepared.market_context:
@@ -594,7 +612,8 @@ def refresh_daily_radar_market_context_endpoint(
             "errors": errors,
         },
     )
-    db.commit()
+    if commit:
+        db.commit()
     return DailyRadarRefreshStepResponse(
         status=status,
         step="refresh-market-context",

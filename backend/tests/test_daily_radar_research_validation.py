@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 import pytest
+from sqlalchemy import select
 
 from ai_stock_sentinel.calibration import price_provider
 from ai_stock_sentinel.daily_radar.research_validation import (
@@ -178,13 +179,15 @@ def test_api_keeps_legacy_results_and_research_retry_is_idempotent(monkeypatch):
     from ai_stock_sentinel.daily_radar import maintenance_router
     from ai_stock_sentinel.calibration.price_provider import get_research_price_provider
     from ai_stock_sentinel.daily_radar.forward_validation import FORWARD_VALIDATION_VERSION
-    from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
+    from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult, DailyRadarPreparedRun
     from ai_stock_sentinel.db.session import get_db
     from test_forward_validation_memory import engine_with_tables
     from test_daily_radar_forward_validation import _add_candidate, _add_run
 
     engine = engine_with_tables()
     with Session(engine) as session:
+        session.add(DailyRadarPreparedRun(run_date=date(2026, 6, 9), market='TW',
+            selected_symbols=[], universe=[], symbol_count=0, step_statuses={}))
         candidate = _add_candidate(session, _add_run(session, run_date=date(2026, 6, 5)))
         candidate_id = candidate.id
         session.add(DailyRadarForwardValidationResult(
@@ -310,10 +313,16 @@ def test_retryable_missing_open_recovers_and_split_skip_is_terminal():
             result = run_research_validation(session, request, as_of_date=date(2026, 6, 9), price_provider=provider)
             assert result["terminal_skipped_count"] == int(terminal)
             assert result["retryable_skipped_count"] == int(not terminal)
+            # The router commits each completed request before another retry.
+            session.commit()
             calls = provider.calls
             provider.issue = {}
             result = run_research_validation(session, request, as_of_date=date(2026, 6, 9), price_provider=provider)
             assert result["records_written"] == int(not terminal)
             assert result["validated_count"] == int(not terminal)
             assert (provider.calls == calls) is terminal
+            session.commit()
+            from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
+            saved = session.scalar(select(DailyRadarForwardValidationResult))
+            assert saved.status == ("skipped" if terminal else "validated")
         engine.dispose()

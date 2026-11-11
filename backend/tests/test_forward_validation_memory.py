@@ -19,7 +19,7 @@ from ai_stock_sentinel.db.models import (
 )
 from ai_stock_sentinel.db.session import Base
 from test_daily_radar_forward_validation import (
-    _add_candidate, _add_run, _forward_validation_sqlite_engine, _price,
+    _add_candidate, _add_run, _add_validation_checkpoint, _forward_validation_sqlite_engine, _price,
 )
 
 
@@ -179,6 +179,7 @@ def test_stage_metrics_record_completion_and_failure_without_masking_errors(capl
 def test_endpoint_rolls_back_all_written_results_if_commit_fails(monkeypatch):
     engine = engine_with_tables()
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 6, 2))
         _add_candidate(session, _add_run(session))
         session.commit()
     benchmark = [_price("2026-06-01", 100, 100, 100, 100), _price("2026-06-02", 101, 101, 101, 101)]
@@ -207,6 +208,7 @@ def test_endpoint_batches_provider_and_commits_once_with_idempotent_results(monk
     caplog.set_level(logging.INFO)
     engine = engine_with_tables()
     with Session(engine) as session:
+        _add_validation_checkpoint(session, date(2026, 6, 2))
         run = _add_run(session)
         run.candidate_count = 5
         for index in range(5):
@@ -223,7 +225,8 @@ def test_endpoint_batches_provider_and_commits_once_with_idempotent_results(monk
     request = DailyRadarForwardValidationRunRequest(mode="due", as_of_date=date(2026, 6, 2), windows=[1])
     with Session(engine, autoflush=False) as session:
         commits = []
-        event.listen(session, "after_commit", lambda session: commits.append(True))
+        event.listen(session, "after_commit", lambda session: commits.append(True)
+            if not session.in_nested_transaction() else None)
         result = maintenance_router.run_daily_radar_forward_validation_endpoint(request, db=session, price_provider=Provider(), calendar_provider=FixtureCalendarProvider())
         assert len(commits) == 1
         assert result.candidate_count == result.validated_count == result.records_written == 5

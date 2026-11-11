@@ -2,6 +2,7 @@
 from datetime import date, datetime, timezone
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.forward_validation import (
@@ -266,10 +267,18 @@ def test_future_v2_retry_does_not_hide_a_legacy_gap_visible_on_the_requested_dat
             _retryable(session, candidate, version="daily-radar-next-open-price-v1")
             _retryable(session, candidate).evaluation_as_of_date = date(2026, 10, 15)
             session.commit()
-            result = run_research_validation(session,
-                DailyRadarForwardValidationRunRequest(return_basis="next_open", windows=[1]),
-                as_of_date=date(2026, 10, 14), price_provider=_JanuaryPrices())
-            assert result["validated_count"] == 1
-            assert result["report"]["remaining_retryable_window_count"] == 0
+            from ai_stock_sentinel.daily_radar.history_repair import result_snapshot
+            from ai_stock_sentinel.daily_radar.research_validation import _retryable_windows_query
+            from ai_stock_sentinel.daily_radar.validation_preparation import ValidationAcceptanceConflict
+            before = {r.id: result_snapshot(r) for r in session.scalars(select(DailyRadarForwardValidationResult))}
+            request = DailyRadarForwardValidationRunRequest(return_basis="next_open", windows=[1])
+            with pytest.raises(ValidationAcceptanceConflict, match='newer_validation_result_preserved'):
+                run_research_validation(session, request,
+                    as_of_date=date(2026, 10, 14), price_provider=_JanuaryPrices())
+            session.commit()
+            assert {r.id: result_snapshot(r) for r in session.scalars(select(DailyRadarForwardValidationResult))} == before
+            # The legacy gap remains discoverable at the requested cutoff;
+            # preserving tomorrow's row must not silently report completion.
+            assert session.execute(_retryable_windows_query(request, date(2026, 10, 14))).all() == [(candidate.id, 1)]
     finally:
         engine.dispose()

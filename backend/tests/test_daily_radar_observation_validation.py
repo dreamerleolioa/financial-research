@@ -118,7 +118,8 @@ def test_additional_diagnostic_preserves_every_existing_return_field():
                               as_of_date=SIGNAL + timedelta(days=20), benchmark_symbol="TAIEX",
                               validation_version=FORWARD_VALIDATION_VERSION, hit_threshold_pct=0)
     actual = evaluate(c, rows)
-    assert {k: v for k, v in actual["outcome"].items() if k != "observation_diagnostic"} == baseline["outcome"]
+    assert {k: v for k, v in actual["outcome"].items() if k not in ("observation_diagnostic", "validation_window")} == baseline["outcome"]
+    assert actual['outcome']['validation_window']['target_date'] == actual['target_date']
     assert actual["validation_version"] == baseline["validation_version"]
 
 

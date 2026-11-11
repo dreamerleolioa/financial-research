@@ -25,6 +25,13 @@ public.position_lifecycle_review
 public.shared_background_contexts
 public.stock_analysis_cache
 public.stock_raw_data
+public.radar_source_snapshots
+public.radar_input_manifests
+public.radar_run_inputs
+public.radar_jobs
+public.radar_work_items
+public.radar_job_work
+public.radar_work_attempts
 public.taiwan_daily_bars
 public.taiwan_institutional_flows
 public.taiwan_institutional_report_snapshots

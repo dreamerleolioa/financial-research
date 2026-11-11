@@ -762,3 +762,9 @@ Workflow 對每種 return basis 各保留 15 分鐘預算，單次完整 HTTP re
 Daily Radar production validation 以正式 TWSE 日曆固定窗口，缺少價格時不得順延目標日。prepare 保存市場開休市證明，DB-only scoring 拒絕缺少或日期不符的證明。休市日失效 run 及同日其他 revision 不進入公開候選、驗證、規則報告或首次觀察起點。
 
 可信日曆與歷史結果一致性分開檢查；異常窗口以 `calendar_invalid_windows` 揭露並排除於有效績效，不能使其他窗口的成熟度判定整體失效。修補必須使用限定 IDs、不可覆寫的前後值 manifest、明確雜湊確認及可回復交易，診斷不足仍列缺口。操作與授權邊界見 [歷史驗證補修手冊](../daily-radar-history-repair-runbook.md)。
+
+公開 validation 統計對 signal_close 與 next_open 均要求可信日曆及完整窗口身分。日曆缺失、證據衝突或未覆蓋該筆已保存目標日時，以唯讀投影標記 `official_calendar_unavailable`，不計入 evaluated_count 或有效績效，也不宣稱 coverage_complete。較舊但完整覆蓋已保存窗口的日曆仍可驗證歷史報酬；新增候選或其他未覆蓋窗口不取消已覆蓋窗口的資格，但它不足以判定本日缺失窗口尚未成熟。完整窗口身分可使用現行摘要或舊版保存的完整 session_dates，不從目標日或稀疏行情反推；診斷不足另列缺口，不單獨改寫有效報酬。
+
+公開讀取一次載入截止日可見的日曆證據，再依每個信號日選擇既有完整 proof；較早候選落在 proof 起點外時，不取消其他已覆蓋窗口的資格。每份選中的 proof 仍檢查整段開休市一致性，出現衝突不退回較舊 proof，也不合併不同 proof 的 sessions 補造覆蓋。未保存結果的成熟度另外要求覆蓋本日的可信 proof，不能以舊 proof 的尾端把已成熟窗口誤判為尚未成熟。
+
+觀察診斷先讀取已保存結果：有效診斷、診斷不足與 skipped 均保留各自分類，不被近期較窄日曆改判成未成熟。只有缺結果且信號日也在本日可信日曆內，才可依剩餘 session 數判定未成熟；日曆起點晚於信號日仍列缺口。

@@ -9,17 +9,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from ai_stock_sentinel.daily_radar.name_backfill import backfill_daily_radar_symbol_names
+from ai_stock_sentinel.daily_radar.name_backfill import (
+    backfill_daily_radar_symbol_names,
+    prepare_daily_radar_name_backfill,
+    collect_daily_radar_symbol_names,
+    get_daily_radar_symbol_name_resolver,
+)
 from ai_stock_sentinel.db.session import _get_session_local
 
 
 def main() -> None:
     args = _parse_args()
     with _get_session_local()() as session:
+        symbols = prepare_daily_radar_name_backfill(session, limit=args.limit)
+        session.rollback()
+        names, _ = collect_daily_radar_symbol_names(symbols,
+            name_resolver=get_daily_radar_symbol_name_resolver())
         result = backfill_daily_radar_symbol_names(
             session,
             limit=args.limit,
             dry_run=args.dry_run,
+            name_resolver=names.get,
         )
         if args.dry_run:
             session.rollback()

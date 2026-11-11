@@ -12,6 +12,7 @@ from ai_stock_sentinel.calibration.forward_validation import (
     OHLC_PRICE_FIELDS, candidate_key, number, parse_date, price_conflict_fields,
 )
 from ai_stock_sentinel.daily_radar.repository import PUBLIC_RUN_STATUSES
+from ai_stock_sentinel.daily_radar.trading_calendar import pending_window_is_immature
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
 
 OBSERVATION_DIAGNOSTIC_VERSION = "daily-radar-observation-v1"
@@ -197,10 +198,10 @@ def _summarize(ranked, outcomes, window, calendar):
                 and first <= signal and (first != signal or origin.get("candidate_id") != c.get("candidate_id"))):
             repeats += 1
             continue
-        if calendar is not None and signal is not None and sum(day > signal for day in calendar) < window:
+        row = outcomes.get((candidate_key(c), window))
+        if pending_window_is_immature(row, signal=signal, window=window, sessions=calendar):
             immature += 1
             continue
-        row = outcomes.get((candidate_key(c), window))
         if row is None:
             missing_outcomes += 1
             continue

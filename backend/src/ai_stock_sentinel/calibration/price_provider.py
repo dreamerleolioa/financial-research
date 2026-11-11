@@ -80,7 +80,12 @@ def get_research_price_provider(db: Session = Depends(get_db)) -> ForwardPricePr
     return RecoveringResearchPriceProvider(session=db if isinstance(db, Session) else None)
 
 
-def get_forward_price_provider() -> ForwardPriceProvider:
+def get_forward_price_provider(db: Session = Depends(get_db)) -> ForwardPriceProvider:
+    from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+    if durable_enabled() and isinstance(db, Session):
+        from ai_stock_sentinel.daily_radar.durable_providers import CachedForwardPrices
+        from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
+        return CachedForwardPrices(db, store=store_for_session(db))
     return YFinanceForwardPriceProvider()
 
 

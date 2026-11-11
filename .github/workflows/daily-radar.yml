@@ -50,6 +50,8 @@ on:
         default: ""
         type: string
   schedule:
+    # Durable mode resumes stored dates, including weekends and provider delays.
+    - cron: "*/30 * * * *"
     # GitHub cron uses UTC. Taiwan time = UTC+8.
     # Scheduled jobs use the UTC cron date as the intended Taiwan trading date, so delayed starts after Taiwan midnight still target the original trading date.
     # 台灣時間週一至週五 17:30，先歸檔上市櫃全市場法人買賣超。
@@ -82,6 +84,7 @@ permissions:
 jobs:
   resolve-run-context:
     name: Resolve Daily Radar run context
+    if: github.event.schedule != '*/30 * * * *'
     runs-on: ubuntu-latest
     outputs:
       run_date: ${{ steps.resolve-date.outputs.run_date }}
@@ -114,7 +117,7 @@ jobs:
 
       - name: Resolve TW market session
         id: market-session
-        if: github.event_name != 'workflow_dispatch' || (inputs.step != 'refresh-market-bars' && inputs.step != 'backfill-institutional-flows' && inputs.step != 'replay-institutional-universe')
+        if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (github.event_name != 'workflow_dispatch' || (inputs.step != 'refresh-market-bars' && inputs.step != 'backfill-institutional-flows' && inputs.step != 'replay-institutional-universe'))
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
@@ -161,7 +164,7 @@ jobs:
     name: Refresh Taiwan institutional flows
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 9 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-institutional-flows'))
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 9 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-institutional-flows')))
     steps:
       - name: Trigger refresh-institutional-flows
         env:
@@ -315,7 +318,7 @@ jobs:
     name: Prepare Daily Radar universe
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'prepare-universe'))
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'prepare-universe')))
     steps:
       - uses: actions/checkout@v4
       - name: Trigger prepare-universe
@@ -358,7 +361,7 @@ jobs:
     name: Refresh Daily Radar AVWAP
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 11 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-avwap'))
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 11 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-avwap')))
     steps:
       - name: Trigger refresh-avwap
         env:
@@ -403,7 +406,7 @@ jobs:
     name: Refresh Taiwan market bars
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: (needs.resolve-run-context.outputs.market_open == 'true' && github.event.schedule == '45 9 * * 1-5') || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars')
+    if: (vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && needs.resolve-run-context.outputs.market_open == 'true' && github.event.schedule == '45 9 * * 1-5') || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-bars')
     steps:
       - name: Trigger refresh-market-bars
         env:
@@ -442,7 +445,7 @@ jobs:
     name: Refresh Daily Radar lending
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 12 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-lending'))
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 12 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-lending')))
     steps:
       - name: Trigger refresh-lending
         env:
@@ -488,7 +491,7 @@ jobs:
     name: Refresh Daily Radar full margin
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 13 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-full-margin'))
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 13 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-full-margin')))
     steps:
       - name: Trigger refresh-full-margin
         env:
@@ -535,7 +538,7 @@ jobs:
     name: Refresh Daily Radar OHLCV
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ohlcv'
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-ohlcv')
     steps:
       - name: Trigger refresh-ohlcv
         env:
@@ -579,7 +582,7 @@ jobs:
     name: Refresh managed final raw data
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-managed-raw-data'
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-managed-raw-data')
     steps:
       - name: Trigger refresh-managed-raw-data
         env:
@@ -630,7 +633,8 @@ jobs:
     concurrency:
       group: daily-radar-raw-data
       cancel-in-progress: false
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-raw-data'))
+      queue: max
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-raw-data')))
     steps:
       - uses: actions/checkout@v4
       - name: Refresh OHLCV and managed raw data
@@ -651,7 +655,7 @@ jobs:
     name: Refresh Daily Radar market context
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-context'))
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-market-context')))
     steps:
       - name: Trigger refresh-market-context
         env:
@@ -693,8 +697,9 @@ jobs:
     name: Run Daily Radar scoring
     runs-on: ubuntu-latest
     needs: resolve-run-context
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 16 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-scoring'))
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 16 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-scoring')))
     steps:
+      - uses: actions/checkout@v4
       - name: Trigger run-scoring
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -729,14 +734,34 @@ jobs:
             "detail: \(.detail // "n/a")"
           ' "$response_file"
 
+      - name: Read publication readiness
+        if: always()
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: python .github/scripts/check_daily_radar_readiness.py --run-date "$DAILY_RADAR_RUN_DATE" --scope publication --output-dir "$RUNNER_TEMP/radar-readiness"
+      - name: Preserve scoring readiness
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-scoring-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/radar-readiness/
+          retention-days: 30
+
   run-forward-validation:
-    name: Run Daily Radar forward validation
+    name: Validate Daily Radar ${{ matrix.return_basis }}
     runs-on: ubuntu-latest
     needs: resolve-run-context
+    strategy:
+      fail-fast: false
+      matrix:
+        return_basis: [signal_close, next_open]
     concurrency:
       group: daily-radar-validation
       cancel-in-progress: false
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '50 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-forward-validation'))
+      queue: max
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '50 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-forward-validation')))
     steps:
       - uses: actions/checkout@v4
       - name: Validate mature windows in both return bases
@@ -744,14 +769,23 @@ jobs:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
           DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
           DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
-        run: python .github/scripts/run_daily_radar_validation.py --run-date "$DAILY_RADAR_RUN_DATE" --output-dir "$RUNNER_TEMP/radar-validation"
+          DAILY_RADAR_RETURN_BASIS: ${{ matrix.return_basis }}
+        run: python .github/scripts/run_daily_radar_validation.py --run-date "$DAILY_RADAR_RUN_DATE" --return-basis "$DAILY_RADAR_RETURN_BASIS" --output-dir "$RUNNER_TEMP/radar-validation"
+      - name: Read validation coverage
+        if: always()
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+          DAILY_RADAR_RETURN_BASIS: ${{ matrix.return_basis }}
+        run: python .github/scripts/check_daily_radar_readiness.py --run-date "$DAILY_RADAR_RUN_DATE" --scope "$DAILY_RADAR_RETURN_BASIS" --output-dir "$RUNNER_TEMP/radar-validation"
       - name: Preserve validation diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: radar-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          name: radar-validation-${{ matrix.return_basis }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/radar-validation/
-          retention-days: 7
+          retention-days: 30
 
   repair-avwap-and-rescore:
     name: Repair Daily Radar margin/OHLCV/AVWAP/managed raw data and rescore
@@ -760,7 +794,8 @@ jobs:
     concurrency:
       group: daily-radar-validation
       cancel-in-progress: false
-    if: needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore'))
+      queue: max
+    if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore')))
     steps:
       - uses: actions/checkout@v4
       - name: Repair margin/OHLCV/AVWAP/managed raw data and rescore
@@ -938,10 +973,59 @@ jobs:
             exit 1
           fi
 
+      - name: Read repair completeness
+        if: always()
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: python .github/scripts/check_daily_radar_readiness.py --run-date "$DAILY_RADAR_RUN_DATE" --scope all --output-dir "$RUNNER_TEMP/radar-validation"
       - name: Preserve repair validation diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: radar-repair-validation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/radar-validation/
-          retention-days: 7
+          retention-days: 30
+
+  durable-radar:
+    name: Advance durable Daily Radar work
+    needs: resolve-run-context
+    if: always() && vars.DAILY_RADAR_RELIABILITY_ENABLED == 'true' && (github.event.schedule == '*/30 * * * *' || (needs.resolve-run-context.result == 'success' && (github.event_name == 'schedule' || (inputs.step != 'backfill-institutional-flows' && inputs.step != 'replay-institutional-universe' && inputs.step != 'refresh-market-bars'))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: daily-radar-durable
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Register intent or resume stored dates
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule }}
+          DAILY_RADAR_STEP: ${{ inputs.step }}
+        run: |
+          set -euo pipefail
+          args=(--output-dir "$RUNNER_TEMP/radar-durable" --max-work 150 --max-seconds 1200)
+          if [[ "$DAILY_RADAR_SCHEDULE" == '*/30 * * * *' ]]; then
+            args+=(--resume)
+          else
+            args+=(--run-date "$DAILY_RADAR_RUN_DATE")
+            if [[ "$DAILY_RADAR_SCHEDULE" == '50 15 * * 1-5' || "$DAILY_RADAR_STEP" == 'run-forward-validation' ]]; then
+              args+=(--require-lanes signal_close,next_open)
+            elif [[ "$DAILY_RADAR_SCHEDULE" == '30 16 * * 1-5' || "$DAILY_RADAR_STEP" == 'run-scoring' ]]; then
+              args+=(--require-lanes publication)
+            elif [[ "$DAILY_RADAR_SCHEDULE" == '0 23 * * 1-5' || "$DAILY_RADAR_STEP" == 'repair-avwap-and-rescore' ]]; then
+              args+=(--require-lanes publication,signal_close,next_open)
+            fi
+          fi
+          python .github/scripts/run_daily_radar_jobs.py "${args[@]}"
+      - name: Upload durable work evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-durable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/radar-durable
+          if-no-files-found: warn

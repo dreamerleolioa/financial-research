@@ -15,6 +15,10 @@ def _script(filename):
     spec = importlib.util.spec_from_file_location(filename, Path(__file__).parents[2] / '.github/scripts' / filename)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if filename=='run_daily_radar_validation.py':
+        from functools import partial
+        from test_radar_validation_workflow_execution import complete_readiness
+        module.run=partial(module.run,readiness_request=complete_readiness)
     return module
 
 

@@ -611,3 +611,10 @@ __all__ = [
     "DailyRadarRunResponse",
     "DailyRadarRunTriggerResponse",
 ]
+
+
+class JobRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    run_date: date
+    market: Literal['TW'] = 'TW'
+    lanes: list[Literal['publication', 'signal_close', 'next_open', 'auxiliary']] = Field(default_factory=lambda: ['publication', 'signal_close', 'next_open', 'auxiliary'], min_length=1, max_length=4)

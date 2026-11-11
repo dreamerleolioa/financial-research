@@ -6,6 +6,7 @@ from typing import Any
 
 from ai_stock_sentinel.calibration.forward_validation import candidate_key, number, parse_date
 from ai_stock_sentinel.daily_radar.observation_validation import strategy_cohort
+from ai_stock_sentinel.daily_radar.trading_calendar import pending_window_is_immature
 
 
 def ranked_pool_groups(candidates):
@@ -61,12 +62,11 @@ def _quality(candidates, outcomes, window, calendar) -> dict[str, Any]:
     missing = skipped = immature = missing_metrics = 0
     for c in candidates:
         row = outcomes.get((candidate_key(c), window))
+        if pending_window_is_immature(row, signal=parse_date(c["record_date"]), window=window, sessions=calendar):
+            immature += 1
+            continue
         if row is None:
-            signal = parse_date(c["record_date"])
-            if calendar is not None and signal in calendar and sum(day > signal for day in calendar) < window:
-                immature += 1
-            else:
-                missing += 1
+            missing += 1
             continue
         if row["status"] != "validated":
             skipped += 1

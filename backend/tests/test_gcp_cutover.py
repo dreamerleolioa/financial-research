@@ -86,7 +86,8 @@ def test_internal_token_rejection_prevents_work_without_cloud_iam(monkeypatch):
     for route in all_api_routes(app.routes):
         if not route.path.startswith('/internal/'):continue
         for headers,expected in [({},401),({'Authorization':'Bearer wrong'},403)]:
-            assert client.post(route.path,json={},headers=headers).status_code == expected, route.path
+            method = "GET" if "GET" in route.methods else "POST"
+            assert client.request(method, route.path, json={}, headers=headers).status_code == expected, route.path
 
 
 def test_public_service_is_only_accepted_with_explicit_mode_and_maintenance_flag():

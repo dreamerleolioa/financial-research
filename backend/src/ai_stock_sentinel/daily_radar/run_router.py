@@ -17,7 +17,9 @@ from ai_stock_sentinel.daily_radar import dependencies
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.background_context import (
     BackgroundChipContextProvider,
-    update_background_chip_context_cache,
+    prepare_background_context_refresh,
+    collect_background_context_refresh,
+    persist_background_context_refresh,
 )
 from ai_stock_sentinel.daily_radar.dependencies import (
     DAILY_RADAR_MAX_UNIVERSE_SYMBOLS,
@@ -35,7 +37,8 @@ from ai_stock_sentinel.daily_radar.pipeline_support import (
     _institutional_payloads_by_symbol,
     _prepared_run_or_404,
     _raise_if_required_refresh_steps_missing,
-    _refresh_phase1_avwap_for_daily_radar,
+    _collect_phase1_avwap_for_daily_radar,
+    _persist_phase1_avwap_for_daily_radar,
     _require_complete_daily_radar_raw_rows,
     _should_refresh_daily_run_chip_context,
 )
@@ -43,6 +46,7 @@ from ai_stock_sentinel.daily_radar.presenter import run_trigger_response
 from ai_stock_sentinel.daily_radar.raw_data import (
     BatchTechnicalFetcher,
     ensure_daily_radar_raw_rows,
+    prepare_daily_radar_raw_payloads,
 )
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_TYPES,
@@ -56,6 +60,7 @@ from ai_stock_sentinel.daily_radar.schemas import (
     DailyRadarRunTriggerResponse,
 )
 from ai_stock_sentinel.daily_radar.service import run_daily_radar
+from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
 from ai_stock_sentinel.daily_radar.universe import (
     DailyRadarUniverseProvider,
     select_daily_radar_universe,
@@ -79,11 +84,27 @@ def run_daily_radar_scoring_endpoint(
     payload: DailyRadarRefreshStepRequest | None = None,
     db: Session = Depends(get_db),
 ) -> DailyRadarRunTriggerResponse:
+    return execute_prepared_scoring(db, payload=payload)
+
+
+def execute_prepared_scoring(db, *, payload, commit=True):
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
+    if snapshots_enabled():
+        from ai_stock_sentinel.daily_radar.input_manifests import serialize_publication
+        serialize_publication(db, market=request.market, run_date=run_date)
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    if snapshots_enabled():
+        db.refresh(prepared, with_for_update=True)
     _raise_if_required_refresh_steps_missing(prepared)
     require_prepared_open_session(prepared)
+    from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+    if durable_enabled():
+        from ai_stock_sentinel.daily_radar.integrity import background_gaps
+        missing = {step: symbols for step, symbols in background_gaps(db, prepared).items() if symbols}
+        if missing:
+            raise HTTPException(status_code=409, detail={'code': 'daily_radar_live_background_context_incomplete',
+                'missing_symbols_by_step': missing})
     if not prepared.market_context:
         raise HTTPException(
             status_code=409,
@@ -110,12 +131,19 @@ def run_daily_radar_scoring_endpoint(
         market_context=dict(prepared.market_context),
         background_contexts_by_symbol=background_contexts_by_symbol,
         allow_fixture_fallback=False,
+        input_context=_scoring_input_context(prepared, cache_rows),
     )
     prepared.status = "scored"
     freeze_discovery_summary(run, (prepared.step_statuses.get("prepare-universe") or {}).get("market_exploration"))
     db.add(prepared)
-    db.commit()
+    if commit:
+        db.commit()
     return run_trigger_response(run)
+
+
+def _scoring_input_context(prepared, rows):
+    from ai_stock_sentinel.daily_radar.input_manifests import prepared_input_context
+    return prepared_input_context(prepared, rows)
 
 
 @router.post(
@@ -162,23 +190,32 @@ def run_daily_radar_endpoint(
             )
 
         selected_symbols = [entry.symbol for entry in universe]
-        _refresh_phase1_avwap_for_daily_radar(
-            db,
-            symbols=selected_symbols,
-            run_date=run_date,
-            provider=phase1_avwap_provider,
-        )
-        margin_contexts_by_symbol = None
+        # Flags control evidence capture, never transaction safety. Freeze all
+        # DB inputs before any HTTP, then collect every source before domain writes.
+        failure_stage = "raw_data_backfill"
+        raw_collection = prepare_daily_radar_raw_payloads(
+            db, run_date, selected_symbols, technical_fetcher=technical_fetcher)
+        chip_preparation = None
         if _should_refresh_daily_run_chip_context(market):
+            chip_preparation = prepare_background_context_refresh(db, run_date=run_date, market=market,
+                provider=background_context_provider, symbols=selected_symbols,
+                context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES)
+        avwap_collection = _collect_phase1_avwap_for_daily_radar(db,
+            symbols=selected_symbols, run_date=run_date, provider=phase1_avwap_provider)
+        db.rollback()
+        fetched_payloads = raw_collection.fetch()
+        failure_stage = "daily_chip_context_update"
+        chip_collection = collect_background_context_refresh(chip_preparation) if chip_preparation is not None else None
+        failure_stage = "market_context"
+        market_context = dict(market_context_provider.build(run_date=run_date, market=market))
+
+        # Optional AVWAP is the first domain write. Its bounded rollback cannot
+        # discard raw/context/scoring writes, which start only after this step.
+        _persist_phase1_avwap_for_daily_radar(db, avwap_collection, run_date=run_date)
+        margin_contexts_by_symbol = None
+        if chip_collection is not None:
             failure_stage = "daily_chip_context_update"
-            chip_context_result = update_background_chip_context_cache(
-                db,
-                run_date=run_date,
-                market=market,
-                provider=background_context_provider,
-                symbols=selected_symbols,
-                context_types=DAILY_RUN_REFRESH_CONTEXT_TYPES,
-            )
+            chip_context_result = persist_background_context_refresh(db, chip_collection)
             if chip_context_result["status"] != "completed":
                 logger.warning(
                     "[DailyRadar] daily chip context refresh degraded status=%s run_date=%s market=%s symbol_count=%s context_types=%s errors=%s",
@@ -210,6 +247,7 @@ def run_daily_radar_endpoint(
             technical_fetcher=technical_fetcher,
             institutional_payloads_by_symbol=institutional_payloads_by_symbol,
             margin_contexts_by_symbol=margin_contexts_by_symbol,
+            fetched_payloads=fetched_payloads,
         )
         cache_rows = _require_complete_daily_radar_raw_rows(
             get_final_raw_data_rows_for_symbols(db, run_date=run_date, symbols=selected_symbols),
@@ -218,8 +256,6 @@ def run_daily_radar_endpoint(
         )
         if market == "TW":
             attach_official_turnover(db, cache_rows, run_date=run_date)
-        failure_stage = "market_context"
-        market_context = dict(market_context_provider.build(run_date=run_date, market=market))
         failure_stage = "daily_radar_service"
         run = run_daily_radar(
             run_date,

@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
+from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration.price_provider import YFinanceResearchPriceProvider
 from ai_stock_sentinel.calibration.official_corporate_actions import tpex_report_rows
@@ -16,6 +17,7 @@ from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 from ai_stock_sentinel.phase1_avwap.provider import normalize_twse_stock_day_payload
 from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
+from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -24,6 +26,18 @@ STOCK_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
 TPEX = "https://www.tpex.org.tw"
 TPEX_STOCK_PATH = "/www/zh-tw/afterTrading/tradingStock"
 OHLC_FIELDS = ("open", "high", "low", "close")
+
+
+class ResearchSourceError(ValueError):
+    def __init__(self, reason, *, retryable, http_status=None, retry_after=None):
+        super().__init__(reason)
+        self.retryable, self.http_status, self.retry_after = retryable, http_status, retry_after
+
+
+def _budget_exhausted():
+    error = TimeoutError("research_recovery_budget_exhausted")
+    error.local_budget_exhausted = True
+    return error
 
 
 def _number(value):
@@ -66,8 +80,11 @@ def _json(response):
 
 class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
     def __init__(self, session=None, *, official_getter=None, actions_getter=None,
-                 total_timeout=60, max_requests=64, clock=monotonic):
+                 total_timeout=60, max_requests=64, clock=monotonic, source_store=None, archived_prices=None):
         self.session = session
+        # Explicit frozen collection input; detached callers still compare
+        # complete Yahoo rows against official prices without holding a reader.
+        self.archived_prices = archived_prices
         self.official_getter = official_getter or official_request_get
         self.actions_getter = actions_getter or requests.get
         self.total_timeout = total_timeout
@@ -78,16 +95,61 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.cache = {}
         self.diagnostics = []
         self.budget_limit = None
+        self.source_store = source_store if source_store is not None else store_for_session(session)
 
     def fetch(self, symbols, *, start_date, end_date):
         supported = [s for s in symbols if s in {"TAIEX", "SPX"} or is_supported_taiwan_symbol(s)]
         if not supported:
             return {}
         try:
+            if self.source_store is not None:
+                from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+                if durable_enabled():
+                    return self._fetch_source_units(supported, start_date=start_date, end_date=end_date)
+                operation = "research-unadjusted-history"
+                params = {symbol: {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
+                    "auto_adjust": False, "actions": True} for symbol in supported}
+                captured = {symbol: self.source_store.lookup_sdk(operation=operation, params=params[symbol])
+                            for symbol in supported}
+                missing = [symbol for symbol, item in captured.items() if item is None]
+                try:
+                    fresh = super().fetch(missing, start_date=start_date, end_date=end_date) if missing else {}
+                except Exception as exc:
+                    self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": missing})
+                    fresh = {}
+                for symbol in missing:
+                    if fresh.get(symbol):
+                        captured[symbol] = self.source_store.capture_sdk(operation=operation, params=params[symbol],
+                            fetch=lambda symbol=symbol: {"rows": fresh[symbol]}, reuse=False)
+                return {symbol: [dict(row) | {"source_capture": proof} for row in payload["rows"]
+                                if start_date <= date.fromisoformat(row["date"]) <= end_date]
+                        for symbol, item in captured.items() if item is not None for payload, proof in [item]}
             return super().fetch(supported, start_date=start_date, end_date=end_date)
         except Exception as exc:
             self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": supported})
             return {}
+
+    def _fetch_source_units(self, symbols, *, start_date, end_date):
+        result = {}
+        for symbol in symbols:
+            params = {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
+                      "auto_adjust": False, "actions": True}
+            try:
+                captured = self.source_store.lookup_sdk(operation="research-unadjusted-history", params=params)
+                if captured is None:
+                    def fetch(symbol=symbol):
+                        rows = super(RecoveringResearchPriceProvider, self).fetch(
+                            [symbol], start_date=start_date, end_date=end_date)
+                        if not rows.get(symbol):
+                            raise RuntimeError("forward_price_provider_returned_no_data")
+                        return {"rows": rows[symbol]}
+                    captured = self.source_store.capture_sdk(operation="research-unadjusted-history", params=params, fetch=fetch)
+                payload, proof = captured
+                result[symbol] = [dict(row) | {"source_capture": proof} for row in payload["rows"]
+                    if start_date <= date.fromisoformat(row["date"]) <= end_date]
+            except Exception as exc:
+                self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": [symbol]})
+        return result
 
     def _request(self, getter, url, *, params):
         if self.deadline is None:
@@ -99,7 +161,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             remaining = self.deadline - self.clock()
             if remaining <= 0 or self.request_count >= self.max_requests:
                 self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
-                raise TimeoutError("research_recovery_budget_exhausted")
+                raise _budget_exhausted()
             self.request_count += 1
             kwargs = {"params": params, "timeout": min(8, remaining)}
             if getter is self.official_getter and getter is official_request_get:
@@ -133,11 +195,12 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     continue
                 if retryable and attempt < attempts:
                     self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
-                    raise TimeoutError("research_recovery_budget_exhausted") from exc
-                raise ValueError(reason) from exc
+                    raise _budget_exhausted() from exc
+                raise ResearchSourceError(reason, retryable=retryable, http_status=status,
+                    retry_after=headers.get("Retry-After")) from exc
             if self.clock() > self.deadline:
                 self.budget_limit = "deadline"
-                raise TimeoutError("research_recovery_budget_exhausted")
+                raise _budget_exhausted()
             return payload
 
     def _official_month(self, symbol, month):
@@ -228,6 +291,11 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         key = ("official_report", url, tuple(sorted(params.items())))
         if key not in self.cache:
             self.cache[key] = None
+            if self.source_store is not None:
+                captured = self.source_store.capture(provider="twse" if origin == TWSE else "tpex",
+                    url=url, params=params, fetch=lambda: self._request(self.official_getter, url, params=params))
+                self.cache[key] = captured
+                return captured
             payload = self._request(self.official_getter, url, params=params)
             if not isinstance(payload, dict):
                 raise ValueError("twse_rights_invalid_report")
@@ -248,11 +316,16 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             return self.cache[key]
         self.cache[key] = None
         query_start = start - timedelta(days=7)
-        payload = self._request(self.actions_getter,
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-            params={"period1": int(datetime.combine(query_start, time.min, TAIPEI).timestamp()),
-                    "period2": int(datetime.combine(end + timedelta(days=1), time.min, TAIPEI).timestamp()),
-                    "interval": "1d", "events": "div,splits"})
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        params = {"period1": int(datetime.combine(query_start, time.min, TAIPEI).timestamp()),
+                  "period2": int(datetime.combine(end + timedelta(days=1), time.min, TAIPEI).timestamp()),
+                  "interval": "1d", "events": "div,splits"}
+        proof = None
+        if self.source_store is not None:
+            payload, proof = self.source_store.capture(provider="yahoo_chart_events", url=url, params=params,
+                fetch=lambda: self._request(self.actions_getter, url, params=params))
+        else:
+            payload = self._request(self.actions_getter, url, params=params)
         chart = payload.get("chart", {})
         if chart.get("error") or len(chart.get("result") or []) != 1:
             raise ValueError("research_corporate_action_response_invalid")
@@ -281,8 +354,28 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                   "covered_dates": sorted({str(day) for day in covered_dates}),
                   "query_start_date": str(query_start),
                   "observed_at": observed.isoformat()}
+        if proof is not None:
+            result["source_capture"] = proof
         self.cache[key] = result
         return result
+
+    def _archive_prices(self, symbol, required):
+        if self.archived_prices is not None:
+            return {day: dict(row) for day, row in self.archived_prices.get(symbol, {}).items()
+                    if str(min(required)) <= day <= str(max(required))}
+        def load(reader):
+            return {str(row.trade_date): {"date": str(row.trade_date),
+                **{f: float(getattr(row, f)) for f in OHLC_FIELDS},
+                "price_source": row.source_dataset}
+                for row in get_taiwan_daily_bars(reader, symbols=[symbol],
+                    start_date=min(required), end_date=max(required), final_only=True)}
+
+        # An idle caller has no transaction to share. Own and close this archive
+        # read before HTTP; never release an active transaction belonging to it.
+        if isinstance(self.session, Session) and not self.session.in_transaction():
+            with Session(self.session.get_bind()) as reader:
+                return load(reader)
+        return load(self.session)
 
     def repair(self, prices_by_symbol, *, required_dates_by_symbol, as_of_date):
         result = {s: [dict(row) for row in rows] for s, rows in prices_by_symbol.items()}
@@ -295,19 +388,16 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             original = {str(r["date"])[:10]: r for r in result.get(symbol, [])}
             missing = [d for d in required if not _complete(original.get(str(d), {}))
                        or original[str(d)].get("corporate_actions_checked") is not True]
-            if not missing and (self.session is None or symbol == "TAIEX"):
+            has_archive = self.session is not None or self.archived_prices is not None
+            if not missing and (not has_archive or symbol == "TAIEX"):
                 continue
             stage = "official_prices"
             conflicting_prices = []
             conflict_date_count = 0
             try:
                 official = {}
-                if self.session is not None and symbol != "TAIEX":
-                    for row in get_taiwan_daily_bars(self.session, symbols=[symbol],
-                            start_date=min(required), end_date=max(required), final_only=True):
-                        official[str(row.trade_date)] = {"date": str(row.trade_date),
-                            **{f: float(getattr(row, f)) for f in ("open", "high", "low", "close")},
-                            "price_source": row.source_dataset}
+                if has_archive and symbol != "TAIEX":
+                    official = self._archive_prices(symbol, required)
                 # Archived overlaps are authoritative even if a different date
                 # requires a remote request that fails or overlaps the archive.
                 conflict_date_count, conflicting_prices = _mark_conflicts(original, official)

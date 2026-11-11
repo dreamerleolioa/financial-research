@@ -4,14 +4,18 @@ Persisted JSON is used by reads/scoring; only the preparation/maintenance provid
 performs HTTP. Calendar coverage includes closed dates, not just price dates.
 """
 from dataclasses import dataclass
+from bisect import bisect_left
 from datetime import date, timedelta
 import re
 
-from sqlalchemy import inspect, select
+from fastapi import Depends
+from sqlalchemy import inspect, select, text
+from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun
+from ai_stock_sentinel.db.session import get_db
 
-VERSION = "twse-session-calendar-v1"
+VERSION = "twse-session-calendar-v2"
 CALENDAR_STEP = "validation-calendar"
 SESSION_STEP = "market-session"
 
@@ -45,38 +49,80 @@ class TradingCalendar:
         if start > end or list(days) != sorted(set(days)) or any(not start <= d <= end for d in days):
             raise ValueError("calendar_evidence_dates_invalid")
         wanted = {m.strftime("%Y-%m") for m in months(start, end)}
-        if {r.get("month") for r in reports} != wanted or len(reports) != len(wanted):
+        following = (end.replace(day=28) + timedelta(days=4)).strftime("%Y-%m")
+        supplied = {r.get("month") for r in reports}
+        if not wanted <= supplied or supplied - wanted - {following} or len(reports) != len(supplied):
             raise ValueError("calendar_evidence_month_gap")
+        reported_days = set()
         for report in reports:
             month = date.fromisoformat(report["month"] + "-01")
             if (report.get("source_url") != "https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=" + month.strftime("%Y%m%d")
                     or not re.fullmatch(r"[0-9a-f]{64}", str(report.get("snapshot_sha256", "")))
                     or not report.get("captured_at")):
                 raise ValueError("calendar_evidence_source_invalid")
+            full_dates = [date.fromisoformat(d) for d in report["session_dates"]]
+            if not full_dates or full_dates != sorted(set(full_dates)) or any(d.strftime("%Y-%m") != report["month"] for d in full_dates):
+                raise ValueError("calendar_evidence_report_dates_invalid")
+            reported_days.update(full_dates)
+        # The report's query month and capture time do not prove publication
+        # through the cutoff. Retain unfiltered dates, including a later month's
+        # positive publication witness for a closed month end. Until then the
+        # tail is unknown, rather than silently treating absent rows as closure.
+        if not reported_days or max(reported_days) < end:
+            raise ValueError("calendar_evidence_publication_incomplete")
+        if set(days) != {d for d in reported_days if start <= d <= end}:
+            raise ValueError("calendar_evidence_sessions_mismatch")
         return cls(start, end, days, reports)
 
 
 class OfficialTradingCalendarProvider:
+    def __init__(self, db=None, *, source_store=None):
+        self.db = db
+        self.source_store = source_store
+
     def fetch(self, *, start_date, end_date):
         from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
-        provider = RecoveringResearchPriceProvider(session=None)
-        # Start on the first day to retain each month's report provenance even
-        # when the requested subrange contains only a holiday/weekend.
-        rows = provider.official_research_history("TAIEX", start_date=start_date.replace(day=1), end_date=end_date)
-        reports = {}
+        provider = RecoveringResearchPriceProvider(session=self.db, source_store=self.source_store)
+        reports = []
         sessions = set()
-        for row in rows:
-            day = date.fromisoformat(row["date"])
-            proof = row["official_price_report"]
-            reports[day.strftime("%Y-%m")] = {"month": day.strftime("%Y-%m"), **proof}
-            if start_date <= day <= end_date:
-                sessions.add(day)
+        def collect(month):
+            payload, proof = provider.capture_twse_report("/indicesReport/MI_5MINS_HIST", {
+                "response": "json", "date": month.strftime("%Y%m%d")})
+            rows = payload.get("data")
+            if (payload.get("stat") != "OK" or str(payload.get("date", ""))[:6] != month.strftime("%Y%m")
+                    or not isinstance(rows, list) or not rows or ("total" in payload and (
+                        type(payload["total"]) is not int or payload["total"] != len(rows)))):
+                raise ValueError("calendar_evidence_report_incomplete")
+            index = payload["fields"].index("日期")
+            dates = []
+            for row in rows:
+                y, m, d = map(int, str(row[index]).split("/"))
+                dates.append(date(y + 1911, m, d))
+            reports.append({**proof, "month": month.strftime("%Y-%m"),
+                            "session_dates": [str(d) for d in dates]})
+            sessions.update(d for d in dates if start_date <= d <= end_date)
+        for month in months(start_date, end_date):
+            collect(month)
+        if not any(d >= str(end_date) for r in reports for d in r["session_dates"]):
+            collect((end_date.replace(day=28) + timedelta(days=4)).replace(day=1))
         return TradingCalendar.parse(TradingCalendar(start_date, end_date, tuple(sorted(sessions)),
-                                                       tuple(reports.values())).payload())
+                                                       tuple(reports)).payload())
 
 
 class CalendarUnavailableError(RuntimeError):
     pass
+
+
+def pending_window_is_immature(row, *, signal, window, sessions):
+    """Only absent/explicitly pending results may use current maturity evidence.
+
+    The caller supplies sessions only when trusted coverage reaches its cutoff.
+    Saved successes, diagnostic gaps and genuine failures remain visible even
+    when a newer, narrower calendar cannot establish their complete window.
+    """
+    pending = row is None or (row.get("status") == "skipped" and row.get("skip_reason") == "window_not_mature")
+    return (pending and sessions is not None and signal in sessions
+            and sum(day > signal for day in sessions) < window)
 
 
 def require_calendar(provider, *, start_date, end_date):
@@ -89,14 +135,20 @@ def require_calendar(provider, *, start_date, end_date):
         raise CalendarUnavailableError("official_trading_calendar_unavailable") from exc
 
 
-def get_trading_calendar_provider():
-    return OfficialTradingCalendarProvider()
+def get_trading_calendar_provider(db: Session = Depends(get_db)):
+    return OfficialTradingCalendarProvider(db if isinstance(db, Session) else None)
 
 
 def save_calendar(session, calendar):
+    """Return whether a prepared-run checkpoint actually retained this proof."""
     calendar = TradingCalendar.parse(calendar.payload())
     if not inspect(session.connection()).has_table(DailyRadarPreparedRun.__tablename__):
-        return
+        return False
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SELECT pg_advisory_xact_lock(904240106)"))
+    for previous in stored_calendars(session):
+        if calendars_conflict(previous, calendar):
+            raise ValueError("calendar_evidence_conflict")
     prepared = session.execute(select(DailyRadarPreparedRun).where(
         DailyRadarPreparedRun.market == "TW", DailyRadarPreparedRun.run_date == calendar.through)
         .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
@@ -112,25 +164,54 @@ def save_calendar(session, calendar):
                     d for d in calendar.sessions if lo <= d <= hi}:
                 raise ValueError("calendar_evidence_conflict")
             if previous.start <= calendar.start and previous.through == calendar.through:
-                return
+                return True
         prepared.step_statuses = dict(prepared.step_statuses or {}) | {CALENDAR_STEP: calendar.payload()}
+        return True
+    return False
 
 
-def load_calendar(session, *, start_date, as_of_date):
+def stored_calendars(session, *, as_of_date=None):
     if not inspect(session.connection()).has_table(DailyRadarPreparedRun.__tablename__):
-        return None
-    payloads = session.execute(select(DailyRadarPreparedRun.step_statuses[CALENDAR_STEP].as_json()).where(
-        DailyRadarPreparedRun.market == "TW", DailyRadarPreparedRun.run_date <= as_of_date)).scalars()
+        return []
+    query = select(DailyRadarPreparedRun.run_date, DailyRadarPreparedRun.step_statuses[CALENDAR_STEP].as_json()).where(DailyRadarPreparedRun.market == "TW")
+    if as_of_date is not None:
+        query = query.where(DailyRadarPreparedRun.run_date <= as_of_date)
+    payloads = session.execute(query)
     evidence = []
-    for payload in payloads:
+    for source_date, payload in payloads:
         if not isinstance(payload, dict):
             continue
         try:
             calendar = TradingCalendar.parse(payload)
         except (ValueError, KeyError, TypeError):
             continue
-        if calendar.through <= as_of_date:
+        if calendar.through <= source_date and (as_of_date is None or calendar.through <= as_of_date):
             evidence.append(calendar)
+    from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+    if durable_enabled():
+        from ai_stock_sentinel.db.models import RadarWorkItem
+        if inspect(session.connection()).has_table(RadarWorkItem.__tablename__):
+            query = select(RadarWorkItem.run_date, RadarWorkItem.result).where(RadarWorkItem.stage == 'calendar', RadarWorkItem.state == 'ready')
+            if as_of_date is not None:
+                query = query.where(RadarWorkItem.run_date <= as_of_date)
+            saved = session.execute(query)
+            for source_date, result in saved:
+                try:
+                    calendar = TradingCalendar.parse(result['calendar'])
+                    if source_date is not None and calendar.through <= source_date and (as_of_date is None or calendar.through <= as_of_date):
+                        evidence.append(calendar)
+                except (ValueError, TypeError, KeyError):
+                    continue
+    return evidence
+
+
+def calendars_conflict(left, right):
+    lo, hi = max(left.start, right.start), min(left.through, right.through)
+    return lo <= hi and {d for d in left.sessions if lo <= d <= hi} != {d for d in right.sessions if lo <= d <= hi}
+
+
+def load_calendar(session, *, start_date, as_of_date):
+    evidence = stored_calendars(session, as_of_date=as_of_date)
     # A single complete proof is preferable to an unprovable union of sparse
     # price histories. Overlapping contradictory proofs remain unavailable.
     covering = [c for c in evidence if c.start <= start_date <= c.through]
@@ -138,25 +219,100 @@ def load_calendar(session, *, start_date, as_of_date):
         return None
     best = max(covering, key=lambda c: c.through)
     for other in evidence:
-        lo, hi = max(best.start, other.start), min(best.through, other.through)
-        if lo <= hi and {d for d in best.sessions if lo <= d <= hi} != {d for d in other.sessions if lo <= d <= hi}:
+        if calendars_conflict(best, other):
             return None
     return best
 
 
-def check_outcome_calendar(outcomes, sessions):
-    """Classify saved malformed windows without changing any persisted prices."""
+class CalendarEvidenceIndex:
+    """Select one existing proof per signal; never synthesize coverage.
+
+    Input proofs must already be parsed and visible at the requested cutoff.
+    Daily claims only index contradictions, including claims of closed dates.
+    This avoids comparing every proof pair for every outcome in a long cohort.
+    """
+    def __init__(self, calendars):
+        self._ordered = sorted(calendars, key=lambda c: c.through, reverse=True)
+        claims, conflicts = {}, set()
+        for calendar in self._ordered:
+            sessions = set(calendar.sessions)
+            day = calendar.start
+            while day <= calendar.through:
+                opened = day in sessions
+                if claims.setdefault(day, opened) != opened:
+                    conflicts.add(day)
+                day += timedelta(days=1)
+        conflicts = sorted(conflicts)
+        self._invalid = set()
+        for calendar in self._ordered:
+            offset = bisect_left(conflicts, calendar.start)
+            if offset < len(conflicts) and conflicts[offset] <= calendar.through:
+                self._invalid.add(id(calendar))
+        self._by_signal = {}
+
+    def for_signal(self, signal):
+        if signal not in self._by_signal:
+            best = next((c for c in self._ordered if signal is not None and c.start <= signal <= c.through), None)
+            # Retain load_calendar's conservative conflict policy; do not fall
+            # back to an older proof when the newest covering one conflicts.
+            self._by_signal[signal] = best if best is not None and id(best) not in self._invalid else None
+        return self._by_signal[signal]
+
+    def latest(self):
+        return max((c for c in self._ordered if id(c) not in self._invalid),
+            key=lambda c: (c.through, -c.start.toordinal()), default=None)
+
+
+def check_outcome_calendars(outcomes, evidence):
+    """Project outcomes by proof, normalizing each calendar once per batch."""
     from ai_stock_sentinel.calibration.forward_validation import parse_date
-    days = sorted(set(sessions))
+    checked, buckets, invalid_by_position = list(outcomes), {}, {}
+    for position, row in enumerate(checked):
+        if row['status'] != 'validated':
+            continue
+        calendar = evidence.for_signal(parse_date(row['signal_date']))
+        key = id(calendar) if calendar is not None else None
+        buckets.setdefault(key, (calendar, []))[1].append((position, row))
+    for calendar, entries in buckets.values():
+        rows, gaps = check_outcome_calendar([row for _, row in entries], calendar.sessions if calendar else None,
+            covered_through=calendar.through if calendar else None)
+        gaps = iter(gaps)
+        for (position, _), row in zip(entries, rows):
+            checked[position] = row
+            # Buckets contain validated inputs only, so each projected skip
+            # corresponds to the next gap returned by the existing checker.
+            if row['status'] == 'skipped':
+                invalid_by_position[position] = next(gaps)
+    return checked, [invalid_by_position[i] for i in range(len(checked)) if i in invalid_by_position]
+
+
+def check_outcome_calendar(outcomes, sessions, *, covered_through=None):
+    """Require independent calendar proof without changing persisted prices.
+
+    None means unavailable evidence; an empty sequence is a known calendar.
+    """
+    from ai_stock_sentinel.calibration.forward_validation import parse_date
+    days = sorted(set(sessions)) if sessions is not None else None
     checked, invalid = [], []
     for row in outcomes:
+        reason = None
         if row["status"] == "validated":
-            signal, target = parse_date(row["signal_date"]), parse_date(row.get("target_date"))
-            expected = [d for d in days if signal is not None and d > signal][:int(row["window_days"])]
-            if signal not in days or len(expected) != row["window_days"] or target != expected[-1]:
-                reason = "historical_window_calendar_mismatch"
-                invalid.append({"candidate_id":row["candidate_id"],"window_days":row["window_days"],
-                                "validation_version":row["validation_version"],"reason":reason})
-                row = dict(row) | {"status":"skipped","skip_reason":reason}
+            if days is None or (covered_through is not None and any(
+                    day is not None and day > covered_through for day in
+                    (parse_date(row['signal_date']), parse_date(row.get('target_date'))))):
+                reason = 'official_calendar_unavailable'
+            else:
+                from ai_stock_sentinel.daily_radar.window_identity import window_error
+                signal, target = parse_date(row["signal_date"]), parse_date(row.get("target_date"))
+                expected = [d for d in days if signal is not None and d > signal][:int(row["window_days"])]
+                error = (window_error(row, signal=signal, sessions=expected,
+                    basis='next_open' if row['validation_version'].startswith('daily-radar-next-open') else 'signal_close')
+                    if signal in days and len(expected) == row['window_days'] else None)
+                if signal not in days or len(expected) != row["window_days"] or target != expected[-1] or error:
+                    reason = "historical_window_calendar_mismatch"
+        if reason:
+            invalid.append({"candidate_id":row["candidate_id"],"window_days":row["window_days"],
+                            "validation_version":row["validation_version"],"reason":reason})
+            row = dict(row) | {"status":"skipped","skip_reason":reason}
         checked.append(row)
     return checked, invalid

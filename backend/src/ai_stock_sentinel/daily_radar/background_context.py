@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -107,7 +108,28 @@ def same_day_background_context_is_reusable(row: Any, *, run_date: date) -> bool
     )
 
 
-def update_background_chip_context_cache(
+@dataclass(frozen=True)
+class PreparedBackgroundContextRefresh:
+    run_date: date
+    market: str
+    context_types: list[str]
+    selected_symbols: list[str]
+    fetch_symbols_by_context_type: dict[str, list[str]]
+    reused_pairs: set[tuple[str, str]]
+    not_applicable_symbols: set[str]
+    source_errors: list[dict[str, Any]]
+    provider: BackgroundChipContextProvider
+    require_same_day_fresh: bool
+
+
+@dataclass(frozen=True)
+class CollectedBackgroundContextRefresh:
+    preparation: PreparedBackgroundContextRefresh
+    payloads: tuple[BackgroundContextPayload, ...]
+    errors: tuple[dict[str, Any], ...]
+
+
+def prepare_background_context_refresh(
     session: Session,
     *,
     run_date: date,
@@ -117,7 +139,8 @@ def update_background_chip_context_cache(
     context_types: Iterable[str] | None = None,
     reuse_same_day_fresh: bool = False,
     require_same_day_fresh: bool = False,
-) -> dict[str, Any]:
+) -> PreparedBackgroundContextRefresh:
+    """Read and freeze selection/reuse metadata; transaction release belongs to the owner."""
     active_provider = provider or StubBackgroundChipContextProvider()
     active_context_types = _ordered_unique(context_types or BACKGROUND_CONTEXT_TYPES)
     source_errors: list[dict[str, Any]] = []
@@ -133,26 +156,8 @@ def update_background_chip_context_cache(
         for context_type in active_context_types
         for symbol in selected_symbols_by_context_type.get(context_type, [])
     )
-    if not selected_symbols:
-        return {
-            "status": "completed" if not source_errors else "failed",
-            "market": market,
-            "run_date": run_date.isoformat(),
-            "symbol_count": 0,
-            "context_types": active_context_types,
-            "records_written": 0,
-            "errors": [
-                *source_errors,
-                {"code": "no_selected_symbols", "message": "No selected symbols were available for context update."},
-            ],
-        }
-
-    records_written = 0
     not_applicable_symbols: set[str] = set()
     reused_pairs: set[tuple[str, str]] = set()
-    errors: list[dict[str, Any]] = list(source_errors)
-    returned_pairs: set[tuple[str, str]] = set()
-    incomplete_reasons: dict[tuple[str, str], str] = {}
     fetch_symbols_by_context_type = {
         context_type: list(selected_symbols_by_context_type.get(context_type, []))
         for context_type in active_context_types
@@ -183,79 +188,114 @@ def update_background_chip_context_cache(
             ]
             for context_type, context_symbols in fetch_symbols_by_context_type.items()
         }
+    return PreparedBackgroundContextRefresh(run_date=run_date, market=market,
+        context_types=active_context_types, selected_symbols=selected_symbols,
+        fetch_symbols_by_context_type=fetch_symbols_by_context_type, reused_pairs=reused_pairs,
+        not_applicable_symbols=not_applicable_symbols, source_errors=source_errors,
+        provider=active_provider, require_same_day_fresh=require_same_day_fresh)
+
+
+def collect_background_context_refresh(preparation: PreparedBackgroundContextRefresh) -> CollectedBackgroundContextRefresh:
+    """Finish every provider batch before any domain persistence, retaining partial failures."""
+    payloads: list[BackgroundContextPayload] = []
+    errors: list[dict[str, Any]] = []
+    try:
+        for symbols, context_types in _context_fetch_batches(
+            preparation.fetch_symbols_by_context_type, context_types=preparation.context_types,
+        ):
+            for payload in preparation.provider.fetch(symbols=symbols, context_types=context_types,
+                run_date=preparation.run_date, market=preparation.market):
+                payloads.append(deepcopy(payload))
+    except Exception as exc:
+        errors.append({"code": "background_context_provider_failed", "message": str(exc),
+            "error_type": exc.__class__.__name__})
+    return CollectedBackgroundContextRefresh(preparation, tuple(payloads), tuple(errors))
+
+
+def persist_background_context_refresh(session: Session, collected: CollectedBackgroundContextRefresh) -> dict[str, Any]:
+    """Write collected payloads only; a persistence failure belongs to the transaction owner."""
+    preparation = collected.preparation
+    run_date, market = preparation.run_date, preparation.market
+    active_context_types, selected_symbols = preparation.context_types, preparation.selected_symbols
+    source_errors = preparation.source_errors
+    require_same_day_fresh = preparation.require_same_day_fresh
+    reused_pairs = preparation.reused_pairs
+    not_applicable_symbols = set(preparation.not_applicable_symbols)
+    fetch_symbols_by_context_type = preparation.fetch_symbols_by_context_type
+    if not selected_symbols:
+        return {
+            "status": "completed" if not source_errors else "failed",
+            "market": market,
+            "run_date": run_date.isoformat(),
+            "symbol_count": 0,
+            "context_types": active_context_types,
+            "records_written": 0,
+            "errors": [
+                *source_errors,
+                {"code": "no_selected_symbols", "message": "No selected symbols were available for context update."},
+            ],
+        }
+
+    records_written = 0
+    errors = list(source_errors)
+    returned_pairs: set[tuple[str, str]] = set()
+    incomplete_reasons: dict[tuple[str, str], str] = {}
     expected_pairs = {
         (symbol, context_type)
         for context_type, context_symbols in fetch_symbols_by_context_type.items()
         for symbol in context_symbols
     }
-    try:
-        for fetch_symbols, fetch_context_types in _context_fetch_batches(
-            fetch_symbols_by_context_type,
-            context_types=active_context_types,
+    for payload in collected.payloads:
+        pair = (payload.symbol, payload.context_type)
+        if pair not in expected_pairs:
+            errors.append(
+                {
+                    "code": "background_context_provider_unexpected_payload",
+                    "symbol": payload.symbol,
+                    "context_type": payload.context_type,
+                }
+            )
+            continue
+        returned_pairs.add(pair)
+        if (
+            payload.context_type == "full_margin"
+            and same_day_background_context_is_reusable(payload, run_date=run_date)
+            and margin_is_not_applicable(payload.payload, run_date=run_date, symbol=payload.symbol)
         ):
-            for payload in active_provider.fetch(
-                symbols=fetch_symbols,
-                context_types=fetch_context_types,
-                run_date=run_date,
-                market=market,
-            ):
-                pair = (payload.symbol, payload.context_type)
-                if pair not in expected_pairs:
-                    errors.append(
-                        {
-                            "code": "background_context_provider_unexpected_payload",
-                            "symbol": payload.symbol,
-                            "context_type": payload.context_type,
-                        }
-                    )
-                    continue
-                returned_pairs.add(pair)
-                if (
-                    payload.context_type == "full_margin"
-                    and same_day_background_context_is_reusable(payload, run_date=run_date)
-                    and margin_is_not_applicable(payload.payload, run_date=run_date, symbol=payload.symbol)
-                ):
-                    not_applicable_symbols.add(payload.symbol)
-                if require_same_day_fresh and not same_day_background_context_is_reusable(
-                    payload,
-                    run_date=run_date,
-                ):
-                    incomplete_reasons[pair] = (
-                        payload.missing_reason
-                        or (
-                            "source_stale"
-                            if payload.freshness != "fresh" or payload.as_of_date != run_date
-                            else "context_payload_incomplete"
-                        )
-                    )
-                persisted_freshness = payload.freshness
-                persisted_payload = payload.payload
-                persisted_missing_reason = payload.missing_reason
-                if incomplete_reasons.get(pair) == "context_payload_incomplete":
-                    persisted_freshness = "missing"
-                    persisted_payload = {}
-                    persisted_missing_reason = "context_payload_incomplete"
-                upsert_shared_background_context(
-                    session,
-                    symbol=payload.symbol,
-                    context_type=payload.context_type,
-                    applicable_consumers=payload.applicable_consumers,
-                    source=payload.source,
-                    as_of_date=payload.as_of_date,
-                    freshness=persisted_freshness,
-                    payload=persisted_payload,
-                    missing_reason=persisted_missing_reason,
-                    replay_key=payload.replay_key,
+            not_applicable_symbols.add(payload.symbol)
+        if require_same_day_fresh and not same_day_background_context_is_reusable(
+            payload,
+            run_date=run_date,
+        ):
+            incomplete_reasons[pair] = (
+                payload.missing_reason
+                or (
+                    "source_stale"
+                    if payload.freshness != "fresh" or payload.as_of_date != run_date
+                    else "context_payload_incomplete"
                 )
-                records_written += 1
-    except Exception as exc:
-        errors.append(
-            {
-                "code": "background_context_provider_failed",
-                "message": str(exc),
-                "error_type": exc.__class__.__name__,
-            }
+            )
+        persisted_freshness = payload.freshness
+        persisted_payload = payload.payload
+        persisted_missing_reason = payload.missing_reason
+        if incomplete_reasons.get(pair) == "context_payload_incomplete":
+            persisted_freshness = "missing"
+            persisted_payload = {}
+            persisted_missing_reason = "context_payload_incomplete"
+        upsert_shared_background_context(
+            session,
+            symbol=payload.symbol,
+            context_type=payload.context_type,
+            applicable_consumers=payload.applicable_consumers,
+            source=payload.source,
+            as_of_date=payload.as_of_date,
+            freshness=persisted_freshness,
+            payload=persisted_payload,
+            missing_reason=persisted_missing_reason,
+            replay_key=payload.replay_key,
         )
+        records_written += 1
+    errors.extend(collected.errors)
 
     if require_same_day_fresh:
         for pair in expected_pairs - returned_pairs:
@@ -279,6 +319,22 @@ def update_background_chip_context_cache(
         "missing_symbol_reasons": missing_symbol_reasons,
         "errors": errors,
     }
+
+def update_background_chip_context_cache(
+    session: Session,
+    *,
+    run_date: date,
+    market: str,
+    provider: BackgroundChipContextProvider | None = None,
+    symbols: Iterable[str] | None = None,
+    context_types: Iterable[str] | None = None,
+    reuse_same_day_fresh: bool = False,
+    require_same_day_fresh: bool = False,
+) -> dict[str, Any]:
+    preparation = prepare_background_context_refresh(session, run_date=run_date, market=market,
+        provider=provider, symbols=symbols, context_types=context_types,
+        reuse_same_day_fresh=reuse_same_day_fresh, require_same_day_fresh=require_same_day_fresh)
+    return persist_background_context_refresh(session, collect_background_context_refresh(preparation))
 
 
 def _selected_symbols_by_context_type(
@@ -441,5 +497,8 @@ __all__ = [
     "StubBackgroundChipContextProvider",
     "build_background_context_labels",
     "same_day_background_context_is_reusable",
+    "prepare_background_context_refresh",
+    "collect_background_context_refresh",
+    "persist_background_context_refresh",
     "update_background_chip_context_cache",
 ]

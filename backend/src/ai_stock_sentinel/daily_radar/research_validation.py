@@ -20,7 +20,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     default_due_start_date, exclude_persisted_daily_radar_windows,
     forward_validation_candidates_from_runs, persisted_forward_validation_outcomes,
     load_benchmark_prices_from_prepared_market_context,
-    upsert_forward_validation_results, validate_forward_validation_benchmark,
+    validate_forward_validation_benchmark,
 )
 
 
@@ -45,7 +45,14 @@ def _candidate_price_date_reason(candidate, signal):
     return None
 
 
-def _retryable_windows_query(request, as_of_date):
+def _retry_calendar(session, request, as_of_date):
+    if request.market != "TW" or request.benchmark_symbol != "TAIEX":
+        return None
+    from ai_stock_sentinel.daily_radar.trading_calendar import CalendarEvidenceIndex, stored_calendars
+    return CalendarEvidenceIndex(stored_calendars(session, as_of_date=as_of_date)).latest()
+
+
+def _retryable_windows_query(request, as_of_date, *, calendar=None):
     """Retire a legacy hint once v2 owns the same candidate/window identity."""
     end_date = min(request.end_date or as_of_date, as_of_date)
     current = aliased(DailyRadarForwardValidationResult)
@@ -91,8 +98,21 @@ def _retryable_windows_query(request, as_of_date):
             DailyRadarForwardValidationResult.outcome["expected_target_date"].as_string()
             == as_of_date.isoformat(),
         )
-    return query.where(or_(DailyRadarForwardValidationResult.evaluation_as_of_date.is_(None),
+    query = query.where(or_(DailyRadarForwardValidationResult.evaluation_as_of_date.is_(None),
                            DailyRadarForwardValidationResult.evaluation_as_of_date <= as_of_date))
+    if (calendar is not None and calendar.through >= as_of_date
+            and request.market == "TW" and request.benchmark_symbol == "TAIEX"):
+        sessions = [day for day in calendar.sessions if day <= as_of_date]
+        # A signal on one of the last N sessions has fewer than N future
+        # sessions. Keep the signal in the proof and filter before LIMIT so
+        # pending observations cannot occupy the bounded recovery queue.
+        immature = [and_(DailyRadarForwardValidationResult.window_days == window,
+            DailyRadarForwardValidationResult.signal_date.in_(sessions[-window:]))
+            for window in ordered_positive_values(request.windows)]
+        if immature:
+            query = query.where(~and_(DailyRadarForwardValidationResult.skip_reason == "window_not_mature",
+                                      or_(*immature)))
+    return query
 
 
 def _index(rows):
@@ -103,6 +123,7 @@ def _index(rows):
 
 def evaluate_research_window(candidate, *, price_series, benchmark_prices,
                              window_days, as_of_date, benchmark_symbol, trading_calendar=None, validate_signal_session=False):
+    from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
     signal = parse_date(candidate.get("record_date"))
     base = {"candidate_id": candidate.get("candidate_id"), "symbol": candidate.get("symbol"),
             "signal_date": signal.isoformat() if signal else None, "window_days": window_days,
@@ -110,9 +131,10 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             "evaluation_as_of_date": as_of_date.isoformat()}
 
     def skip(reason, *, pending=False, missing_dates=(), target_date=None):
-        return base | {"status": "pending" if pending else "skipped", "target_date": None,
-                       "skip_reason": reason, "outcome": {"missing_dates": [str(d) for d in missing_dates],
-                       "expected_target_date": str(target_date) if target_date else None}}
+        return bind_validation_input(candidate, base | {"status": "pending" if pending else "skipped", "target_date": None,
+                       "skip_reason": reason, "outcome": {"return_basis": "next_open", "price_basis": RESEARCH_PRICE_BASIS,
+                       "missing_dates": [str(d) for d in missing_dates],
+                       "expected_target_date": str(target_date) if target_date else None}})
 
     if signal is None:
         return skip("signal_date_missing")
@@ -156,6 +178,7 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
         return skip("missing_entry_open")
     if benchmark_entry is None or benchmark_entry <= 0:
         return skip("missing_benchmark_entry_open")
+    split_event = None
     for series in (prices, benchmark):
         for day in days:
             row = series[day]
@@ -169,13 +192,21 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             if split is None or number(row.get("dividends")) is None:
                 return skip("corporate_action_provenance_missing")
             if split not in (0, 1):
-                return skip("stock_split_in_window")
+                split_event = {"date": str(day), "ratio": split,
+                    "symbol": candidate["symbol"] if series is prices else benchmark_symbol,
+                    "price_source": row["price_source"], "corporate_actions_checked": True,
+                    "corporate_action_source": row.get("corporate_action_source"),
+                    "corporate_action_coverage": row.get("corporate_action_coverage")}
             high, low, close = (number(row.get(key)) for key in ("high", "low", "close"))
             open_ = number(row.get("open"))
             if (high is None or low is None or close is None or min(high, low, close) <= 0
                     or low > close or high < close or low > high
                     or (open_ is not None and (open_ <= 0 or not low <= open_ <= high))):
                 return skip("invalid_research_ohlc")
+    if split_event is not None:
+        row = skip("stock_split_in_window", target_date=days[-1])
+        row["outcome"].update(session_dates=[str(d) for d in days], split_event=split_event)
+        return row
     target = prices[days[-1]]["close"]
     gross = pct_return(entry, target)
     benchmark_return = pct_return(benchmark_entry, benchmark[days[-1]]["close"])
@@ -203,11 +234,13 @@ def evaluate_research_window(candidate, *, price_series, benchmark_prices,
             "net_excess_return_pct": round(gross - cost - benchmark_return, 4),
         } for cost in RESEARCH_COSTS},
     }
-    return base | {"status": "validated", "target_date": days[-1].isoformat(),
-                   "skip_reason": None, "outcome": payload}
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window
+    return bind_window(bind_validation_input(candidate, base | {"status": "validated", "target_date": days[-1].isoformat(),
+                   "skip_reason": None, "outcome": payload}), days, 'next_open')
 
 
-def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *, as_of_date, scoped, provider):
+def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *, as_of_date, scoped, provider,
+                           reviewed=False):
     symbol = candidate["symbol"]
     signal = parse_date(candidate["record_date"])
     window = row["window_days"]
@@ -222,7 +255,8 @@ def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *
     if not scoped and not flags:
         return None
     try:
-        prices, index, evidence = rights.recover_window(
+        verifier = rights.verify_reviewed_window if reviewed else rights.recover_window
+        prices, index, evidence = verifier(
             symbol, signal, sessions, yahoo_rows=yahoo, benchmark_rows=benchmark,
             flagged_dates=flags, capture=capture, load_history=load_history,
         )
@@ -274,20 +308,22 @@ def _classify_corporate_action(row, yahoo, marked, benchmark, *, as_of_date, pro
         evidence["prior_expected_target_date"] = str(target)
     if row["outcome"].get("missing_dates"):
         evidence["prior_missing_dates"] = row["outcome"]["missing_dates"]
-    return row | {"skip_reason": reason, "outcome": row["outcome"] | {
+    return row | {"skip_reason": reason, "target_date": verified_target, "outcome": row["outcome"] | {
         "expected_target_date": verified_target,
         "missing_dates": [],
         corporate_actions.PROVENANCE_KEY: evidence,
     }}
 
 
-def run_research_validation(session, request, *, as_of_date: date, price_provider, calendar_provider=None):
+def run_research_validation(session, request, *, as_of_date: date, price_provider, calendar_provider=None,
+                            candidate_ids=None, prepare_only=False):
     """Bounded, resumable research. The router owns the single transaction."""
     windows = ordered_positive_values(request.windows)
     scoped = request.conflict_recovery_symbols is not None
     start = request.start_date
     resume = defaultdict(set)
-    retryable_query = _retryable_windows_query(request, as_of_date)
+    retryable_query = _retryable_windows_query(request, as_of_date,
+        calendar=_retry_calendar(session, request, as_of_date))
     if request.mode == "due":
         if start is None:
             start = default_due_start_date(as_of_date, max(windows))
@@ -301,16 +337,36 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             resume[cid].add(window)
     candidates = forward_validation_candidates_from_runs(
         session, market=request.market, start_date=start, end_date=request.end_date or as_of_date,
-        include_candidate_ids=list(resume), symbols=request.conflict_recovery_symbols)
+        include_candidate_ids=list(resume), symbols=request.conflict_recovery_symbols,
+        candidate_ids=candidate_ids)
     candidates = [c for c in candidates if c["selection_status"] == "selected"
                   or (c["selection_status"] == "shadow" and c["shadow_cohort"] == "comparable")]
+    if candidate_ids is not None:
+        candidates = [c for c in candidates if c["candidate_id"] in candidate_ids]
+        if {c["candidate_id"] for c in candidates} != set(candidate_ids):
+            raise ValueError("validation_candidate_scope_unavailable")
     validate_forward_validation_benchmark(candidates, benchmark_symbol=request.benchmark_symbol)
+    from ai_stock_sentinel.daily_radar.validation_preparation import capture_validation_acceptance
+    acceptance = None if prepare_only else capture_validation_acceptance(session, candidates,
+        market=request.market, windows=windows, validation_version=RESEARCH_VALIDATION_VERSION)
+    official_calendar = None
+    if candidates and request.market == 'TW' and request.benchmark_symbol == 'TAIEX':
+        from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar, require_calendar
+        first_signal = min(parse_date(c['record_date']) for c in candidates)
+        official_calendar = load_calendar(session, start_date=first_signal, as_of_date=as_of_date)
+        missing_coverage = official_calendar is None or official_calendar.through < as_of_date
+        if calendar_provider is not None and (missing_coverage or request.mode != 'due' or scoped):
+            session.rollback()  # The router-owned collection transaction ends before source I/O.
+            official_calendar = require_calendar(calendar_provider, start_date=first_signal, end_date=as_of_date)
+        elif missing_coverage:
+            official_calendar = None
     pending = {candidate_key(c): (sorted(resume[c["candidate_id"]])
                if scoped or (start and parse_date(c["record_date"]) < start) else windows) for c in candidates}
     if request.mode == "due":
         pending = exclude_persisted_daily_radar_windows(
             session, pending, validation_version=RESEARCH_VALIDATION_VERSION,
-            benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS)
+            benchmark_symbol=request.benchmark_symbol, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
+            calendar=official_calendar)
     active = [c for c in candidates if pending.get(candidate_key(c))]
     outcomes = []
     recovery_checks = []
@@ -319,13 +375,24 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     fresh = []
     for candidate in active:
         signal = parse_date(candidate["record_date"])
-        if _candidate_price_date_reason(candidate, signal):
+        non_trading_signal = official_calendar is not None and signal not in official_calendar.sessions
+        if _candidate_price_date_reason(candidate, signal) or non_trading_signal:
             if not scoped:
                 outcomes.extend(evaluate_research_window(candidate, price_series=[], benchmark_prices=[],
-                    window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol)
+                    window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
+                    trading_calendar=official_calendar.sessions if official_calendar else None,
+                    validate_signal_session=official_calendar is not None)
                     for w in pending[candidate_key(candidate)])
         else:
             fresh.append(candidate)
+    if official_calendar is not None:
+        due_candidates = []
+        for candidate in fresh:
+            signal = parse_date(candidate["record_date"])
+            future_count = sum(signal < day <= as_of_date for day in official_calendar.sessions)
+            if future_count >= min(pending[candidate_key(candidate)]):
+                due_candidates.append(candidate)
+        fresh = due_candidates
     if fresh:
         price_start = min(parse_date(c["record_date"]) for c in fresh)
         reference = load_benchmark_prices_from_prepared_market_context(
@@ -335,12 +402,9 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             session, market=request.market, benchmark_symbol=request.benchmark_symbol,
             start_date=price_start, as_of_date=as_of_date)) |
             {day for day in _index(reference) if price_start <= day <= as_of_date})
-        official_calendar = None
-        if calendar_provider is not None:
-            session.rollback()
-            from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
-            official_calendar = require_calendar(calendar_provider,start_date=price_start,end_date=as_of_date)
-            reference_days = list(official_calendar.sessions)
+        if official_calendar is not None:
+            reference_days = [day for day in official_calendar.sessions if price_start <= day <= as_of_date]
+        session.rollback()  # Pending-window/reference reads may have opened a new collection transaction.
         benchmark = list(price_provider.fetch(
             [request.benchmark_symbol], start_date=price_start, end_date=as_of_date
         ).get(request.benchmark_symbol, []))
@@ -361,7 +425,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             candidate_calendar = complete_calendar
             due = [w for w in pending[candidate_key(candidate)]
                    if sum(day > signal for day in candidate_calendar) >= w
-                   or (as_of_date - signal).days >= w * 2]
+                   or (official_calendar is None and (as_of_date - signal).days >= w * 2)]
             if due:
                 by_symbol[candidate["symbol"]].append((candidate, due, candidate_calendar))
         symbols = sorted(by_symbol)
@@ -409,12 +473,18 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
         resolved = _classify_corporate_action(row, yahoo, marked, benchmark, as_of_date=as_of_date,
                                               provider=price_provider) if can_prove_actions else None
         outcomes.append(resolved if resolved is not None else row)
-    summary = upsert_forward_validation_results(session, outcomes, terminal_skip_reasons=RESEARCH_TERMINAL_REASONS,
-                                               require_existing_conflict=scoped)
-    if fresh and calendar_provider is not None:
-        from ai_stock_sentinel.daily_radar.trading_calendar import save_calendar
-        save_calendar(session,official_calendar)
-    remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
+    from ai_stock_sentinel.daily_radar.validation_preparation import ValidationPreparation, accept_validation_results
+    if prepare_only:
+        return ValidationPreparation(candidates=candidates, outcomes=outcomes,
+            calendar=official_calendar,
+            as_of_date=as_of_date, return_basis="next_open", diagnostics=list(getattr(price_provider, "diagnostics", [])))
+    summary = accept_validation_results(session, outcomes, calendar=official_calendar, acceptance=acceptance,
+        terminal_skip_reasons=RESEARCH_TERMINAL_REASONS, require_existing_conflict=scoped)
+    # Acceptance may have persisted the first current calendar for this cutoff.
+    # Re-read proof eligibility and use the same query as bounded discovery.
+    remaining_query = _retryable_windows_query(request, as_of_date,
+        calendar=_retry_calendar(session, request, as_of_date))
+    remaining_retryable = session.scalar(select(func.count()).select_from(remaining_query.subquery())) or 0
     persisted = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date,
         validation_version=RESEARCH_VALIDATION_VERSION)
