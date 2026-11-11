@@ -13,6 +13,7 @@ from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from test_gcp_migration import pg17  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -379,15 +380,25 @@ def test_pg17_readonly_probe_reports_missing_migrations_without_writes(pg17, mon
     import uuid
     env,owner,config=baseline_database(pg17,monkeypatch)
     reader='schema_reader_'+uuid.uuid4().hex[:10]
+    reader_password='schema-reader-fixture-only-password'
     pg17.roles.append(reader)
     with owner.begin() as conn:
-        conn.execute(text(f'CREATE ROLE {reader} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE'))
+        conn.execute(text(f'CREATE ROLE {reader} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD :password'),
+                     {'password': reader_password})
         conn.execute(text(f'GRANT CONNECT ON DATABASE {env["PGDATABASE"]} TO {reader}'))
         conn.execute(text(f'GRANT USAGE ON SCHEMA public TO {reader}'))
         conn.execute(text(f'GRANT SELECT ON alembic_version TO {reader}'))
     owner.dispose()
-    url=URL.create('postgresql+psycopg2',username=reader,database=env['PGDATABASE'],
+    url=URL.create('postgresql+psycopg2',username=reader,password=reader_password,database=env['PGDATABASE'],
                    query={'host':env['PGHOST'],'port':'65439'})
+    # The Docker CI fixture requires password auth; local Unix sockets may use trust.
+    if env['PGHOST']=='127.0.0.1':
+        invalid_engine=create_engine(url.set(password=reader_password+'-wrong'))
+        try:
+            with pytest.raises(OperationalError, match='password authentication failed'):
+                with invalid_engine.connect():
+                    pass
+        finally: invalid_engine.dispose()
     engine=create_engine(url)
     try:
         with engine.connect() as conn:
@@ -395,7 +406,9 @@ def test_pg17_readonly_probe_reports_missing_migrations_without_writes(pg17, mon
             assert result['status']=='migration_required' and result['current_revisions']==[BASE]
             assert conn.scalar(text('SELECT version_num FROM alembic_version'))==BASE
             assert conn.scalar(text("SELECT to_regclass('public.radar_source_snapshots')")) is None
-            with pytest.raises(Exception): conn.execute(text('CREATE TABLE forbidden_probe_write(id int)'))
+            with pytest.raises(ProgrammingError) as denied:
+                conn.execute(text('CREATE TABLE forbidden_probe_write(id int)'))
+            assert denied.value.orig.pgcode=='42501'  # insufficient_privilege
     finally: engine.dispose()
 
 
