@@ -2,6 +2,7 @@
 import argparse
 from http.client import HTTPException
 from datetime import date
+import json
 import os
 from pathlib import Path
 import time
@@ -10,6 +11,32 @@ from urllib.parse import urlencode
 
 from daily_radar_http import get, post, request_deadline, _NoRedirect, diagnostic_json
 from check_daily_radar_readiness import valid_readiness, scope_ready
+
+
+RECOLLECT_CONFLICTS = {"validation_inputs_changed", "validation_results_changed"}
+NEWER_RESULT_PRESERVED = "newer_validation_result_preserved"
+MAX_CONFLICT_BODY_BYTES = 4096
+
+
+def _validation_conflict_code(error):
+    if error.fp is None:
+        return None
+    try:
+        with error:
+            body = error.read(MAX_CONFLICT_BODY_BYTES + 1)
+    except (OSError, HTTPException):
+        return None
+    if len(body) > MAX_CONFLICT_BODY_BYTES:
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    if isinstance(code, str) and (code in RECOLLECT_CONFLICTS or code == NEWER_RESULT_PRESERVED):
+        return code
+    return None
 
 
 def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep,
@@ -45,12 +72,18 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
             failure = None
             needs_review = False
             readiness_blocked = False
+            conflict_code = None
             try:
                 remaining_time = deadline - clock()
                 if remaining_time <= 0:
                     raise TimeoutError("validation_budget_exhausted")
                 with request_deadline(min(300, remaining_time)):
-                    response = request(endpoint, token, payload)
+                    try:
+                        response = request(endpoint, token, payload)
+                    except HTTPError as exc:
+                        if exc.code == 409:
+                            conflict_code = _validation_conflict_code(exc)
+                        raise
                     # Save before context exit: the deadline can expire after
                     # the server's complete response has already been decoded.
                     validation_response = response
@@ -109,8 +142,16 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
             except HTTPError as exc:
                 ready = valid = False
                 failure = response = {"error_type": "HTTPError", "http_status": exc.code}
-                retryable = exc.code in (408, 425, 429) or 500 <= exc.code < 600
-                transport_failures += 1
+                if conflict_code is not None:
+                    failure["code"] = conflict_code
+                    needs_review = conflict_code == NEWER_RESULT_PRESERVED
+                    retryable = conflict_code in RECOLLECT_CONFLICTS
+                    transport_failures = 0
+                    # Recollection may discover a different set of outstanding windows.
+                    previous_remaining = None
+                else:
+                    retryable = exc.code in (408, 425, 429) or 500 <= exc.code < 600
+                    transport_failures += 1
             except (OSError, HTTPException) as exc:
                 ready = valid = False
                 failure = response = {"error_type": type(exc).__name__}

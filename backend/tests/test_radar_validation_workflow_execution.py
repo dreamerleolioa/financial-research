@@ -21,6 +21,157 @@ def runner():
     return module
 
 
+def conflict(endpoint, body):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    return HTTPError(endpoint, 409, "Conflict", {}, BytesIO(body))
+
+
+@pytest.mark.parametrize("basis", ["signal_close", "next_open"])
+@pytest.mark.parametrize("code", ["validation_inputs_changed", "validation_results_changed"])
+def test_conflict_recollects_the_same_full_window_request(tmp_path, basis, code):
+    calls = []
+
+    def post(endpoint, token, payload):
+        calls.append(dict(payload))
+        if len(calls) == 1:
+            raise conflict(endpoint, json.dumps({"detail": {"code": code, "body": token}}).encode())
+        return {"status": "completed", "as_of_date": payload["as_of_date"], "retryable_skipped_count": 0,
+                "report": {"remaining_retryable_window_count": 0}}
+
+    assert runner().run(endpoint="https://test.invalid", token="private-fixture", run_date="2026-11-06",
+        output_dir=tmp_path, request=post, sleep=lambda _: None, return_bases=(basis,)) == 0
+    assert calls == [{"mode": "due", "market": "TW", "as_of_date": "2026-11-06", "benchmark_symbol": "TAIEX",
+                      "windows": [5, 10, 20, 40, 60], "return_basis": basis}] * 2
+    first = (tmp_path / f"{basis}-attempt-1.json").read_text()
+    assert json.loads(first)["validation_error"] == {"error_type": "HTTPError", "http_status": 409, "code": code}
+    assert "private-fixture" not in first
+
+
+@pytest.mark.parametrize("body,reason,code", [
+    (b'{"detail":{"code":"newer_validation_result_preserved"}}', "needs_review", "newer_validation_result_preserved"),
+    (b'{"detail":{"code":"unknown_private"}}', "non_retryable_response", None),
+    (b'{"detail":{"code":[]}}', "non_retryable_response", None),
+    (b'private-invalid-json', "non_retryable_response", None),
+    (b'{"detail":{"code":"validation_results_changed"}}' + b' ' * 4096, "non_retryable_response", None),
+])
+def test_only_known_validation_conflicts_are_actionable(tmp_path, body, reason, code):
+    def post(endpoint, *args):
+        raise conflict(endpoint, body)
+
+    assert runner().run(endpoint="https://test.invalid", token="private-fixture", run_date="2026-11-06",
+        output_dir=tmp_path, request=post, sleep=lambda _: None, return_bases=("next_open",)) == 1
+    artifacts = list(tmp_path.glob("*.json"))
+    assert len(artifacts) == 1
+    result = json.loads(artifacts[0].read_text())
+    assert result["validation_error"] == ({"error_type": "HTTPError", "http_status": 409}
+                                          | ({"code": code} if code else {}))
+    assert result["runner"]["stop_reason"] == reason
+
+
+def test_conflict_body_is_read_inside_budget_and_closed(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    module = runner()
+    now, active = 0, False
+    bodies = []
+
+    @contextmanager
+    def deadline(seconds):
+        nonlocal active
+        assert 0 < seconds <= 10
+        active = True
+        try:
+            yield
+        finally:
+            active = False
+
+    class Body(BytesIO):
+        def read(self, size):
+            nonlocal now
+            assert active and 0 < size <= 4097
+            now += 4
+            return super().read(size)
+
+    def post(endpoint, *args):
+        body = Body(b'{"detail":{"code":"validation_results_changed"}}')
+        bodies.append(body)
+        raise HTTPError(endpoint, 409, "Conflict", {}, body)
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(module, "request_deadline", deadline)
+    assert module.run(endpoint="https://test.invalid", token="fixture", run_date="2026-11-06",
+        output_dir=tmp_path, request=post, clock=lambda: now, sleep=sleep, basis_timeout=10,
+        return_bases=("next_open",)) == 1
+    assert len(bodies) == 2 and all(body.closed for body in bodies)
+    result = json.loads((tmp_path / "next_open-attempt-2.json").read_text())
+    assert result["runner"]["stop_reason"] == "budget_exhausted"
+
+
+@pytest.mark.parametrize("failure", ["truncated", "timeout", "reset"])
+def test_unreadable_conflict_body_keeps_http_status_and_does_not_retry(tmp_path, failure):
+    from http.client import IncompleteRead
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    bodies = []
+
+    class Body(BytesIO):
+        def read(self, size):
+            if failure == "truncated":
+                raise IncompleteRead(b'private-partial-body')
+            if failure == "timeout":
+                raise TimeoutError('private-timeout')
+            raise ConnectionResetError('private-reset')
+
+    def post(endpoint, *args):
+        body = Body()
+        bodies.append(body)
+        raise HTTPError(endpoint, 409, "Conflict", {}, body)
+
+    assert runner().run(endpoint="https://test.invalid", token="private", run_date="2026-11-06",
+        output_dir=tmp_path, request=post, sleep=lambda _: None, return_bases=("next_open",)) == 1
+    assert len(bodies) == 1 and bodies[0].closed
+    artifact = (tmp_path / "next_open-attempt-1.json").read_text()
+    result = json.loads(artifact)
+    assert result['validation_error'] == {'error_type': 'HTTPError', 'http_status': 409}
+    assert result['runner']['stop_reason'] == 'non_retryable_response'
+    assert 'private' not in artifact
+
+
+@pytest.mark.parametrize("basis,limit", [("signal_close", 2), ("next_open", 6)])
+def test_persistent_conflict_stops_at_existing_attempt_limit(tmp_path, basis, limit):
+    def post(endpoint, *args):
+        raise conflict(endpoint, b'{"detail":{"code":"validation_results_changed"}}')
+
+    assert runner().run(endpoint="https://test.invalid", token="fixture", run_date="2026-11-06",
+        output_dir=tmp_path, request=post, sleep=lambda _: None, return_bases=(basis,)) == 1
+    assert len(list(tmp_path.glob("*.json"))) == limit
+    last = json.loads((tmp_path / f"{basis}-attempt-{limit}.json").read_text())
+    assert last["runner"]["stop_reason"] == "attempt_limit"
+
+
+def test_recollection_resets_the_previous_remaining_baseline(tmp_path):
+    calls = []
+
+    def post(endpoint, token, payload):
+        calls.append(dict(payload))
+        if len(calls) == 2:
+            raise conflict(endpoint, b'{"detail":{"code":"validation_inputs_changed"}}')
+        remaining = 2 if len(calls) < 4 else 0
+        return {"status": "completed", "as_of_date": payload["as_of_date"], "retryable_skipped_count": remaining,
+                "report": {"remaining_retryable_window_count": remaining}}
+
+    assert runner().run(endpoint="https://test.invalid", token="fixture", run_date="2026-11-06",
+        output_dir=tmp_path, request=post, sleep=lambda _: None, return_bases=("next_open",)) == 0
+    assert len(calls) == 4 and all(payload == calls[0] for payload in calls)
+
+
 def test_unverified_legacy_returns_require_review_even_with_zero_retryable_skips(tmp_path,capsys):
     calls=[]
     def post(endpoint,token,payload):
