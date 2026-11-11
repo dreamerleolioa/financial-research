@@ -45,7 +45,14 @@ def _candidate_price_date_reason(candidate, signal):
     return None
 
 
-def _retryable_windows_query(request, as_of_date):
+def _retry_calendar(session, request, as_of_date):
+    if request.market != "TW" or request.benchmark_symbol != "TAIEX":
+        return None
+    from ai_stock_sentinel.daily_radar.trading_calendar import CalendarEvidenceIndex, stored_calendars
+    return CalendarEvidenceIndex(stored_calendars(session, as_of_date=as_of_date)).latest()
+
+
+def _retryable_windows_query(request, as_of_date, *, calendar=None):
     """Retire a legacy hint once v2 owns the same candidate/window identity."""
     end_date = min(request.end_date or as_of_date, as_of_date)
     current = aliased(DailyRadarForwardValidationResult)
@@ -91,8 +98,21 @@ def _retryable_windows_query(request, as_of_date):
             DailyRadarForwardValidationResult.outcome["expected_target_date"].as_string()
             == as_of_date.isoformat(),
         )
-    return query.where(or_(DailyRadarForwardValidationResult.evaluation_as_of_date.is_(None),
+    query = query.where(or_(DailyRadarForwardValidationResult.evaluation_as_of_date.is_(None),
                            DailyRadarForwardValidationResult.evaluation_as_of_date <= as_of_date))
+    if (calendar is not None and calendar.through >= as_of_date
+            and request.market == "TW" and request.benchmark_symbol == "TAIEX"):
+        sessions = [day for day in calendar.sessions if day <= as_of_date]
+        # A signal on one of the last N sessions has fewer than N future
+        # sessions. Keep the signal in the proof and filter before LIMIT so
+        # pending observations cannot occupy the bounded recovery queue.
+        immature = [and_(DailyRadarForwardValidationResult.window_days == window,
+            DailyRadarForwardValidationResult.signal_date.in_(sessions[-window:]))
+            for window in ordered_positive_values(request.windows)]
+        if immature:
+            query = query.where(~and_(DailyRadarForwardValidationResult.skip_reason == "window_not_mature",
+                                      or_(*immature)))
+    return query
 
 
 def _index(rows):
@@ -302,7 +322,8 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     scoped = request.conflict_recovery_symbols is not None
     start = request.start_date
     resume = defaultdict(set)
-    retryable_query = _retryable_windows_query(request, as_of_date)
+    retryable_query = _retryable_windows_query(request, as_of_date,
+        calendar=_retry_calendar(session, request, as_of_date))
     if request.mode == "due":
         if start is None:
             start = default_due_start_date(as_of_date, max(windows))
@@ -354,13 +375,24 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
     fresh = []
     for candidate in active:
         signal = parse_date(candidate["record_date"])
-        if _candidate_price_date_reason(candidate, signal):
+        non_trading_signal = official_calendar is not None and signal not in official_calendar.sessions
+        if _candidate_price_date_reason(candidate, signal) or non_trading_signal:
             if not scoped:
                 outcomes.extend(evaluate_research_window(candidate, price_series=[], benchmark_prices=[],
-                    window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol)
+                    window_days=w, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
+                    trading_calendar=official_calendar.sessions if official_calendar else None,
+                    validate_signal_session=official_calendar is not None)
                     for w in pending[candidate_key(candidate)])
         else:
             fresh.append(candidate)
+    if official_calendar is not None:
+        due_candidates = []
+        for candidate in fresh:
+            signal = parse_date(candidate["record_date"])
+            future_count = sum(signal < day <= as_of_date for day in official_calendar.sessions)
+            if future_count >= min(pending[candidate_key(candidate)]):
+                due_candidates.append(candidate)
+        fresh = due_candidates
     if fresh:
         price_start = min(parse_date(c["record_date"]) for c in fresh)
         reference = load_benchmark_prices_from_prepared_market_context(
@@ -393,7 +425,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             candidate_calendar = complete_calendar
             due = [w for w in pending[candidate_key(candidate)]
                    if sum(day > signal for day in candidate_calendar) >= w
-                   or (as_of_date - signal).days >= w * 2]
+                   or (official_calendar is None and (as_of_date - signal).days >= w * 2)]
             if due:
                 by_symbol[candidate["symbol"]].append((candidate, due, candidate_calendar))
         symbols = sorted(by_symbol)
@@ -448,7 +480,11 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             as_of_date=as_of_date, return_basis="next_open", diagnostics=list(getattr(price_provider, "diagnostics", [])))
     summary = accept_validation_results(session, outcomes, calendar=official_calendar, acceptance=acceptance,
         terminal_skip_reasons=RESEARCH_TERMINAL_REASONS, require_existing_conflict=scoped)
-    remaining_retryable = session.scalar(select(func.count()).select_from(retryable_query.subquery())) or 0
+    # Acceptance may have persisted the first current calendar for this cutoff.
+    # Re-read proof eligibility and use the same query as bounded discovery.
+    remaining_query = _retryable_windows_query(request, as_of_date,
+        calendar=_retry_calendar(session, request, as_of_date))
+    remaining_retryable = session.scalar(select(func.count()).select_from(remaining_query.subquery())) or 0
     persisted = persisted_forward_validation_outcomes(
         session, candidates, windows=windows, as_of_date=as_of_date,
         validation_version=RESEARCH_VALIDATION_VERSION)
