@@ -208,7 +208,9 @@ jobs:
           image="asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
           docker pull "$image"
           GCP_MIGRATION_IMAGE="$image" bash scripts/gcp/test-migration.sh
-      - name: Update pre-created private production service
+      # deploy-production.sh first runs the same image's read-only schema job.
+      # A mismatch stops here; owner migration requires backup/drain + approval.
+      - name: Check production schema and update production service
         id: deploy
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}

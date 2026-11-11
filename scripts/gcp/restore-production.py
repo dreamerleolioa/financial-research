@@ -57,7 +57,12 @@ def load_bundle(path, expected_manifest_sha256, expected_bundle_sha256):
         match=re.fullmatch(r'([a-f0-9]{64})  ([a-zA-Z0-9_.-]+)',line)
         if not match or match[2] in checks:raise ValueError('Invalid snapshot checksum list')
         checks[match[2]]=match[1]
-    if set(checks)!=allowed:raise ValueError('Unexpected snapshot components')
+    # Historical restore bundles remain usable; new exports also authenticate
+    # their timestamp. Migration gates require the new five-component format.
+    if set(checks) not in (allowed, allowed|{'started-at.txt'}):raise ValueError('Unexpected snapshot components')
+    if 'started-at.txt' in checks:
+        stamp=root/'started-at.txt'
+        if stamp.is_symlink() or not stamp.is_file():raise ValueError('Missing or symlinked snapshot timestamp')
     if checks['manifest.jsonl']!=expected_manifest_sha256:raise ValueError('Unapproved manifest SHA256')
     if any(digest(root/name)!=value for name,value in checks.items()):raise ValueError('Snapshot checksum mismatch')
     if tuple((root/'tables.txt').read_text().splitlines())!=TABLES:raise ValueError('Wrong financial table allowlist')

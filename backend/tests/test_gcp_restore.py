@@ -51,6 +51,13 @@ def test_restore_is_atomic_and_refuses_rollback_after_new_writes(pg17,tmp_path):
                              hashlib.sha256((p/'SHA256SUMS').read_bytes()).hexdigest())
     final,backup=bundle('source'),bundle('rollback')
     import shutil
+    # Existing four-component bundles remain restorable; only new migration
+    # approval requires the authenticated timestamp in the five-component form.
+    legacy=tmp_path/'legacy';shutil.copytree(tmp_path/'source',legacy)
+    (legacy/'SHA256SUMS').write_text(''.join(line+'\n' for line in (legacy/'SHA256SUMS').read_text().splitlines()
+                                          if not line.endswith('  started-at.txt')))
+    legacy_bundle=bundle('legacy')
+    assert legacy_bundle['manifest']==final['manifest']
     tampered=tmp_path/'tampered';shutil.copytree(tmp_path/'source',tampered)
     with (tampered/'database.sql.gz').open('ab') as f:f.write(b'modified')
     checks=(tampered/'SHA256SUMS').read_text().replace(m.digest(final['root']/'database.sql.gz'),m.digest(tampered/'database.sql.gz'))

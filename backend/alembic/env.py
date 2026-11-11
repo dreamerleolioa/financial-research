@@ -36,6 +36,14 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    # Owner maintenance jobs provide their fenced transaction. Reusing it makes
+    # the approved-version check and all DDL commit or roll back together.
+    supplied = config.attributes.get("connection")
+    if supplied is not None:
+        context.configure(connection=supplied, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
     configuration = config.get_section(config.config_ini_section) or {}
     configuration["sqlalchemy.url"] = get_url()
     connectable = engine_from_config(

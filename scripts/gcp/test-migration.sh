@@ -35,4 +35,4 @@ done
 export GCP_MIGRATION_TEST_HOST=127.0.0.1 GCP_MIGRATION_TEST_BIN="$clients"
 export PGUSER=postgres PGPASSWORD=fixture-only-password
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../backend"
-uv run pytest tests/test_gcp_migration.py -q
+uv run pytest tests/test_gcp_migration.py tests/test_gcp_production.py tests/test_gcp_schema_preflight.py tests/test_gcp_restore.py -q
