@@ -124,7 +124,14 @@ def test_production_verifier_is_fail_closed_with_python_optimization(tmp_path):
     assert result.returncode != 0
 
 
-def test_production_deploy_checks_existing_target_and_does_not_run_migrations(tmp_path):
+@pytest.mark.parametrize('inherited_access_mode', [None, 'private', 'public'])
+def test_production_deploy_checks_existing_target_and_does_not_run_migrations(
+    tmp_path, monkeypatch, inherited_access_mode,
+):
+    if inherited_access_mode is None:
+        monkeypatch.delenv('GCP_PRODUCTION_ACCESS_MODE', raising=False)
+    else:
+        monkeypatch.setenv('GCP_PRODUCTION_ACCESS_MODE', inherited_access_mode)
     log = tmp_path / 'cloud.jsonl'
     current = service()
     executable = tmp_path / 'gcloud'
@@ -154,8 +161,10 @@ elif args[:2]==['run','deploy'] and os.environ.get('CLOUD_SERVICE_STATE'):
  Path(os.environ['CLOUD_SERVICE_STATE']).write_text(json.dumps(data))
 ''')
     executable.chmod(0o700)
+    # Match the private fixture rather than inheriting the deployment job's mode.
     env = {**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
            'GCP_PROJECT_ID': 'financial-research-20261019', 'CLOUD_LOG': str(log),
+           'GCP_PRODUCTION_ACCESS_MODE': 'private',
            'SERVICE_JSON': json.dumps(current)}
     result = subprocess.run(['bash', str(SCRIPTS / 'deploy-production.sh'), IMAGE],
                             cwd=ROOT, env=env, capture_output=True, text=True)

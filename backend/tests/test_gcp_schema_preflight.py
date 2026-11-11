@@ -65,8 +65,10 @@ elif a[:3]==['run','jobs','execute']:
  sys.exit(int(os.environ.get('SCHEMA_EXIT','0')))
 ''')
     fake.chmod(0o700)
+    # Match the private fixture rather than inheriting the deployment job's mode.
     env = {**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
            'GCP_PROJECT_ID': 'financial-research-20261019', 'SERVICE_JSON': json.dumps(state),
+           'GCP_PRODUCTION_ACCESS_MODE': 'private',
            'SERVICE_STATE': str(tmp_path/'service-state.json'),
            'CLOUD_LOG': str(tmp_path / 'cloud.jsonl')}
     return env, Path(env['CLOUD_LOG'])
@@ -94,7 +96,12 @@ def test_missing_checker_or_permissions_stops_before_service_update(tmp_path):
     assert not any(x[:2]==['run','deploy'] or x[:3]==['run','jobs','execute'] for x in calls)
 
 
-def test_readonly_schema_gate_precedes_service_update(tmp_path):
+@pytest.mark.parametrize('inherited_access_mode', [None, 'private', 'public'])
+def test_readonly_schema_gate_precedes_service_update(tmp_path, monkeypatch, inherited_access_mode):
+    if inherited_access_mode is None:
+        monkeypatch.delenv('GCP_PRODUCTION_ACCESS_MODE', raising=False)
+    else:
+        monkeypatch.setenv('GCP_PRODUCTION_ACCESS_MODE', inherited_access_mode)
     env, log = cloud_fixture(tmp_path)
     run = subprocess.run(['bash', str(SCRIPTS / 'deploy-production.sh'), IMAGE],
                          cwd=ROOT, env=env, capture_output=True, text=True)
