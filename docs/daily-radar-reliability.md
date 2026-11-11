@@ -105,3 +105,5 @@ AVWAP provider 不 commit 或 rollback 呼叫者的 session；ORM 的 `new`／`d
 既有官方配股衝突補修可回到原窗口截止日：只限同一 candidate、版本與窗口、仍為 `conflicting_price_records` 的原紀錄，且官方配股證據、標的及原 `expected_target_date` 全部相符。自動與明確指定標的的官方補修共用此判定；完整窗口驗證、canonical／candidate／結果版本比對和既有官方證據 guard 仍全部執行。這個例外不能覆蓋已驗證結果，也不能忽略收集後的版本變更。
 
 `backend/scripts/daily_radar_forward_validation.py --source db --write-results` 與 legacy API 共用收集時版本快照和接受鎖定；CLI 在計算後才取得短寫入交易，版本變更時失敗退出，不輸出成功報告。未指定 `--write-results` 的唯讀報告模式保留。
+
+CLI 寫入只支援 TW／TAIEX，必須先讀到涵蓋所有候選信號及計算截止日、無衝突的既存官方日曆。5／10／20／40／60 日窗口依官方交易日固定；價格缺日保留缺口，休市信號不得計入已驗證結果。日曆不足時停止寫入；接受時仍以同一短交易原子保存結果與日曆，日曆衝突或 checkpoint 不可保存時整批回滾，不輸出成功報告。CLI 不自行抓取或補建官方日曆，唯讀與 fixture 報告模式維持原有行為。

@@ -23,6 +23,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 from ai_stock_sentinel.daily_radar.validation_preparation import (
     accept_validation_results, capture_validation_acceptance,
 )
+from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
 from ai_stock_sentinel.db.session import _get_session_local
 
 
@@ -65,7 +66,16 @@ def main() -> None:
                 start_date=start_date,
                 end_date=args.as_of_date,
             )
+            calendar = None
             if args.write_results:
+                if args.market != "TW" or benchmark_symbol != "TAIEX":
+                    raise ValueError("official_trading_calendar_scope_unsupported")
+                signals = [date.fromisoformat(c["record_date"]) for c in candidates]
+                first_signal = min(signals, default=start_date)
+                calendar = load_calendar(session, start_date=first_signal, as_of_date=args.as_of_date)
+                if (calendar is None or calendar.through < args.as_of_date
+                        or any(not calendar.start <= signal <= calendar.through for signal in signals)):
+                    raise ValueError("official_trading_calendar_unavailable")
                 session.rollback()  # Plain inputs are collected; acceptance owns a fresh short transaction.
             evaluation = build_forward_validation_report(
                 candidates,
@@ -76,9 +86,10 @@ def main() -> None:
                 as_of_date=args.as_of_date,
                 windows=windows,
                 benchmark_symbol=benchmark_symbol,
+                trading_calendar=calendar.sessions if calendar is not None else None,
             )
             if args.write_results:
-                accept_validation_results(session, evaluation.outcomes, calendar=None, acceptance=acceptance)
+                accept_validation_results(session, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
                 session.commit()
 
     if args.output is not None:
@@ -108,7 +119,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--write-results",
         action="store_true",
-        help="Persist db-mode validation rows. Official production writes should normally use the internal API.",
+        help="Persist db-mode validation rows with stored official TW/TAIEX calendar coverage. "
+             "Official production writes should normally use the internal API.",
     )
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
