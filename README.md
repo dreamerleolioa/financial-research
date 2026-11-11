@@ -258,6 +258,7 @@ FUNDAMENTAL_PROVIDER_MODE="finmind_only"             # finmind_only | official_c
 ### 生產環境（Cloud Run 設定與 Secret Manager）
 
 正式部署基準見 `scripts/gcp/production-env.yaml`；敏感值由 Secret Manager 注入，詳細權限及人工 migration gate 見 [正式準備手冊](docs/gcp-production-preparation-runbook.md)。
+部署前唯讀 schema 檢查、一次性 job／最小 IAM 設定及獨立 owner migration 見 [正式 schema 與 migration 流程](docs/gcp-schema-migration-runbook.md)。
 
 | 名稱                | 值                                                   |
 | ------------------- | ---------------------------------------------------- |
@@ -288,7 +289,9 @@ EPS 歷史回補仍保存實際觀測時間，後取得的值不會回填為較�
 
 `1b2c3d4e5f6a_repair_synthetic_split_ledger_quantity` 會修正既有 portfolio/event facts；`2c3d4e5f6a7b_align_calibration_sample_identity` 會鎖定並 canonicalize calibration samples/results。這一版不可讓任何舊版 backend、`/analyze` capture、forward-validation 或 portfolio writer 與 migration 做 rolling overlap。
 
-部署時必須依序執行：
+以下保留該版 Zeabur 的部署門檻；目前 GCP 正式環境使用獨立 owner migration，不在 API startup 執行 upgrade，操作順序以 [正式 schema 與 migration 流程](docs/gcp-schema-migration-runbook.md) 為準。
+
+該版 Zeabur 部署時必須依序執行：
 
 1. 進入 maintenance mode 並停止所有舊版 backend instances；只封鎖 portfolio writes 不足以保護 calibration migration。
 2. 建立可還原的 migration 前資料庫備份，先盤點 calibration tables 的 row count、duplicate identity 數量與可接受維護窗口，確認後暫時設定 `CALIBRATION_MIGRATION_BACKUP_CONFIRMED=2c3d4e5f6a7b`。`2c3d4e5f6a7b` 會刪除非 canonical 的歷史 calibration duplicates，缺少此精確確認值時 migration 會中止；它也刻意禁止 Alembic downgrade，需要回退時必須還原備份。
@@ -346,7 +349,7 @@ make run-api
 
 預設開啟：`http://127.0.0.1:8000`
 
-所有 API 啟動入口都會先執行 Alembic upgrade；migration 缺少人工確認、逾時或執行失敗時必須直接中止啟動，不得只記錄錯誤後在舊 schema 上提供服務。資料庫已位於 head 時不需要保留一次性的 migration confirmation variable。
+API lifespan 依 `DATABASE_MIGRATION_MODE` 執行 upgrade 或 verify；GCP 正式固定使用 `verify`，並在部署前以唯讀 job 檢查 schema。獨立 migration 缺少人工確認、逾時或執行失敗時必須中止，API 版本驗證失敗也不得在舊 schema 上提供服務。未指定模式的本機／舊 Zeabur 入口仍使用原本 upgrade 行為。
 
 - `GET /health`
 - `POST /analyze` — 新倉策略分析

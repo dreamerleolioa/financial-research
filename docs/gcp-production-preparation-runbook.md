@@ -59,7 +59,9 @@ WIF 額外限定 repo/owner 數字 ID、相同分支、事件、workflow 路徑�
 部署先檢查既有服務仍私有且使用正確 DB、身分與 secret，再建置固定 digest 映像，
 對該映像執行 PG17 驗證後更新服務，最後檢查 IAM、ready revision、100% traffic 與實際 health。
 API startup 只驗證 Alembic 版本；不會自動 upgrade。
-需要 migration 時，另外使用 `scripts/gcp/migrate-production.sh`，核對備份 SHA-256 並明確確認所有 writer 已排空。
+部署前現在還會以獨立唯讀 job 比對正式 schema 與同一映像的 head；不符時在更新服務前停止。
+需要 migration 時，另外使用 `scripts/gcp/migrate-production.sh`，核對實際備份、還原驗證、核准版本及 writer drain。
+一次性唯讀 job／最小 IAM 設定與完整操作見 [正式 schema 與 migration 流程](gcp-schema-migration-runbook.md)。
 一般 CI 不執行該命令。
 
 ## 2026-10-19 副本證據

@@ -4,6 +4,8 @@ GCP 已於 2026-10-19 完成正式資料還原與入口切換，2026-10-20 完�
 ETF、分析與寫入讀回驗收。歷史排程補跑的資料完整性另列下方，不以功能驗收代替資料 ready。
 既有測試服務已退役；Zeabur 財務 API 保留暫停狀態及回復資料，共用 PostgreSQL／health 等其他服務保留。
 
+後續新版部署的 schema preflight、獨立 migration、備份與停寫門檻見 [正式 schema 與 migration 流程](gcp-schema-migration-runbook.md)。
+
 ## 2026-10-19 正式切換紀錄
 
 - 已套用 main 限制：GitHub `gcp-production` 只允許 main，保留人工核准及禁止 admin bypass；

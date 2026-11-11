@@ -171,7 +171,7 @@ elif args[:2]==['run','deploy'] and os.environ.get('CLOUD_SERVICE_STATE'):
     assert 'EXPECTED_DATABASE_NAME=financial_research' in updates
     assert 'APP_MAINTENANCE_MODE' not in updates
     assert not any(v.startswith('--env-vars-file=') or v.startswith('--set-env-vars=') for v in deploy[0])
-    assert not any(call[:2] == ['run', 'jobs'] for call in calls)
+    assert all(call[3] == 'financial-research-prod-schema-check' for call in calls if call[:2] == ['run', 'jobs'])
     current['spec']['template']['spec']['containers'][0]['env'].append({'name':'APP_MAINTENANCE_MODE','value':'false'})
     env['SERVICE_JSON']=json.dumps(current)
     env['CLOUD_SERVICE_STATE']=str(tmp_path/'latest-service.json')

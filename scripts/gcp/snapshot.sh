@@ -120,9 +120,9 @@ done < "$list"
 if [[ "$mode" == export-* ]]; then
   gzip -cd "$out/database.sql.gz" | sed -n '/^SELECT pg_catalog.setval(/p' > "$out/sequence-state.sql"
   if command -v sha256sum >/dev/null; then
-    (cd -- "$out" && sha256sum database.sql.gz manifest.jsonl tables.txt sequence-state.sql > SHA256SUMS)
+    (cd -- "$out" && sha256sum database.sql.gz manifest.jsonl tables.txt sequence-state.sql started-at.txt > SHA256SUMS)
   else
-    (cd -- "$out" && shasum -a 256 database.sql.gz manifest.jsonl tables.txt sequence-state.sql > SHA256SUMS)
+    (cd -- "$out" && shasum -a 256 database.sql.gz manifest.jsonl tables.txt sequence-state.sql started-at.txt > SHA256SUMS)
   fi
 fi
 date -u +%FT%TZ > "$out/finished-at.txt"

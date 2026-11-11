@@ -19,8 +19,22 @@ verify_service() {
   gcloud run services get-iam-policy financial-research-prod --project="$GCP_PROJECT_ID" --region=asia-east1 --format=json > "$scratch/iam.json"
   python3 scripts/gcp/verify_production_service.py "$scratch/service.json" "$scratch/iam.json" "$@" --access-mode "$access_mode"
 }
+verify_deployable() {
+  verify_service "$@" > /dev/null
+python3 - "$scratch/service.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+annotations = data['metadata'].get('annotations', {})
+if annotations.get('run.googleapis.com/scalingMode') == 'manual' and annotations.get('run.googleapis.com/manualInstanceCount') == '0':
+    raise SystemExit('Production writer drain is active; deployment is blocked')
+PY
+}
 # CI updates only the existing isolated production service in its declared access mode.
-verify_service --write-env-updates "$scratch/env-updates.txt" > /dev/null
+verify_deployable --write-env-updates "$scratch/env-updates.txt"
+# Same reviewed image, read-only DB role. Fail before changing the API service.
+bash scripts/gcp/check-production-schema.sh "$image"
+# The probe can take time; do not deploy over an operator drain started meanwhile.
+verify_deployable
 gcloud run deploy financial-research-prod \
   --project="$GCP_PROJECT_ID" --region=asia-east1 --image="$image" \
   --service-account="financial-prod-api@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
