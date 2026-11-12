@@ -134,9 +134,9 @@ def test_calendar_rejects_unproven_month():
         TradingCalendar.parse(payload)
 
 
-def evidence_for(row_id, *, missing_stock=(), missing_benchmark=(), anchor=100):
+def evidence_for(row_id, *, missing_stock=(), missing_benchmark=(), anchor=100, proof=None):
     from ai_stock_sentinel.daily_radar.history_repair import fingerprint
-    days=calendar().sessions
+    days=(proof or calendar()).sessions
     prices=[price(d,anchor) for d in days if d not in missing_stock]
     benchmark=[price(d,1000) for d in days if d not in missing_benchmark]
     return {str(row_id):{"prices":prices,"benchmark":benchmark,"source":{
@@ -181,6 +181,48 @@ def test_insufficient_diagnostic_can_be_enriched_later(db):
     diagnostic=later["results"][0]["after"]["outcome"]["observation_diagnostic"]
     assert diagnostic["status"]=="unconfirmed"
     assert later["results"][0]["after"]["outcome"]["forward_return_pct"]==17
+
+
+@pytest.mark.parametrize('reviewed', [False, True])
+@pytest.mark.parametrize('window', [5, 10, 20, 40, 60])
+def test_cli_inventory_includes_current_incomplete_diagnostics_without_changing_returns(db, reviewed, window):
+    import importlib.util
+    from pathlib import Path
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan
+    from ai_stock_sentinel.daily_radar.window_identity import identity
+    _, _, row = stored(db)
+    proof = calendar(row.signal_date, date(2026, 12, 31))
+    days = [d for d in proof.sessions if d > row.signal_date][:window]
+    row.window_days = window
+    row.target_date = days[-1]
+    row.evaluation_as_of_date = proof.through
+    row.outcome = dict(row.outcome) | {'target_date': str(days[-1]),
+        'validation_window': identity(row.signal_date, days, 'signal_close')}
+    steps = ready_steps()
+    steps[CALENDAR_STEP] = proof.payload()
+    steps[SESSION_STEP] = steps[SESSION_STEP] | {'run_date': str(proof.through)}
+    db.add(DailyRadarPreparedRun(run_date=proof.through, market='TW', selected_symbols=[], universe=[],
+        step_statuses=steps))
+    row.outcome = dict(row.outcome) | {'observation_diagnostic': {
+        'version': 'daily-radar-observation-v1', 'status': 'insufficient_data',
+        'missing_reason': 'candidate_history_gap_or_invalid_ohlc',
+        'first_seen_date': str(row.signal_date), 'origin_scope': 'available_public_history'}}
+    if reviewed:
+        row.outcome = dict(row.outcome) | {'historical_repair': {'fixture': 'reviewed'}}
+    db.commit()
+    before = dict(row.outcome)
+    path = Path(__file__).parents[1] / 'scripts' / 'repair_daily_radar_history.py'
+    spec = importlib.util.spec_from_file_location('radar_incomplete_cli', path)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    request = cli.inventory(db, proof)
+    assert request['results'] == [{'id': row.id, 'operation': 'diagnostic'}]
+    plan = build_repair_plan(db, request, calendar=proof, evidence=evidence_for(row.id, proof=proof))
+    after = plan['results'][0]['after']['outcome']
+    assert after['observation_diagnostic']['status'] == 'unconfirmed'
+    assert {k: v for k, v in after.items() if k not in ('observation_diagnostic', 'historical_repair')} == {
+        k: v for k, v in before.items() if k not in ('observation_diagnostic', 'historical_repair')}
+    assert row.outcome == before
 
 
 def test_manifest_tampering_is_rejected(db):
