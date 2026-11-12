@@ -245,6 +245,18 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
         step_keys.append(SESSION_STEP)
         step_after[SESSION_STEP] = {"status": "open", "run_date": str(calendar.through), "market": "TW",
                                   "provider": "twse", "dataset": "MI_5MINS_HIST"}
+        from fastapi import HTTPException
+        from ai_stock_sentinel.daily_radar.market_session import require_prepared_open_session
+        if isinstance((prepared.step_statuses or {}).get(SESSION_STEP), dict):
+            try:
+                require_prepared_open_session(prepared)
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+            else:
+                # The ordinary flow can prove this date with MI_INDEX. Preserve
+                # that verified source while the full calendar remains mandatory.
+                step_after[SESSION_STEP] = deepcopy(prepared.step_statuses[SESSION_STEP])
     plan["prepared"] = {"id": prepared.id, "run_date": str(prepared.run_date),
         "before": {k: deepcopy((prepared.step_statuses or {}).get(k)) for k in step_keys}, "after": step_after}
     # Shared metadata has one separate, reviewed manifest. Result batches must

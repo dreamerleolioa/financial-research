@@ -137,6 +137,6 @@ def require_prepared_open_session(prepared):
             calendar = TradingCalendar.parse(prepared.step_statuses[CALENDAR_STEP])
             if prepared.run_date not in calendar.sessions:
                 raise ValueError("closed")
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, AttributeError):
             raise HTTPException(status_code=409, detail={"code": "market_session_evidence_missing_or_invalid",
                                                     "run_date": str(prepared.run_date)})
