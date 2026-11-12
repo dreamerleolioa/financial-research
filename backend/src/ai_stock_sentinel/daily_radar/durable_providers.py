@@ -2,7 +2,7 @@
 from datetime import date
 import time
 
-from ai_stock_sentinel.calibration.price_provider import YFinanceForwardPriceProvider
+from ai_stock_sentinel.calibration.price_provider import ForwardPriceUnavailableError, YFinanceForwardPriceProvider
 from ai_stock_sentinel.calibration.research_prices import ResearchSourceError
 from ai_stock_sentinel.data_sources.official_http import official_request_get
 
@@ -24,7 +24,7 @@ class CachedForwardPrices:
                 def fetch(symbol=symbol):
                     rows = self.provider.fetch([symbol], start_date=start_date, end_date=end_date).get(symbol)
                     if not rows:
-                        raise RuntimeError("forward_price_provider_returned_no_data")
+                        raise ForwardPriceUnavailableError([symbol], start_date=start_date, end_date=end_date)
                     return {"rows": list(rows)}
                 captured = self.source_store.capture_sdk(operation="forward-adjusted-history", params=params, fetch=fetch)
             payload, proof = captured
