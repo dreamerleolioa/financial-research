@@ -27,6 +27,41 @@ def conflict(endpoint, body):
     return HTTPError(endpoint, 409, "Conflict", {}, BytesIO(body))
 
 
+@pytest.mark.parametrize('latency,budget,expected', [(442, 900, 0), (901, 900, 1), (8, 10, 0)])
+def test_default_validation_transport_uses_the_basis_budget(tmp_path, monkeypatch, latency, budget, expected):
+    from contextlib import contextmanager
+    from io import BytesIO
+    import daily_radar_http
+
+    module = runner()
+    now = [0]
+    requests = []
+
+    @contextmanager
+    def deadline(seconds):
+        started = now[0]
+        yield
+        if now[0] - started > seconds:
+            raise TimeoutError('wall clock limit exceeded')
+
+    class Opener:
+        def open(self, request, *, timeout):
+            requests.append(timeout)
+            now[0] += min(latency, timeout)
+            if latency > timeout:
+                raise TimeoutError('socket timeout')
+            return BytesIO(json.dumps({'status': 'completed', 'as_of_date': '2026-11-11',
+                'retryable_skipped_count': 0, 'report': {'remaining_retryable_window_count': 0}}).encode())
+
+    monkeypatch.setattr(daily_radar_http, 'build_opener', lambda *args: Opener())
+    monkeypatch.setattr(module, 'request_deadline', deadline)
+    assert module.run(endpoint='https://test.invalid', token='fixture', run_date='2026-11-11',
+        output_dir=tmp_path, return_bases=('signal_close',), basis_timeout=budget,
+        clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds)) == expected
+    assert requests == [budget]
+    assert now[0] <= budget
+
+
 @pytest.mark.parametrize("basis", ["signal_close", "next_open"])
 @pytest.mark.parametrize("code", ["validation_inputs_changed", "validation_results_changed"])
 def test_conflict_recollects_the_same_full_window_request(tmp_path, basis, code):
@@ -250,7 +285,7 @@ def test_readiness_request_uses_remaining_basis_budget(tmp_path,monkeypatch):
         return complete_readiness(endpoint,token)
     assert module.run(endpoint='test',token='private',run_date='2026-11-06',output_dir=tmp_path,
         request=post,readiness_request=late,clock=lambda:now[0],sleep=lambda _:None)==1
-    assert deadlines==[300,1,300,1]
+    assert deadlines==[900,1,900,1]
     assert all(json.loads(p.read_text())['runner']['stop_reason']=='budget_exhausted' for p in tmp_path.glob('*.json'))
 
 
@@ -509,6 +544,6 @@ def test_recovery_budget_limits_the_remaining_request_and_wait(tmp_path, monkeyp
     assert module.run(endpoint="test", token="private", run_date="2026-11-03",
         output_dir=tmp_path, request=post, sleep=sleep, clock=lambda: now[0]) == 1
     assert sleeps == [2]
-    assert deadlines == [300, 180, 300]
+    assert deadlines == [900, 180, 900]
     summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert summaries[-2]["stop_reason"] == "budget_exhausted"

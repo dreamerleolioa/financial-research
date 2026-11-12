@@ -107,6 +107,85 @@ def test_diagnostic_repair_preserves_returns_and_is_reversible(db):
     assert row.outcome==original
 
 
+@pytest.mark.parametrize('dataset', ['MI_INDEX', 'MI_5MINS_HIST'])
+def test_result_repair_preserves_verified_open_session_source(db, dataset):
+    from copy import deepcopy
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan, apply_repair_plan
+    _, _, row = stored(db)
+    prepared = db.scalar(select(DailyRadarPreparedRun))
+    steps = deepcopy(prepared.step_statuses)
+    steps[SESSION_STEP]['dataset'] = dataset
+    prepared.step_statuses = steps
+    db.commit()
+    original = deepcopy(row.outcome)
+    request = {'results': [{'id': row.id, 'operation': 'diagnostic'}]}
+    plan = build_repair_plan(db, request, calendar=calendar(), evidence=evidence_for(row.id))
+    assert plan['prepared']['before'] == plan['prepared']['after']
+    assert plan['prepared']['after'][SESSION_STEP] == steps[SESSION_STEP]
+    apply_repair_plan(db, plan, expected_sha256=plan['sha256'])
+    db.commit()
+    assert prepared.step_statuses == steps
+    apply_repair_plan(db, plan, expected_sha256=plan['sha256'], rollback=True)
+    db.commit()
+    assert prepared.step_statuses == steps and row.outcome == original
+
+
+@pytest.mark.parametrize('invalid', [
+    {'dataset': 'unknown'}, {'provider': 'unknown'}, {'status': 'closed'},
+    {'run_date': '2026-09-23'}, {'market': 'US'}, {'missing_calendar': True},
+])
+def test_result_repair_still_requires_verified_calendar_and_open_session(db, invalid):
+    from copy import deepcopy
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan
+    _, _, row = stored(db)
+    prepared = db.scalar(select(DailyRadarPreparedRun))
+    steps = deepcopy(prepared.step_statuses)
+    steps[SESSION_STEP]['dataset'] = 'MI_INDEX'
+    if invalid.get('missing_calendar'):
+        steps.pop(CALENDAR_STEP)
+    else:
+        steps[SESSION_STEP].update(invalid)
+    prepared.step_statuses = steps
+    db.commit()
+    with pytest.raises(ValueError, match='repair_calendar_phase_required'):
+        build_repair_plan(db, {'results': [{'id': row.id, 'operation': 'diagnostic'}]},
+            calendar=calendar(), evidence=evidence_for(row.id))
+    assert prepared.step_statuses == steps
+
+
+@pytest.mark.parametrize('malformed', [['unverified'], 'open', True])
+def test_metadata_plan_can_repair_malformed_open_session_proof(db, malformed):
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan
+    stored(db)
+    prepared = db.scalar(select(DailyRadarPreparedRun))
+    prepared.step_statuses = dict(prepared.step_statuses) | {SESSION_STEP: malformed}
+    db.commit()
+    plan = build_repair_plan(db, {'results': [], 'invalid_run_ids': []}, calendar=calendar(), evidence={})
+    assert plan['results'] == []
+    assert plan['prepared']['before'][SESSION_STEP] == malformed
+    assert plan['prepared']['after'][SESSION_STEP] == ready_steps()[SESSION_STEP]
+    assert prepared.step_statuses[SESSION_STEP] == malformed
+
+
+@pytest.mark.parametrize('kind', ['list', 'text', 'boolean', 'malformed_report'])
+def test_metadata_plan_can_recover_malformed_calendar_but_result_plan_still_requires_phase(db, kind):
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan
+    _, _, row = stored(db)
+    prepared = db.scalar(select(DailyRadarPreparedRun))
+    malformed = {'list': [], 'text': 'unverified', 'boolean': True,
+        'malformed_report': calendar().payload() | {'reports': [True]}}[kind]
+    prepared.step_statuses = dict(prepared.step_statuses) | {CALENDAR_STEP: malformed}
+    db.commit()
+    metadata = build_repair_plan(db, {'results': [], 'invalid_run_ids': []}, calendar=calendar(), evidence={})
+    assert metadata['results'] == []
+    assert metadata['prepared']['before'][CALENDAR_STEP] == malformed
+    assert metadata['prepared']['after'][CALENDAR_STEP] == calendar().payload()
+    with pytest.raises(ValueError, match='repair_calendar_phase_required'):
+        build_repair_plan(db, {'results': [{'id': row.id, 'operation': 'diagnostic'}]},
+            calendar=calendar(), evidence=evidence_for(row.id))
+    assert prepared.step_statuses[CALENDAR_STEP] == malformed
+
+
 def test_repair_cas_rejects_concurrent_changes_before_writing(db):
     from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan, apply_repair_plan
     _,_,row=stored(db)
@@ -134,9 +213,9 @@ def test_calendar_rejects_unproven_month():
         TradingCalendar.parse(payload)
 
 
-def evidence_for(row_id, *, missing_stock=(), missing_benchmark=(), anchor=100):
+def evidence_for(row_id, *, missing_stock=(), missing_benchmark=(), anchor=100, proof=None):
     from ai_stock_sentinel.daily_radar.history_repair import fingerprint
-    days=calendar().sessions
+    days=(proof or calendar()).sessions
     prices=[price(d,anchor) for d in days if d not in missing_stock]
     benchmark=[price(d,1000) for d in days if d not in missing_benchmark]
     return {str(row_id):{"prices":prices,"benchmark":benchmark,"source":{
@@ -181,6 +260,48 @@ def test_insufficient_diagnostic_can_be_enriched_later(db):
     diagnostic=later["results"][0]["after"]["outcome"]["observation_diagnostic"]
     assert diagnostic["status"]=="unconfirmed"
     assert later["results"][0]["after"]["outcome"]["forward_return_pct"]==17
+
+
+@pytest.mark.parametrize('reviewed', [False, True])
+@pytest.mark.parametrize('window', [5, 10, 20, 40, 60])
+def test_cli_inventory_includes_current_incomplete_diagnostics_without_changing_returns(db, reviewed, window):
+    import importlib.util
+    from pathlib import Path
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan
+    from ai_stock_sentinel.daily_radar.window_identity import identity
+    _, _, row = stored(db)
+    proof = calendar(row.signal_date, date(2026, 12, 31))
+    days = [d for d in proof.sessions if d > row.signal_date][:window]
+    row.window_days = window
+    row.target_date = days[-1]
+    row.evaluation_as_of_date = proof.through
+    row.outcome = dict(row.outcome) | {'target_date': str(days[-1]),
+        'validation_window': identity(row.signal_date, days, 'signal_close')}
+    steps = ready_steps()
+    steps[CALENDAR_STEP] = proof.payload()
+    steps[SESSION_STEP] = steps[SESSION_STEP] | {'run_date': str(proof.through)}
+    db.add(DailyRadarPreparedRun(run_date=proof.through, market='TW', selected_symbols=[], universe=[],
+        step_statuses=steps))
+    row.outcome = dict(row.outcome) | {'observation_diagnostic': {
+        'version': 'daily-radar-observation-v1', 'status': 'insufficient_data',
+        'missing_reason': 'candidate_history_gap_or_invalid_ohlc',
+        'first_seen_date': str(row.signal_date), 'origin_scope': 'available_public_history'}}
+    if reviewed:
+        row.outcome = dict(row.outcome) | {'historical_repair': {'fixture': 'reviewed'}}
+    db.commit()
+    before = dict(row.outcome)
+    path = Path(__file__).parents[1] / 'scripts' / 'repair_daily_radar_history.py'
+    spec = importlib.util.spec_from_file_location('radar_incomplete_cli', path)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    request = cli.inventory(db, proof)
+    assert request['results'] == [{'id': row.id, 'operation': 'diagnostic'}]
+    plan = build_repair_plan(db, request, calendar=proof, evidence=evidence_for(row.id, proof=proof))
+    after = plan['results'][0]['after']['outcome']
+    assert after['observation_diagnostic']['status'] == 'unconfirmed'
+    assert {k: v for k, v in after.items() if k not in ('observation_diagnostic', 'historical_repair')} == {
+        k: v for k, v in before.items() if k not in ('observation_diagnostic', 'historical_repair')}
+    assert row.outcome == before
 
 
 def test_manifest_tampering_is_rejected(db):

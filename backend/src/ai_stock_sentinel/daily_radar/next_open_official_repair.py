@@ -174,9 +174,11 @@ def collect_window(candidate, before, row, *, calendar, provider):
             used_index = rights._unadjusted_rows(index, 'index_not_applicable')
         else:
             used_stock, used_index = marked, benchmark
+        session_dates = {str(d) for d in sessions}
+        benchmark_dates = {str(signal), *session_dates}
         row['outcome'][KEY].update(
-            calculation_stock=[deepcopy(r) for r in used_stock if str(signal) < r['date'] <= str(target)],
-            calculation_benchmark=[deepcopy(r) for r in used_index if str(signal) <= r['date'] <= str(target)])
+            calculation_stock=[deepcopy(r) for r in used_stock if r['date'] in session_dates],
+            calculation_benchmark=[deepcopy(r) for r in used_index if r['date'] in benchmark_dates])
     if scope is not None:
         action_scope.result_matches(scope, row)
     return row

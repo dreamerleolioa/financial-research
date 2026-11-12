@@ -63,8 +63,8 @@ class Prices:
         return rows[:max_rows] if max_rows else rows
 
 
-def seed(db):
-    cal = calendar(date(2025,9,1), DAY)
+def seed(db, *, closed=()):
+    cal = calendar(date(2025,9,1), DAY, closed=closed)
     c = add_candidate(db, add_run(db, SIGNAL))
     c.data_dates = {'ohlcv': str(SIGNAL)}
     c.input_snapshot = dict(c.input_snapshot) | {'ohlcv': {'close': 100}}
@@ -132,6 +132,44 @@ def test_incomplete_full_window_does_not_create_a_manifest(db):
     with pytest.raises(ValueError,match='next_open_repair_incomplete'):
         tool.build_repair_plan(bind,request,calendar=cal,evidence=evidence)
     assert {r.id:result_snapshot(r) for r in db.scalars(select(Result))}==before
+
+
+@pytest.mark.parametrize('extra_source', ['stock', 'benchmark', 'both'])
+def test_calculation_evidence_uses_only_official_sessions_for_all_windows(db, extra_source):
+    closed = date(2026, 6, 3)
+    cal, candidate, ids, before = seed(db, closed=(closed,))
+    tool = api()
+    request = tool.inventory(db, calendar=cal)
+    bind = db.get_bind()
+    db.rollback()
+
+    class ExtraClosedDayPrices(Prices):
+        def fetch(self, symbols, *, start_date, end_date):
+            result = super().fetch(symbols, start_date=start_date, end_date=end_date)
+            for symbol, rows in result.items():
+                wanted = extra_source == 'both' or (symbol == 'TAIEX') == (extra_source == 'benchmark')
+                if wanted and start_date <= closed <= end_date:
+                    rows.append(price(str(closed), open_=9999, close=9999))
+                    rows.sort(key=lambda row: row['date'])
+            return result
+
+        def official_research_history(self, symbol, *, start_date, end_date, max_rows=None):
+            return Prices(cal).official_research_history(symbol, start_date=start_date,
+                end_date=end_date, max_rows=max_rows)
+
+    clean = tool.capture_evidence(bind, request, calendar=cal, provider=Prices(cal))
+    expected = tool.build_repair_plan(bind, request, calendar=cal, evidence=clean)
+    captured = tool.capture_evidence(bind, request, calendar=cal, provider=ExtraClosedDayPrices(cal))
+    plan = tool.build_repair_plan(bind, request, calendar=cal, evidence=captured)
+    assert {row['after']['window_days'] for row in plan['results']} == {5, 10, 20, 40, 60}
+    for actual, baseline in zip(plan['results'], expected['results'], strict=True):
+        outcome = actual['after']['outcome']
+        proof = outcome['reviewed_official_window']
+        assert [r['date'] for r in proof['calculation_stock']] == proof['session_dates']
+        assert [r['date'] for r in proof['calculation_benchmark']] == [str(SIGNAL), *proof['session_dates']]
+        assert {k: v for k, v in outcome.items() if k != 'historical_repair'} == {
+            k: v for k, v in baseline['after']['outcome'].items() if k != 'historical_repair'}
+    assert {r.id: result_snapshot(r) for r in db.scalars(select(Result))} == before
 
 
 def test_capture_and_manifest_reject_input_drift_and_tampering(db):

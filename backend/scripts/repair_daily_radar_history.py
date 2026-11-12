@@ -82,10 +82,10 @@ def inventory(session, calendar):
             diagnostic = row.outcome.get("observation_diagnostic") or {}
             current = diagnostic.get("version") == OBSERVATION_DIAGNOSTIC_VERSION
             changed = current and diagnostic_origin_changed(c,diagnostic,origin)
-            if (row.window_days in (5,10,20) and c["selection_status"]=="selected"
+            if (c["selection_status"]=="selected"
                     and (origin.get("candidate_id")==c["candidate_id"] or changed)
                     and (not current or changed
-                         or row.outcome.get("historical_repair") and diagnostic.get("status")=="insufficient_data")):
+                         or diagnostic.get("status")=="insufficient_data")):
                 targets.append({"id":row.id,"operation":"diagnostic"})
     return {"version":VERSION,"as_of_date":str(calendar.through),"calendar_sha256":fingerprint(calendar.payload()),
             "invalid_run_ids":closed_ids,"results":targets,
