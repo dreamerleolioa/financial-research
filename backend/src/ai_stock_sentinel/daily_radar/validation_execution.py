@@ -1,8 +1,10 @@
 """Shared signal-close execution with a read-only collection seam for durable work."""
+from collections import Counter
 from datetime import date
 import logging
 from fastapi import HTTPException
 from ai_stock_sentinel.calibration.forward_validation_planning import prepare_due_forward_validation
+from ai_stock_sentinel.calibration.price_provider import ForwardPriceUnavailableError
 from ai_stock_sentinel.calibration.runtime_metrics import ForwardValidationMetrics
 from ai_stock_sentinel.daily_radar.presenter import parse_date
 from ai_stock_sentinel.daily_radar.forward_validation import (
@@ -89,10 +91,30 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         except Exception as exc:
             raise HTTPException(status_code=503, detail={"code": "official_trading_calendar_unavailable"}) from exc
 
+    source_errors = []
+
     def fetch_prices(symbols, *, start_date, end_date):
         db.rollback()
+        remaining = sorted(set(symbols))
         with metrics.stage("fetch_prices", batch_symbol_count=len(symbols)):
-            return price_provider.fetch(symbols, start_date=start_date, end_date=end_date)
+            while remaining:
+                try:
+                    return price_provider.fetch(remaining, start_date=start_date, end_date=end_date)
+                except ForwardPriceUnavailableError as exc:
+                    unavailable = set(exc.symbols)
+                    if (not unavailable or not unavailable.issubset(remaining)
+                            or exc.start_date != start_date or exc.end_date != end_date):
+                        raise
+                    source_errors.append({"stage": "fetch_prices", "symbols": sorted(unavailable),
+                        "start_date": str(start_date), "end_date": str(end_date),
+                        "error_type": type(exc).__name__, "reason": str(exc)})
+                    logger.warning("Forward prices unavailable symbols=%s start_date=%s end_date=%s reason=%s",
+                        sorted(unavailable), start_date, end_date, exc)
+                    # A cached provider may already have captured earlier symbols.
+                    # Re-read those snapshots and collect the rest, excluding each
+                    # unavailable symbol once. Never retry the same empty input.
+                    remaining = [symbol for symbol in remaining if symbol not in unavailable]
+            return {}
 
     windows_by_candidate = None
     if request.mode == "due":
@@ -149,7 +171,8 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         )
     if prepare_only:
         return ValidationPreparation(candidates=candidates, outcomes=evaluation.outcomes, calendar=calendar,
-            as_of_date=as_of_date, return_basis="signal_close", benchmark_prices=benchmark_prices)
+            as_of_date=as_of_date, return_basis="signal_close", benchmark_prices=benchmark_prices,
+            diagnostics=source_errors)
     with metrics.stage("upsert"):
         write_summary = accept_validation_results(db, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
         metrics.counts["records_written"] = write_summary["records_written"]
@@ -174,6 +197,11 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
             trading_calendar=calendar.sessions if calendar else None,
         )
         report.update({key: evaluation.report[key] for key in ("current_run_skip_reasons", "current_run_gaps")})
+        if source_errors:
+            report.update({"source_recovery": source_errors[:64], "source_recovery_summary": {
+                "total_count": len(source_errors), "reported_count": min(len(source_errors), 64),
+                "truncated": len(source_errors) > 64, "error_count": len(source_errors),
+                "error_reasons": dict(Counter(row["reason"] for row in source_errors))}})
     with metrics.stage("commit"):
         db.commit()
     return DailyRadarForwardValidationRunResponse(

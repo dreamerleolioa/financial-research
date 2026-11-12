@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from typing import Any, Protocol
 
@@ -17,6 +18,16 @@ BENCHMARK_YFINANCE_SYMBOLS = {
 }
 
 
+class ForwardPriceUnavailableError(RuntimeError):
+    """A requested source returned no rows; this does not prove termination."""
+
+    def __init__(self, symbols: Sequence[str], *, start_date: date, end_date: date):
+        super().__init__("forward_price_provider_returned_no_data")
+        self.symbols = tuple(sorted(set(symbols)))
+        self.start_date = start_date
+        self.end_date = end_date
+
+
 class ForwardPriceProvider(Protocol):
     def fetch(
         self,
@@ -25,6 +36,78 @@ class ForwardPriceProvider(Protocol):
         start_date: date,
         end_date: date,
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]: ...
+
+
+class _ForwardHistoryData:
+    """Check responses on this ticker only, without changing global SDK flags."""
+
+    def __init__(self, data, *, unavailable):
+        self.data = data
+        self.unavailable = unavailable
+        self.failure = None
+        self.source_empty = False
+        self.timezone_only = False
+        self.metadata_empty = False
+        self.metadata_failures = []
+
+    def __getattr__(self, name):
+        return getattr(self.data, name)
+
+    def _request(self, method, *args, **kwargs):
+        self.failure = None
+        self.source_empty = False
+        try:
+            response = getattr(self.data, method)(*args, **kwargs)
+            # Yahoo's explicit not-found response may represent unavailable
+            # history. Authentication, rate-limit and server errors must fail.
+            if response.status_code >= 400 and response.status_code != 404:
+                response.raise_for_status()
+            url = kwargs.get("url", args[0] if args else "")
+            if "/v8/finance/chart/" in url:
+                body = response.json()
+                chart = body.get("chart") if isinstance(body, dict) else None
+                if isinstance(chart, dict):
+                    error, result = chart.get("error"), chart.get("result")
+                    if isinstance(error, dict) and error.get("code") == "Not Found":
+                        self.source_empty = True
+                    elif error is None and "result" in chart:
+                        if result is None or result == []:
+                            self.source_empty = True
+                        elif isinstance(result, list) and isinstance(result[0], dict):
+                            indicators = result[0].get("indicators") or {}
+                            quotes = indicators.get("quote") if isinstance(indicators, dict) else None
+                            self.source_empty = quotes in ([], [{}])
+                if self.source_empty:
+                    if self.timezone_only:
+                        # Recent quotes are not evidence for the dated history.
+                        # Let the native metadata lookup use its info fallback.
+                        self.metadata_empty = True
+                    else:
+                        raise self.unavailable
+            return response
+        except Exception as exc:
+            self.failure = exc
+            if self.timezone_only:
+                self.metadata_failures.append(exc)
+            raise
+
+    def get(self, *args, **kwargs):
+        return self._request("get", *args, **kwargs)
+
+    def cache_get(self, *args, **kwargs):
+        return self._request("cache_get", *args, **kwargs)
+
+    def get_raw_json(self, *args, **kwargs):
+        try:
+            return self.data.get_raw_json(*args, **kwargs)
+        except Exception as exc:
+            if self.timezone_only and getattr(getattr(exc, "response", None), "status_code", None) == 404:
+                self.metadata_empty = True
+                return {}
+            self.failure = exc
+            if self.timezone_only:
+                self.metadata_failures.append(exc)
+            raise
 
 
 class YFinanceForwardPriceProvider:
@@ -45,28 +128,66 @@ class YFinanceForwardPriceProvider:
             symbol: BENCHMARK_YFINANCE_SYMBOLS.get(symbol, symbol)
             for symbol in ordered_symbols
         }
-        history = yf.download(
-            sorted(set(provider_symbols.values())),
-            group_by="ticker",
-            start=start_date,
-            end=end_date + timedelta(days=1),
-            interval="1d",
-            threads=True,
-            progress=False,
-            auto_adjust=self.auto_adjust,
-            actions=self.actions,
-        )
-        if history is None or getattr(history, "empty", False):
-            raise RuntimeError("forward_price_provider_returned_no_data")
-        return {
-            symbol: rows
-            for symbol, provider_symbol in provider_symbols.items()
-            if (rows := _price_rows(
-                _symbol_frame(history, provider_symbol),
-                research=not self.auto_adjust,
-                benchmark=symbol in BENCHMARK_YFINANCE_SYMBOLS,
-            ))
-        }
+
+        def fetch_symbol(symbol):
+            provider_symbol = provider_symbols[symbol]
+            ticker = yf.Ticker(provider_symbol)
+            # Ticker owns this attribute; the shared YfData singleton and its
+            # config/session remain untouched. Preserve failures that timezone
+            # discovery would otherwise hide behind a missing-data exception.
+            unavailable = ForwardPriceUnavailableError([symbol], start_date=start_date, end_date=end_date)
+            data = _ForwardHistoryData(ticker._data, unavailable=unavailable)
+            ticker._data = data
+            ticker._quote._data = data
+            native_timezone = ticker._get_ticker_tz
+
+            def timezone_info():
+                # Only timezone fields are needed, not Quote.info's extra
+                # fundamental requests or its broad parser-error suppression.
+                ticker._quote._fetch_info()
+                return ticker._quote._info or {}
+
+            ticker.get_info = timezone_info
+
+            def checked_timezone(timeout):
+                data.timezone_only = True
+                data.metadata_empty = False
+                data.metadata_failures.clear()
+                try:
+                    timezone = native_timezone(timeout)
+                finally:
+                    data.timezone_only = False
+                if timezone is None:
+                    if data.metadata_failures:
+                        raise data.metadata_failures[0]
+                    if data.metadata_empty:
+                        raise unavailable
+                return timezone
+
+            ticker._get_ticker_tz = checked_timezone
+            try:
+                history = ticker.history(start=start_date, end=end_date + timedelta(days=1),
+                    period=None, interval="1d", auto_adjust=self.auto_adjust,
+                    actions=self.actions, raise_errors=True)
+            except ForwardPriceUnavailableError as exc:
+                if exc is not unavailable:
+                    raise
+                return symbol, []
+            if history is None or getattr(history, "empty", False):
+                if data.failure is not None:
+                    raise data.failure
+                return symbol, []
+            return symbol, _price_rows(_symbol_frame(history, provider_symbol),
+                research=not self.auto_adjust, benchmark=symbol in BENCHMARK_YFINANCE_SYMBOLS)
+
+        # yf.download catches every Ticker error and substitutes empty frames.
+        # Per-ticker strict history keeps those failures visible, with bounded
+        # concurrency rather than process-wide exception configuration changes.
+        with ThreadPoolExecutor(max_workers=min(8, len(ordered_symbols))) as pool:
+            result = {symbol: rows for symbol, rows in pool.map(fetch_symbol, ordered_symbols) if rows}
+        if not result:
+            raise ForwardPriceUnavailableError(ordered_symbols, start_date=start_date, end_date=end_date)
+        return result
 
 
 class YFinanceResearchPriceProvider(YFinanceForwardPriceProvider):
@@ -175,6 +296,7 @@ def _index_date(value: Any) -> date | None:
 
 
 __all__ = [
+    "ForwardPriceUnavailableError",
     "ForwardPriceProvider",
     "YFinanceForwardPriceProvider",
     "get_forward_price_provider",

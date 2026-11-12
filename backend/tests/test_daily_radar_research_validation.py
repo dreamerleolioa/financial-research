@@ -127,16 +127,17 @@ def test_reference_calendar_catches_missing_index_session_instead_of_shifting_ta
 
 def test_research_provider_explicitly_requests_unadjusted_prices_and_preserves_missing_open(monkeypatch):
     calls = []
-    def download(symbols, **kwargs):
+    def history(ticker, **kwargs):
         calls.append(kwargs)
         return pd.DataFrame({"Open": [float("nan")], "High": [105], "Low": [95],
                              "Close": [100], "Dividends": [2], "Stock Splits": [0]},
                             index=pd.to_datetime(["2026-06-08"]))
-    monkeypatch.setattr(price_provider.yf, "download", download)
+    monkeypatch.setattr(price_provider.yf.Ticker, "history", history)
     rows = price_provider.get_research_price_provider().fetch(
         ["2330.TW"], start_date=date(2026, 6, 5), end_date=date(2026, 6, 9))["2330.TW"]
     assert calls[0]["auto_adjust"] is False
     assert calls[0]["actions"] is True
+    assert calls[0]["raise_errors"] is True
     assert rows[0]["open"] is None
     assert rows[0]["price_basis"] == "unadjusted_price"
     assert rows[0]["corporate_actions_checked"] is True

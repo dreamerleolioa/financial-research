@@ -58,6 +58,48 @@ def test_429_honors_retry_after_and_does_not_become_empty_data(pg_engine, monkey
         SourceSnapshotStore(pg_engine).capture(**kwargs, fetch=lambda: pytest.fail('cooldown ignored'))
 
 
+def test_empty_forward_symbol_preserves_snapshots_and_flushed_caller_write(pg_engine, monkeypatch):
+    from datetime import date
+    from ai_stock_sentinel.calibration.price_provider import ForwardPriceUnavailableError
+    from ai_stock_sentinel.daily_radar.durable_providers import CachedForwardPrices
+    from ai_stock_sentinel.db.models import DailyRadarRun
+    setup_queue(pg_engine); enable(monkeypatch)
+    day = date(2026, 11, 11)
+    calls = []
+
+    class Prices:
+        def fetch(self, symbols, **kwargs):
+            calls.extend(symbols)
+            return {s: [{'date': str(day), 'close': 100}] for s in symbols if s != '8183.TWO'}
+
+    with Session(pg_engine) as caller:
+        row = DailyRadarRun(run_date=day, market='TW', status='completed')
+        caller.add(row); caller.flush()
+        run_id = row.id
+        assert not (caller.new or caller.dirty)
+        provider = CachedForwardPrices(caller, store=SourceSnapshotStore(pg_engine), provider=Prices())
+        with pytest.raises(ForwardPriceUnavailableError) as error:
+            provider.fetch(['1101.TW', '8183.TWO', '9904.TW'], start_date=day, end_date=day)
+        assert error.value.symbols == ('8183.TWO',)
+        # Radar resumes the remaining symbols; prior captures are read, never
+        # fetched again or rolled back with the caller's flushed domain write.
+        result = provider.fetch(['1101.TW', '9904.TW'], start_date=day, end_date=day)
+        assert set(result) == {'1101.TW', '9904.TW'}
+        caller.commit()
+    assert calls == ['1101.TW', '8183.TWO', '9904.TW']
+    with Session(pg_engine) as db:
+        assert db.get(DailyRadarRun, run_id) is not None
+        snapshots = list(db.scalars(select(RadarSourceSnapshot)))
+        assert {row.request['params']['symbol'] for row in snapshots} == {'1101.TW', '9904.TW'}
+        assert len(snapshots) == 2
+        source = db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage == 'source-capture',
+            RadarWorkItem.scope['request']['params']['symbol'].astext == '8183.TWO'))
+        assert source.state == 'waiting_provider'
+        gates = list(db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage == 'provider-gate')))
+        assert len(gates) == 1
+        assert gates[0].state == 'ready'
+
+
 def test_expired_source_response_cannot_replace_the_new_capture(pg_engine, monkeypatch):
     setup_queue(pg_engine); enable(monkeypatch)
     entered, release = Event(), Event()
