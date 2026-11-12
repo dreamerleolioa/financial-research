@@ -39,7 +39,7 @@ def _validation_conflict_code(error):
     return None
 
 
-def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep,
+def run(*, endpoint, token, run_date, output_dir, request=None, sleep=time.sleep,
         attempts=6, basis_timeout=900, clock=time.monotonic,
         return_bases=("signal_close", "next_open"), readiness_request=get):
     if date.fromisoformat(run_date).isoformat() != run_date:
@@ -77,9 +77,10 @@ def run(*, endpoint, token, run_date, output_dir, request=post, sleep=time.sleep
                 remaining_time = deadline - clock()
                 if remaining_time <= 0:
                     raise TimeoutError("validation_budget_exhausted")
-                with request_deadline(min(300, remaining_time)):
+                with request_deadline(remaining_time):
                     try:
-                        response = request(endpoint, token, payload)
+                        response = (post(endpoint, token, payload, timeout=remaining_time)
+                                    if request is None else request(endpoint, token, payload))
                     except HTTPError as exc:
                         if exc.code == 409:
                             conflict_code = _validation_conflict_code(exc)
