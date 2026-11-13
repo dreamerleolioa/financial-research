@@ -1009,16 +1009,17 @@ jobs:
         run: |
           set -euo pipefail
           args=(--output-dir "$RUNNER_TEMP/radar-durable" --max-work 150 --max-seconds 1200)
+          baseline=(--known-validation-gaps .github/data/daily-radar-known-validation-gaps.json)
           if [[ "$DAILY_RADAR_SCHEDULE" == '*/30 * * * *' ]]; then
             args+=(--resume)
           else
             args+=(--run-date "$DAILY_RADAR_RUN_DATE")
             if [[ "$DAILY_RADAR_SCHEDULE" == '50 15 * * 1-5' || "$DAILY_RADAR_STEP" == 'run-forward-validation' ]]; then
-              args+=(--require-lanes signal_close,next_open)
+              args+=(--require-lanes signal_close,next_open "${baseline[@]}")
             elif [[ "$DAILY_RADAR_SCHEDULE" == '30 16 * * 1-5' || "$DAILY_RADAR_STEP" == 'run-scoring' ]]; then
               args+=(--require-lanes publication)
             elif [[ "$DAILY_RADAR_SCHEDULE" == '0 23 * * 1-5' || "$DAILY_RADAR_STEP" == 'repair-avwap-and-rescore' ]]; then
-              args+=(--require-lanes publication,signal_close,next_open)
+              args+=(--require-lanes publication,signal_close,next_open "${baseline[@]}")
             fi
           fi
           python .github/scripts/run_daily_radar_jobs.py "${args[@]}"

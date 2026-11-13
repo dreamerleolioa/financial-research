@@ -113,7 +113,8 @@ def test_ci_environment_delta_contains_baseline_without_operator_settings():
     verifier=load('verify_production_service')
     values=dict(item.split('=',1) for item in verifier.env_updates().removeprefix('^|^').split('|'))
     assert values==yaml.safe_load((SCRIPTS/'production-env.yaml').read_text())
-    assert 'APP_MAINTENANCE_MODE' not in values
+    assert not {'APP_MAINTENANCE_MODE', 'DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED',
+                'DAILY_RADAR_DURABLE_EXECUTION_ENABLED'}.intersection(values)
 
 
 def test_ci_does_not_write_a_previously_observed_maintenance_value():
