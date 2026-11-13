@@ -1,6 +1,6 @@
 FROM python:3.14-slim-bookworm
 
-RUN pip install --no-cache-dir uv==0.10.9
+RUN pip install --no-cache-dir uv==0.13.8
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app/src
 WORKDIR /app

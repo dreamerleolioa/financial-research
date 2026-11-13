@@ -203,8 +203,8 @@ Radar 的唯讀 readiness 查詢、兩種 validation 完整度及分階段續跑
 ## 環境需求
 
 - Python 3.14
-- 後端依賴使用 `uv` 管理
-- Node.js 22.23.4（本機與前端 CI 共用 `frontend/.node-version`；前端使用 pnpm 10.30.3）
+- 後端依賴使用 `uv` 管理，CI 與 Docker 建置使用 uv 0.13.8
+- Node.js 22.23.5（本機與前端 CI 共用 `frontend/.node-version`；前端使用 pnpm 10.34.9）
 
 ## 安裝與啟動
 

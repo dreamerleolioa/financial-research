@@ -1433,7 +1433,7 @@ def test_rule_review_workflow_calls_cloud_api_and_uploads_artifacts() -> None:
     assert "Authorization: Bearer ${CALIBRATION_INTERNAL_TOKEN}" in workflow
     assert "reports/calibration/monthly" in workflow
     assert "manifest.json" in workflow
-    assert "actions/upload-artifact@v4" in workflow
+    assert "uses: actions/upload-artifact@" in workflow
     assert "min_replay_coverage: 0.9" in workflow
     assert "retention-days: 30" in workflow
 

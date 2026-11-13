@@ -91,7 +91,7 @@ jobs:
       market_open: ${{ steps.market-session.outputs.market_open }}
     steps:
       - name: Check out run-date resolver
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve immutable run_date
         id: resolve-date
@@ -307,7 +307,7 @@ jobs:
 
       - name: Upload institutional universe replay report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: institutional-universe-replay-${{ github.event.inputs.run_date }}
           path: ${{ runner.temp }}/institutional-universe-replay.json
@@ -320,7 +320,7 @@ jobs:
     needs: resolve-run-context
     if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 10 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'prepare-universe')))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Trigger prepare-universe
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -636,7 +636,7 @@ jobs:
       queue: max
     if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 14 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'refresh-raw-data')))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Refresh OHLCV and managed raw data
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -645,7 +645,7 @@ jobs:
         run: python .github/scripts/refresh_daily_radar_raw_data.py --run-date "$DAILY_RADAR_RUN_DATE" --output-dir "$RUNNER_TEMP/radar-raw-data"
       - name: Preserve raw-data refresh diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: radar-raw-data-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/radar-raw-data/
@@ -699,7 +699,7 @@ jobs:
     needs: resolve-run-context
     if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 16 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-scoring')))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Trigger run-scoring
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -743,7 +743,7 @@ jobs:
         run: python .github/scripts/check_daily_radar_readiness.py --run-date "$DAILY_RADAR_RUN_DATE" --scope publication --output-dir "$RUNNER_TEMP/radar-readiness"
       - name: Preserve scoring readiness
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: radar-scoring-readiness-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/radar-readiness/
@@ -763,7 +763,7 @@ jobs:
       queue: max
     if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '50 15 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-forward-validation')))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate mature windows in both return bases
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -781,7 +781,7 @@ jobs:
         run: python .github/scripts/check_daily_radar_readiness.py --run-date "$DAILY_RADAR_RUN_DATE" --scope "$DAILY_RADAR_RETURN_BASIS" --output-dir "$RUNNER_TEMP/radar-validation"
       - name: Preserve validation diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: radar-validation-${{ matrix.return_basis }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/radar-validation/
@@ -797,7 +797,7 @@ jobs:
       queue: max
     if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '0 23 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'repair-avwap-and-rescore')))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Repair margin/OHLCV/AVWAP/managed raw data and rescore
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -982,7 +982,7 @@ jobs:
         run: python .github/scripts/check_daily_radar_readiness.py --run-date "$DAILY_RADAR_RUN_DATE" --scope all --output-dir "$RUNNER_TEMP/radar-validation"
       - name: Preserve repair validation diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: radar-repair-validation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/radar-validation/
@@ -998,7 +998,7 @@ jobs:
       group: daily-radar-durable
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Register intent or resume stored dates
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -1024,7 +1024,7 @@ jobs:
           python .github/scripts/run_daily_radar_jobs.py "${args[@]}"
       - name: Upload durable work evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: radar-durable-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/radar-durable

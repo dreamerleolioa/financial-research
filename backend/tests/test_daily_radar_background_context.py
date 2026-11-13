@@ -1272,6 +1272,6 @@ def test_daily_radar_workflow_exposes_bounded_archive_maintenance_without_auto_a
     assert ".report.calibration_gate.ready_for_human_review == true" in replay_job
     assert ".report.calibration_gate.auto_apply_scoring_change == false" in replay_job
     assert "market_open" not in replay_job
-    assert "actions/upload-artifact@v4" in replay_job
+    assert "uses: actions/upload-artifact@" in replay_job
     assert "if: always()" in replay_job
     assert "retention-days: 14" in replay_job

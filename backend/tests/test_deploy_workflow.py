@@ -12,6 +12,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
+RELEASE_GATE_WORKFLOW = WORKFLOW.with_name("investment-discipline-release-gate.yml")
 
 
 def test_retired_cloud_test_environment_cannot_be_deployed_by_ci():
@@ -29,15 +30,33 @@ def test_retired_cloud_test_environment_cannot_be_deployed_by_ci():
 
 
 def test_pages_artifact_name_is_unique_per_run_attempt() -> None:
-    workflow = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"]["deploy-frontend"]["steps"]
+    upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-pages-artifact@"))
+    deploy = next(step for step in steps if step.get("uses", "").startswith("actions/deploy-pages@"))
     artifact_name = "github-pages-${{ github.run_attempt }}"
-    upload_step = workflow.split("uses: actions/upload-pages-artifact@v3", maxsplit=1)[1].split(
-        "- name: Deploy to GitHub Pages", maxsplit=1
-    )[0]
-    deploy_step = workflow.split("uses: actions/deploy-pages@v4", maxsplit=1)[1]
 
-    assert f"name: {artifact_name}" in upload_step
-    assert f"artifact_name: {artifact_name}" in deploy_step
+    assert upload["with"]["name"] == deploy["with"]["artifact_name"] == artifact_name
+
+
+@pytest.mark.parametrize(("path", "job_name"), [
+    (WORKFLOW, "test-frontend"),
+    (WORKFLOW, "deploy-frontend"),
+    (RELEASE_GATE_WORKFLOW, "frontend-build"),
+])
+def test_frontend_ci_uses_the_repository_tool_versions(path: Path, job_name: str) -> None:
+    workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+    steps = workflow["jobs"][job_name]["steps"]
+    pnpm = next(step for step in steps if step.get("uses", "").startswith("pnpm/action-setup@"))
+    node = next(step for step in steps if step.get("uses", "").startswith("actions/setup-node@"))
+    install = next(step for step in steps if step.get("run", "").startswith("pnpm install"))
+
+    assert pnpm["with"]["package_json_file"] == "frontend/package.json"
+    assert "version" not in pnpm["with"]
+    assert node["with"]["node-version-file"] == "frontend/.node-version"
+    assert node["with"]["cache-dependency-path"] == "frontend/pnpm-lock.yaml"
+    assert steps.index(pnpm) < steps.index(node) < steps.index(install)
+    assert install["run"] == "pnpm install --frozen-lockfile"
 
 
 def test_pages_deployment_requires_frontend_verification_on_main_push() -> None:
