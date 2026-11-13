@@ -103,7 +103,7 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar, requ
     return state, reason, target
 
 
-def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=None):
+def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=None, include_gap_revision=False):
     """Yield every expected window, including absent outcomes and diagnostics.
 
     Scope is explicit. No price-derived fallback can prove a missing window is
@@ -130,24 +130,33 @@ def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=Non
                 row = saved.get((candidate["candidate_id"], window))
                 state, reason, target = classify_window(candidate, row, basis=basis, window=window,
                     as_of_date=as_of_date, calendar=calendar)
-                yield {"candidate_id": candidate["candidate_id"], "symbol": candidate["symbol"],
+                item = {"candidate_id": candidate["candidate_id"], "symbol": candidate["symbol"],
                     "candidate_revision": validation_candidate_revision(candidate),
                     "calendar_revision": fingerprint([str(d) for d in calendar.sessions if signal <= d <= target]) if target else None,
                     "signal_date": str(signal), "return_basis": basis, "validation_version": version,
                     "window_days": window, "expected_target_date": str(target) if target else None,
                     "state": state, "reason": reason, "next_action": recovery_action(reason) if reason else None}
+                if include_gap_revision and state not in {"validated", "terminal", "immature"}:
+                    item["gap_revision"] = fingerprint({
+                        "status": row["status"] if row else None,
+                        "skip_reason": row["skip_reason"] if row else None,
+                        "target_date": row["target_date"] if row else None,
+                        "outcome": row["outcome"] if row else None,
+                    })
+                yield item
 
 
 def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100):
     calendar = load_calendar(session, start_date=as_of_date, as_of_date=as_of_date)
     reports = {basis: {"validation_version": version, "counts": Counter(), "reasons": Counter(), "gaps": []}
         for basis, version in (("signal_close", FORWARD_VALIDATION_VERSION), ("next_open", RESEARCH_VALIDATION_VERSION))}
-    for item in inventory_items(session, as_of_date=as_of_date, lookback_days=lookback_days):
+    for item in inventory_items(session, as_of_date=as_of_date, lookback_days=lookback_days,
+                                include_gap_revision=sample_limit is None):
         report = reports[item["return_basis"]]
         report["counts"][item["state"]] += 1
         if item["state"] not in {"validated", "terminal", "immature"}:
             report["reasons"][item["reason"]] += 1
-            if len(report["gaps"]) < sample_limit:
+            if sample_limit is None or len(report["gaps"]) < sample_limit:
                 report["gaps"].append(item)
     for report in reports.values():
         counts = report.pop("counts")
@@ -212,7 +221,7 @@ def scoring_prerequisite_inputs(session, *, run_date):
     return prepared, steps, blockers, cache_rows
 
 
-def read_readiness(session, *, run_date: date, lookback_days=365):
+def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False):
     """Caller holds a read-only/no-autoflush session; never fetches providers."""
     prepared, steps, blockers, cache_rows = scoring_prerequisite_inputs(session, run_date=run_date)
     run = session.scalar(select(DailyRadarRun).where(DailyRadarRun.id.in_(canonical_radar_run_ids(
@@ -220,7 +229,8 @@ def read_readiness(session, *, run_date: date, lookback_days=365):
     stored_selected_count = session.scalar(select(func.count()).select_from(DailyRadarCandidate).where(
         DailyRadarCandidate.run_id == run.id, DailyRadarCandidate.selection_status == "selected")) if run else None
     output_complete = bool(run and stored_selected_count == run.candidate_count)
-    validation = validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days)
+    validation = validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
+                                      sample_limit=None if include_all_validation_gaps else 100)
     from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
     input_summary = None
     current_digest = None

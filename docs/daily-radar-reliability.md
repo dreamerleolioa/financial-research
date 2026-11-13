@@ -79,6 +79,8 @@ flowchart TD
 
 原 cron 時間保留，包括下一日 00:30 才可 scoring。新增每 30 分鐘的 resume trigger，沒有今天是否開市的前置 gate。開關關閉時保留既有流程；開啟時由新 driver 記錄／推進意圖，23:50 validation、00:30 publication、07:00 repair 仍用獨立 readiness deadline 判定失敗。一般早期 enqueue／advance 成功只表示已記錄或有進展。
 
+Durable driver 可用 `--known-validation-gaps` 讀取已審閱的 `radar-known-validation-gaps-v1` 檔案。檔案包含盤點截止日 `as_of_date` 及當日由唯讀 readiness 以 `include_all_validation_gaps=true` 回傳的 `gaps`。已知窗口依候選版本、日曆、目標日、原因及缺口結果版本精確比對。完整比對時，已知且相同的缺口仍列在 JSON 摘要，`readiness_deadline_passed` 仍為 false。新增、改變、無法完整比對的缺口，以及發布或內部工作失敗，仍讓 driver 非零退出。未傳入清單的執行保留嚴格告警。
+
 ### 切換與回滾
 
 1. 先完成備份與經核准的正式 migration，驗證新增表、SDK 索引及既有金融資料；正式 migration／部署不由本機驗證代替。

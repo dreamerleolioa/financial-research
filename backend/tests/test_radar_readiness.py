@@ -157,3 +157,25 @@ def test_termination_reason_without_matching_lifecycle_evidence_is_not_terminal(
     report = validation_inventory(db, as_of_date=date(2026, 6, 30))["signal_close"]
     assert report["terminal_count"] == 0
     assert report["retryable_count"] == 1
+
+
+def test_authenticated_alert_inventory_can_return_more_than_sample_limit(storage, monkeypatch):
+    db, _ = storage
+    run = add_run(db)
+    for i in range(35):
+        add_candidate(db, run, f"{2300+i}.TW")
+    proof(db)
+    monkeypatch.setenv("DAILY_RADAR_INTERNAL_TOKEN", "test-readiness")
+    app = FastAPI()
+    app.include_router(readiness_router.router)
+    app.dependency_overrides[get_db] = lambda: db
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer test-readiness"}
+        url = "/internal/daily-radar/readiness?run_date=2026-06-30"
+        sample = client.get(url, headers=headers).json()["validation"]["next_open"]
+        full = client.get(url + "&include_all_validation_gaps=true", headers=headers).json()["validation"]["next_open"]
+    assert sample["gaps_truncated"] and len(sample["gaps"]) == 100
+    assert full["gaps_truncated"] is False
+    assert full["unresolved_count"] == len(full["gaps"]) == 105
+    assert full["ready"] is sample["ready"] is False
+    assert all(len(gap["gap_revision"]) == 64 for gap in full["gaps"])

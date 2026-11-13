@@ -525,6 +525,24 @@ def test_required_scope_cannot_be_removed_when_old_and_current_results_are_both_
     assert tool.result_snapshot(row) == before
 
 
+def test_replayed_cash_rights_after_target_is_compatible_with_verified_prior_scope():
+    from ai_stock_sentinel.calibration.twse_rights_recovery import PROVENANCE_KEY
+    from ai_stock_sentinel.daily_radar.next_open_action_scope import result_matches
+
+    signal, target, ex_date = "2026-10-08", "2026-10-16", "2026-10-20"
+    scope = {"symbol": "1711.TW", "signal_date": signal, "session_dates": [target],
+             "through": "2026-11-12", "current_events": []}
+    benchmark = [{"date": day, "dividends": 0, "stock_splits": 0} for day in (signal, target)]
+    result = {"status": "validated", "outcome": {
+        "reviewed_official_window": {"calculation_benchmark": benchmark},
+        PROVENANCE_KEY: {"event": {"symbol": "1711.TW", "ex_date": ex_date},
+                         "verification_mode": "post_window_adjustment_recovered"},
+    }}
+    result_matches(scope, result)
+    with pytest.raises(ValueError, match="event_unresolved"):
+        result_matches(scope | {"current_events": [{"effective_date": target}]}, result)
+
+
 def test_pre_scope_v2_manifest_can_only_rollback_an_exact_applied_snapshot(db):
     from ai_stock_sentinel.daily_radar.history_repair import MUTABLE_FIELDS
     cal, provider, row, before, request = synthetic_case(db, kind='split', current='split')

@@ -30,6 +30,56 @@ TERMS = {
 }
 SUBSCRIPTIONS = {"1727.TW": (81, 86.23682261), "2890.TW": (35.15, 34.61290969),
                  "8021.TW": (388, 21.72000885)}
+
+
+def test_reviewed_window_recovers_adjustment_from_later_cash_rights():
+    from math import isclose
+    from ai_stock_sentinel.calibration import twse_rights_recovery as rights
+
+    symbol = "1711.TW"
+    signal = date(2026, 10, 8)
+    sessions = tuple(date(2026, 10, day) for day in (12, 13, 14, 15, 16))
+    after = (date(2026, 10, 19), date(2026, 10, 20))
+    days = (signal, *sessions, *after)
+    event = {"ex_date": "2026-10-20", "previous_close": 44.65, "subscription_price": 34.0,
+             "subscription_shares_per_thousand": 73.02571874}
+    rate = event["subscription_shares_per_thousand"] / 1000
+    factor = (44.65 + 34.0 * rate) / (1 + rate) / 44.65
+    def bars(value, source):
+        return [{"date": str(day), "price_source": source, **dict.fromkeys(FIELDS, value)} for day in days]
+    stock = bars(44.65, "twse_stock_day")
+    index = [row | {"stock_splits": 0, "dividends": 0} for row in bars(100, "twse_index_history")]
+    yahoo = bars(44.65 * factor, "yfinance")
+
+    def load(ticker, *, start_date, end_date):
+        return [row for row in (index if ticker == "TAIEX" else stock)
+                if str(start_date) <= row["date"] <= str(end_date)]
+
+    def official(ticker, checked_days, capture):
+        assert ticker == symbol and tuple(checked_days) == days
+        return event, []
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(rights, "_rights_issue", official)
+        prices, benchmark, proof = rights.verify_reviewed_window(symbol, signal, sessions,
+            yahoo_rows=yahoo, benchmark_rows=index, flagged_dates={str(d) for d in sessions},
+            capture=None, load_history=load, later_sessions=after)
+        assert [row["date"] for row in prices] == list(map(str, sessions))
+        assert [row["date"] for row in benchmark] == list(map(str, (signal, *sessions)))
+        assert isclose(proof["yahoo_factor"], factor) and proof["event"]["ex_date"] == str(after[-1])
+        assert proof["verification_mode"] == "post_window_adjustment_recovered"
+        index[2]["stock_splits"] = 2
+        with pytest.raises(ValueError, match="unexplained_benchmark_action"):
+            rights.verify_reviewed_window(symbol, signal, sessions, yahoo_rows=yahoo, benchmark_rows=index,
+                flagged_dates={str(d) for d in sessions}, capture=None, load_history=load, later_sessions=after)
+        index[2]["stock_splits"] = 0
+        for field in FIELDS:
+            yahoo[2][field] += 1
+        with pytest.raises(ValueError, match="unexplained_price_conflict"):
+            rights.verify_reviewed_window(symbol, signal, sessions, yahoo_rows=yahoo, benchmark_rows=index,
+                flagged_dates={str(d) for d in sessions}, capture=None, load_history=load, later_sessions=after)
+
+
 OTHER = "2330.TW"
 BODY = {"return_basis": "next_open", "as_of_date": str(TARGET), "windows": [20],
         "start_date": str(SIGNAL), "end_date": str(SIGNAL), "conflict_recovery_symbols": list(TERMS)}

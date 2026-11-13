@@ -62,6 +62,7 @@ def _manual(candidate, row, calendar):
     owned = any(k in row['outcome'] for k in (
         'historical_repair', 'official_rights_recovery', 'reviewed_rights_recovery', 'official_corporate_action', 'split_event'))
     eligible = target is not None and (state in {'input_unverified', 'invalid_window'}
+                                      or reason == 'conflicting_price_records'
                                       or owned and state not in {'validated', 'terminal', 'immature'})
     return eligible, reason
 

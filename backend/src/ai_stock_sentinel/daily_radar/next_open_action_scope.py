@@ -322,6 +322,12 @@ def result_matches(scope, row):
         raise ValueError('next_open_prior_action_scope_event_unresolved')
     proof = payload.get(rights.PROVENANCE_KEY) or payload.get(actions.PROVENANCE_KEY)
     event = proof.get('event') if isinstance(proof, dict) else payload.get('split_event')
+    if (not events and row['status'] == 'validated' and isinstance(event, dict)
+            and rights.PROVENANCE_KEY in payload
+            and proof.get('verification_mode') == 'post_window_adjustment_recovered'
+            and event.get('symbol') == scope['symbol']
+            and scope['session_dates'][-1] < event.get('ex_date', '') <= scope['through']):
+        return
     if isinstance(event, dict):
         day = event.get('ex_date') or event.get('effective_date') or event.get('date')
         matched = len(events) == 1 and event.get('symbol') == scope['symbol'] and events[0]['effective_date'] == day

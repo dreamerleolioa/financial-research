@@ -19,6 +19,8 @@ from ai_stock_sentinel.daily_radar import next_open_action_scope as action_scope
 KEY = 'reviewed_official_window'
 VERSION = 'next-open-reviewed-official-window-v1'
 RIGHTS_VERIFICATION = 'full-window-recovery-or-matching-v1'
+POST_WINDOW_RIGHTS_VERIFICATION = 'post-window-cash-rights-v1'
+POST_WINDOW_LOOKAHEAD_SESSIONS = 5
 
 
 def prior_actions(outcome):
@@ -99,12 +101,13 @@ def collect_window(candidate, before, row, *, calendar, provider):
     removed = {f['kind'] for f in scope['excluded']} if scope else set()
     kind = (prior_actions(before['outcome']) - removed) | prior_actions(row.get('outcome') or {})
     event_replay = None
-    def event(kind, stock_rows, benchmark_rows, marked_rows):
+    def event(kind, stock_rows, benchmark_rows, marked_rows, *, later_sessions=()):
         event_row = _event_input(candidate, before['window_days'], calendar, marked_rows, benchmark_rows)
         start = provider.position()
         if kind == 'rights':
             result = _recover_rights_window(candidate, event_row, stock_rows, marked_rows, benchmark_rows,
-                calendar.sessions, as_of_date=target, scoped=True, provider=provider, reviewed=True)
+                calendar.sessions, as_of_date=target, scoped=True, provider=provider, reviewed=True,
+                later_sessions=later_sessions)
         else:
             result = _classify_corporate_action(event_row, stock_rows, marked_rows, benchmark_rows,
                 as_of_date=target, provider=provider)
@@ -112,7 +115,7 @@ def collect_window(candidate, before, row, *, calendar, provider):
             'marked': deepcopy(marked_rows), 'benchmark': deepcopy(benchmark_rows),
             'capabilities': list(provider.capabilities), 'calls': deepcopy(provider.calls[start:provider.position()])}
         if kind == 'rights':
-            frozen['rights_verification'] = RIGHTS_VERIFICATION
+            frozen['rights_verification'] = POST_WINDOW_RIGHTS_VERIFICATION if later_sessions else RIGHTS_VERIFICATION
         return result, frozen
     if 'rights' in kind:
         # Explicit scope makes prior official rights evidence mandatory even
@@ -150,6 +153,12 @@ def collect_window(candidate, before, row, *, calendar, provider):
             if recovered is None:
                 recovered, frozen = event('corporate', yahoo, benchmark, marked)
                 if recovered is not None:event_replay = frozen
+            if recovered is None and symbol.endswith('.TW') and row.get('skip_reason') == rights.CONFLICT_REASON:
+                later = _later_sessions(calendar, target)
+                if later:
+                    recovered, frozen = event('rights', yahoo, benchmark, marked, later_sessions=later)
+                    if recovered is not None:
+                        event_replay = frozen
             row = recovered or row
     row = deepcopy(row); row['evaluation_as_of_date'] = str(calendar.through)
     if 'split' in kind and (row['status'] != 'skipped' or row.get('skip_reason') not in {'stock_split_in_window', *actions.TERMINAL_REASONS}):
@@ -247,6 +256,10 @@ def verify_evidence(candidate, after, *, calendar, prior, require_scope=True):
             raise ValueError('next_open_official_metrics_mismatch')
 
 
+def _later_sessions(calendar, target):
+    return tuple(day for day in calendar.sessions if target < day <= calendar.through)[:POST_WINDOW_LOOKAHEAD_SESSIONS]
+
+
 def _verify_event(candidate, after, frozen, kind, calendar, target):
     from ai_stock_sentinel.daily_radar.next_open_history_repair import _Tape
     from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
@@ -263,11 +276,14 @@ def _verify_event(candidate, after, frozen, kind, calendar, target):
     replay = _Tape(evidence=frozen)
     if kind == 'rights':
         mode = frozen.get('rights_verification')
-        if mode not in (None, RIGHTS_VERIFICATION):
+        if mode not in (None, RIGHTS_VERIFICATION, POST_WINDOW_RIGHTS_VERIFICATION):
+            raise ValueError('next_open_official_event_verification_invalid')
+        later = _later_sessions(calendar, target) if mode == POST_WINDOW_RIGHTS_VERIFICATION else ()
+        if mode == POST_WINDOW_RIGHTS_VERIFICATION and not later:
             raise ValueError('next_open_official_event_verification_invalid')
         result = _recover_rights_window(candidate, row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
             calendar.sessions, as_of_date=target, scoped=True, provider=replay,
-            reviewed=mode == RIGHTS_VERIFICATION)
+            reviewed=mode is not None, later_sessions=later)
     else:
         result = _classify_corporate_action(row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
             as_of_date=target, provider=replay)
@@ -285,6 +301,8 @@ def _verify_event(candidate, after, frozen, kind, calendar, target):
     # with a separately consistent but contradictory result.
     histories = {call['request']['args'][0]: call['value'] for call in replay.calls
                  if call['request']['method'] == 'official_research_history' and not call.get('failed')}
+    if kind == 'rights' and mode == POST_WINDOW_RIGHTS_VERIFICATION:
+        histories[candidate['symbol']] = [row for row in histories[candidate['symbol']] if row['date'] <= str(target)]
     proof = after['outcome'][KEY]
     if proof['stock'] != histories.get(candidate['symbol']) or proof['benchmark'] != histories.get('TAIEX'):
         raise ValueError('next_open_official_event_inputs_mismatch')

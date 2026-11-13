@@ -89,3 +89,49 @@ def test_window_sharing_and_explicit_backdated_scope(db,newer_first):
     windows=db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage=='window')).all()
     assert len(windows)==(2 if newer_first else 1)
     assert {w.scope['as_of_date'] for w in windows}==({'2026-06-08','2026-06-09'} if newer_first else {'2026-06-08'})
+
+
+def test_existing_price_conflict_is_not_recalculated_for_each_daily_job(db, monkeypatch):
+    from datetime import timedelta
+    from test_daily_radar_forward_validation import _add_run, _add_candidate
+    from radar_calendar_support import calendar
+    from ai_stock_sentinel.db.models import DailyRadarPreparedRun
+    from ai_stock_sentinel.daily_radar import readiness
+
+    candidate = _add_candidate(db, _add_run(db))
+    candidate_id = candidate.id
+    gap = {
+        'candidate_id': candidate_id, 'candidate_revision': 'candidate-revision',
+        'calendar_revision': 'calendar-revision', 'return_basis': 'next_open',
+        'validation_version': 'daily-radar-next-open-price-v2', 'window_days': 5,
+        'expected_target_date': '2026-06-08', 'state': 'retryable',
+        'reason': 'conflicting_price_records', 'next_action': 'needs_review',
+    }
+    monkeypatch.setattr(readiness, 'inventory_items', lambda *args, **kwargs: [gap])
+    for day in (date(2026, 6, 8), date(2026, 6, 9)):
+        db.add(DailyRadarPreparedRun(run_date=day, market='TW', status='prepared',
+            selected_symbols=[], symbol_count=0, universe=[], errors=[],
+            step_statuses={'validation-calendar': calendar(day-timedelta(days=364), day).payload()}))
+        db.commit()
+        create_job(db, run_date=day, lanes=['next_open'], now=NOW)
+        if day == date(2026, 6, 8):
+            initial = db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage == 'window')).one()
+            claim = claim_work(db, work_id=initial.id, now=NOW)
+            assert claim is not None
+            finish_work(db, claim, state='needs_review', reason=gap['reason'], now=NOW)
+            db.commit()
+    work = db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage == 'window')).one()
+    assert work.state == 'needs_review' and work.attempt_count == 1
+    assert db.scalar(select(func.count()).select_from(RadarJobWork).where(
+        RadarJobWork.work_id == work.id, RadarJobWork.active.is_(True))) == 2
+    assert claim_work(db, work_id=work.id, now=NOW + timedelta(days=1)) is None
+
+    work.state, work.reason, work.retry_at = 'pending', 'source_revision_changed', NOW
+    db.commit()
+    day = date(2026, 6, 10)
+    db.add(DailyRadarPreparedRun(run_date=day, market='TW', status='prepared',
+        selected_symbols=[], symbol_count=0, universe=[], errors=[],
+        step_statuses={'validation-calendar': calendar(day-timedelta(days=364), day).payload()}))
+    db.commit()
+    create_job(db, run_date=day, lanes=['next_open'], now=NOW)
+    assert claim_work(db, work_id=work.id, now=NOW).work_id == work.id
