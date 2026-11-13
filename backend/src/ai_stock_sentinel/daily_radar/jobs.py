@@ -98,7 +98,11 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
         previous = db.scalar(select(RadarWorkItem).where(RadarWorkItem.work_key == fingerprint(identity)))
         if previous and date.fromisoformat(previous.scope['as_of_date']) > job.run_date:
             identity['cutoff'] = str(job.run_date)
-        manual = item['state'] in {'invalid_window', 'missing_diagnostic', 'input_unverified'}
+        # Legacy conflicts need one collection to establish source references
+        # for durable rechecks. The evaluator parks them if still unresolved.
+        manual = (item['state'] in {'invalid_window', 'missing_diagnostic', 'input_unverified'}
+                  or (item['next_action'] == 'needs_review'
+                      and item['reason'] != 'conflicting_price_records'))
         done = item['state'] in {'validated', 'terminal'}
         work = ensure_work(db, identity=identity, stage='window', lane=item['return_basis'], run_date=job.run_date,
             scope=dict(item) | {'as_of_date': str(job.run_date)}, input_revision=fingerprint(identity),
@@ -107,7 +111,7 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
         if work.state != 'running':
             if done:
                 work.state, work.reason, work.retry_at = 'ready', None, None
-            elif manual:
+            elif manual and work.reason != 'source_revision_changed':
                 work.state, work.reason, work.retry_at = 'needs_review', item['reason'], None
             elif work.state in {'ready', 'terminal', 'superseded'}:
                 work.state, work.reason, work.retry_at = 'pending', item['reason'], now

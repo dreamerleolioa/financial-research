@@ -14,6 +14,8 @@ router = APIRouter()
 
 @router.get("/internal/daily-radar/readiness", dependencies=[Depends(require_daily_radar_internal_auth)])
 def get_readiness(run_date: date, market: Literal["TW"] = "TW",
-                  lookback_days: int = Query(default=365, ge=1, le=1095), db: Session = Depends(get_db)):
+                  lookback_days: int = Query(default=365, ge=1, le=1095), db: Session = Depends(get_db),
+                  include_all_validation_gaps: bool = False):
     with db.no_autoflush:
-        return read_readiness(db, run_date=run_date, lookback_days=lookback_days)
+        return read_readiness(db, run_date=run_date, lookback_days=lookback_days,
+                              include_all_validation_gaps=include_all_validation_gaps)

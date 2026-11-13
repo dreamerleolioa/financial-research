@@ -138,7 +138,8 @@ def recover_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flag
                           reviewed=False)
 
 
-def verify_reviewed_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flagged_dates, capture, load_history):
+def verify_reviewed_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flagged_dates,
+                           capture, load_history, later_sessions=()):
     """Certify matching raw prices or recover a proved cash-rights adjustment.
 
     Only the explicit historical repair uses this mode. Ordinary recovery still
@@ -147,15 +148,29 @@ def verify_reviewed_window(symbol, signal, sessions, *, yahoo_rows, benchmark_ro
     """
     return _verify_window(symbol, signal, sessions, yahoo_rows=yahoo_rows, benchmark_rows=benchmark_rows,
                           flagged_dates=flagged_dates, capture=capture, load_history=load_history,
-                          reviewed=True)
+                          reviewed=True, later_sessions=later_sessions)
 
 
-def _verify_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flagged_dates, capture, load_history, reviewed):
-    event, sources = _rights_issue(symbol, sessions, capture)
+def _verify_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flagged_dates,
+                   capture, load_history, reviewed, later_sessions=()):
     target = sessions[-1]
     all_dates = (signal, *sessions)
-    official_stock = _daily_rows(load_history(symbol, start_date=signal, end_date=target), all_dates, "twse_stock_day")
+    evidence_days = (*all_dates, *later_sessions) if later_sessions else tuple(sessions)
+    event, sources = _rights_issue(symbol, evidence_days, capture)
+    ex_day = event["ex_date"]
+    if later_sessions and (not reviewed or ex_day not in {str(day) for day in later_sessions}):
+        raise ValueError("twse_rights_post_window_event_required")
+    stock_dates = tuple(day for day in evidence_days if str(day) <= ex_day) if later_sessions else all_dates
+    official_stock = _daily_rows(load_history(symbol, start_date=signal, end_date=stock_dates[-1]),
+                                 stock_dates, "twse_stock_day")
     official_index = _daily_rows(load_history("TAIEX", start_date=signal, end_date=target), all_dates, "twse_index_history")
+    if later_sessions:
+        observed_index = [row for row in benchmark_rows if row.get("date") in official_index]
+        if (len(observed_index) != len(official_index)
+                or {row["date"] for row in observed_index} != official_index.keys()
+                or any(number(row.get("dividends")) != 0 or number(row.get("stock_splits")) not in (0, 1)
+                       for row in observed_index)):
+            raise ValueError("twse_rights_unexplained_benchmark_action")
     for row in benchmark_rows:
         official = official_index.get(row.get("date"))
         if official and (row.get("ohlc_conflict_fields") or any(
@@ -166,7 +181,6 @@ def _verify_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flag
     # Yahoo dates absent from the official calendar do not establish a session.
     dates = {day.isoformat() for day in sessions}
     yahoo = _daily_rows((row for row in yahoo_rows if row.get("date") in dates), sessions, "yfinance")
-    ex_day = event["ex_date"]
     prior_close = official_stock[max(day for day in official_stock if day < ex_day)]["close"]
     if not isclose(prior_close, event["previous_close"], rel_tol=0, abs_tol=0.005):
         raise ValueError("twse_rights_reference_close_mismatch")
@@ -183,7 +197,7 @@ def _verify_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flag
                 isclose(raw[field] * factor, observed[field], rel_tol=1e-7, abs_tol=0.00005) for field in OHLC):
             raise ValueError("twse_rights_unexplained_price_conflict")
         adjusted.append(day)
-    if (not adjusted and not reviewed) or not flagged_dates.issubset(adjusted):
+    if (not adjusted and (not reviewed or later_sessions)) or not flagged_dates.issubset(adjusted):
         raise ValueError("twse_rights_unexplained_price_conflict")
 
     months = sorted({day.strftime("%Y%m01") for day in all_dates})
@@ -199,6 +213,7 @@ def _verify_window(symbol, signal, sessions, *, yahoo_rows, benchmark_rows, flag
         "rights_value_included": False, "subscription_cash_flow_included": False,
     }
     if reviewed:
-        evidence["verification_mode"] = "adjustment_recovered" if adjusted else "raw_prices_matched"
+        evidence["verification_mode"] = ("post_window_adjustment_recovered" if later_sessions
+                                          else "adjustment_recovered" if adjusted else "raw_prices_matched")
     return (_unadjusted_rows((official_stock[day] for day in sorted(dates)), "twse_official_rights_window"),
             _unadjusted_rows(official_index.values(), "index_not_applicable"), evidence)

@@ -53,3 +53,45 @@ def test_audit_requeue_continues_even_without_a_completed_work_unit(tmp_path):
         return result|{'advanced_count':0,'runnable_now':len(advances)==1}
     result=run(endpoint='https://example.test',token='secret',output_dir=tmp_path,run_date='2026-11-06',read=read,write=write)
     assert len(advances)==2 and result['advanced_requests']==2
+
+
+def test_registered_history_stays_in_readiness_without_repeating_alert(tmp_path):
+    import json
+
+    gap = {
+        'candidate_id': 9, 'candidate_revision': 'candidate-revision',
+        'calendar_revision': 'calendar-revision', 'return_basis': 'signal_close',
+        'validation_version': 'daily-radar-forward-validation-v2', 'window_days': 5,
+        'expected_target_date': '2026-06-10', 'state': 'missing_diagnostic',
+        'reason': 'observation_diagnostic_incomplete', 'next_action': 'repair_diagnostic',
+        'gap_revision': 'saved-diagnostic-revision',
+    }
+    baseline = tmp_path / 'known.json'
+    baseline.write_text(json.dumps({'version': 'radar-known-validation-gaps-v1',
+        'as_of_date': '2026-11-12', 'gaps': [gap]}))
+
+    def scheduled(day, gaps, *, truncated=False):
+        def read(url, token, **kw):
+            if url.endswith('capabilities'):
+                return {'enabled': True, 'version': 'radar-durable-v1'}
+            return {'requested_run_date': day, 'effective_run_date': day, 'data_ready': False,
+                    'validation': {'signal_close': {'ready': False, 'calendar_ready': True,
+                        'unresolved_count': len(gaps), 'gaps_truncated': truncated, 'gaps': gaps}}}
+
+        def write(url, token, payload, **kw):
+            return {'job_id': 7, 'requested_run_date': day, 'effective_run_date': day, 'advanced_count': 0}
+
+        return run(endpoint='https://example.test', token='secret', output_dir=tmp_path,
+                   run_date=day, require_lanes=['signal_close'], read=read, write=write,
+                   known_validation_gaps=baseline)
+
+    for day in ('2026-11-12', '2026-11-13'):
+        result = scheduled(day, [gap])
+        assert result['status'] == 'recorded_or_advanced'
+        assert result['readiness_deadline_passed'] is False
+        assert result['validation_alerts']['signal_close'] == {'known': 1, 'new': 0}
+    assert scheduled('2026-11-13', [gap, gap | {'window_days': 10}])['status'] == 'failed'
+    assert scheduled('2026-11-13', [gap | {'calendar_revision': 'changed'}])['status'] == 'failed'
+    assert scheduled('2026-11-13', [gap | {'gap_revision': 'different-evidence'}])['status'] == 'failed'
+    assert scheduled('2026-11-13', [gap], truncated=True)['status'] == 'failed'
+    assert scheduled('2026-11-11', [gap])['status'] == 'failed'
