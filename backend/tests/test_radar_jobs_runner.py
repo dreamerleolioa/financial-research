@@ -95,3 +95,45 @@ def test_registered_history_stays_in_readiness_without_repeating_alert(tmp_path)
     assert scheduled('2026-11-13', [gap | {'gap_revision': 'different-evidence'}])['status'] == 'failed'
     assert scheduled('2026-11-13', [gap], truncated=True)['status'] == 'failed'
     assert scheduled('2026-11-11', [gap])['status'] == 'failed'
+
+
+@pytest.mark.parametrize('schedule, step, expected_lanes, use_baseline', [
+    ('50 15 * * 1-5', '', 'signal_close,next_open', True),
+    ('0 23 * * 1-5', '', 'publication,signal_close,next_open', True),
+    ('30 16 * * 1-5', '', 'publication', False),
+    ('*/30 * * * *', '', None, False),
+    ('', 'run-forward-validation', 'signal_close,next_open', True),
+])
+def test_durable_workflow_passes_reviewed_baseline_at_validation_deadlines(
+        tmp_path, schedule, step, expected_lanes, use_baseline):
+    import json
+    import os
+    from pathlib import Path
+    import subprocess
+
+    import yaml
+
+    from run_daily_radar_jobs import validation_gap_key
+
+    root = Path(__file__).parents[2]
+    workflow = yaml.load((root / '.github/workflows/daily-radar.yml').read_text(), Loader=yaml.BaseLoader)
+    commands = next(step['run'] for step in workflow['jobs']['durable-radar']['steps'] if 'run' in step)
+    stub = tmp_path / 'python'
+    stub.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
+    stub.chmod(0o700)
+    env = os.environ | {
+        'PATH': f'{tmp_path}:{os.environ["PATH"]}', 'RUNNER_TEMP': str(tmp_path),
+        'DAILY_RADAR_SCHEDULE': schedule, 'DAILY_RADAR_STEP': step, 'DAILY_RADAR_RUN_DATE': '2026-11-12',
+    }
+    output = subprocess.run(['bash', '-c', commands], check=True, cwd=root, env=env,
+                            text=True, capture_output=True).stdout.splitlines()
+    assert output[0] == '.github/scripts/run_daily_radar_jobs.py'
+    if expected_lanes:
+        assert output[output.index('--require-lanes') + 1] == expected_lanes
+    else:
+        assert '--resume' in output and '--require-lanes' not in output
+    assert ('--known-validation-gaps' in output) is use_baseline
+    if use_baseline:
+        baseline = json.loads((root / output[output.index('--known-validation-gaps') + 1]).read_text())
+        assert baseline['version'] == 'radar-known-validation-gaps-v1'
+        assert baseline['gaps'] and len({validation_gap_key(g) for g in baseline['gaps']}) == len(baseline['gaps'])

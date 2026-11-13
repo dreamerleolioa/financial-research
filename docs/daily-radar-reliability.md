@@ -84,8 +84,8 @@ Durable driver 可用 `--known-validation-gaps` 讀取已審閱的 `radar-known-
 ### 切換與回滾
 
 1. 先完成備份與經核准的正式 migration，驗證新增表、SDK 索引及既有金融資料；正式 migration／部署不由本機驗證代替。
-2. 部署後先保留 `DAILY_RADAR_DURABLE_EXECUTION_ENABLED=false`；確認 `/capabilities` 的 migration 狀態，再經核准啟用 backend 的 source snapshots 與 durable execution 開關。
-3. 確認 capabilities `enabled=true` 後，再將 GitHub Actions repository variable `DAILY_RADAR_RELIABILITY_ENABLED=true`。未就緒會 fail closed，不會偷偷回到舊流程。需另行核准的 production 補跑仍使用明確日期。
+2. 確認正式 `/capabilities` 的 migration 狀態，再經核准啟用 backend 的 source snapshots 與 durable execution 開關。Cloud Run 的兩個開關由維運設定，例行部署沿用服務現值。
+3. 核對預設分支的 Daily Radar workflow 已接入 `.github/data/daily-radar-known-validation-gaps.json`，且該檔與核准的歷史缺口版本一致。確認 capabilities `enabled=true` 後，將 GitHub Actions repository variable `DAILY_RADAR_RELIABILITY_ENABLED=true`。11/12 補修後的基準包含 2,403 個窗口。每日驗證與早上補修使用此基準，發布檢查仍獨立判定。
 4. 回滾先關閉 Actions variable，再關閉 backend durable 開關；保留待辦、attempt、來源快照與輸入 manifests，避免刪除恢復證據。已完成工作不因切換被當成整體完整。
 
 本機驗證涵蓋 SQLite 回歸、實際 PostgreSQL 17 的 migration／競爭領取／過期結果回滾、來源去重與節流，以及斷線後兩種 validation 的實際提交。這些證據不代表正式環境已 migration、切換或補修。

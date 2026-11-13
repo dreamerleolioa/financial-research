@@ -64,7 +64,9 @@ def env_updates():
     # JSON is also valid YAML. Keep the gcloud baseline readable by the stdlib
     # verifier without adding a runtime dependency or a second source of values.
     values = json.loads(Path(__file__).with_name('production-env.yaml').read_text())
-    require('APP_MAINTENANCE_MODE' not in values, 'Maintenance state is operator managed')
+    operator_settings = {'APP_MAINTENANCE_MODE', 'DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED',
+                         'DAILY_RADAR_DURABLE_EXECUTION_ENABLED'}
+    require(not operator_settings.intersection(values), 'Production switches are operator managed')
     require(not set(values).intersection(SECRET_SUFFIXES), 'Secrets must use pinned Secret Manager references')
     require(all(re.fullmatch('[A-Z_]+', key) and isinstance(value, str)
                 and '|' not in value and '\n' not in value for key, value in values.items()),

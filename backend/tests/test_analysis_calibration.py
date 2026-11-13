@@ -1285,7 +1285,7 @@ def test_forward_validation_and_monthly_workflows_fail_on_gaps_and_encrypt_artif
     assert 'persisted_skip_reasons=report.get("skip_reasons", {})' in runner
     assert "skip_reasons: (.report.skip_reasons // {})" in daily
     assert 'cron: "0 10 6 * *"' in monthly
-    assert "actions/upload-artifact@v4" in monthly
+    assert "uses: actions/upload-artifact@" in monthly
     assert "CALIBRATION_REPORT_PASSPHRASE" in monthly
     assert monthly.count("--connect-timeout 10") == 2
     assert monthly.count("--max-time 180") == 2
