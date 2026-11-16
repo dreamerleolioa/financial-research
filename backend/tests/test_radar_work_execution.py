@@ -59,6 +59,7 @@ def test_real_window_handlers_resume_both_bases_without_replaying_finished_windo
     from ai_stock_sentinel.daily_radar.work_handlers import WorkHandlers
     from ai_stock_sentinel.calibration.price_provider import YFinanceForwardPriceProvider
     from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
+    from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector, OfficialPriceEvidence
     from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
     from test_daily_radar_forward_validation import _add_run, _add_candidate, _price
     from radar_calendar_support import calendar
@@ -81,6 +82,9 @@ def test_real_window_handlers_resume_both_bases_without_replaying_finished_windo
     monkeypatch.setattr(YFinanceForwardPriceProvider,'fetch',prices)
     monkeypatch.setattr(RecoveringResearchPriceProvider,'fetch',prices)
     monkeypatch.setattr(RecoveringResearchPriceProvider,'repair',lambda provider,series,**kwargs:series)
+    official = {r['date']: dict(r) | {'price_source': 'official-test'} for r in rows}
+    monkeypatch.setattr(OfficialPriceCollector, 'collect',
+        lambda self, symbol, start, end: OfficialPriceEvidence(official, official, []))
     jid=create_job(db,run_date=day,lanes=['signal_close','next_open'],now=now).id
     for _ in range(8):
         handlers=WorkHandlers(db)  # New process/request state each time.
@@ -89,6 +93,29 @@ def test_real_window_handlers_resume_both_bases_without_replaying_finished_windo
         if result['advanced_count']==0:break
     saved=db.scalars(select(DailyRadarForwardValidationResult)).all()
     assert len(saved)==2 and all(r.status=='validated' and r.candidate_id==cid for r in saved), [(r.validation_version,r.status,r.skip_reason) for r in saved]
+    assert all(r.outcome['validation_price_evidence']['sha256'] for r in saved)
+    from ai_stock_sentinel.daily_radar.forward_validation import upsert_forward_validation_results
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+    from ai_stock_sentinel.daily_radar.validation_preparation import ValidationAcceptanceConflict
+    for row in saved:
+        summary = upsert_forward_validation_results(db, [{
+            'candidate_id': cid, 'signal_date': str(row.signal_date), 'window_days': row.window_days,
+            'benchmark_symbol': row.benchmark_symbol, 'validation_version': row.validation_version,
+            'evaluation_as_of_date': str(day), 'status': 'skipped', 'target_date': None,
+            'skip_reason': 'official_validation_price_missing', 'outcome': {},
+        }])
+        assert summary['records_written'] == 0
+        assert row.status == 'validated'
+        proof = dict(row.outcome['validation_price_evidence'])
+        proof['source_versions'] = ['official-correction']
+        proof['sha256'] = fingerprint({key: value for key, value in proof.items() if key != 'sha256'})
+        with pytest.raises(ValidationAcceptanceConflict, match='validation_price_version_changed'):
+            upsert_forward_validation_results(db, [{
+                'candidate_id': cid, 'signal_date': str(row.signal_date), 'window_days': row.window_days,
+                'benchmark_symbol': row.benchmark_symbol, 'validation_version': row.validation_version,
+                'evaluation_as_of_date': str(day), 'status': 'validated', 'target_date': str(row.target_date),
+                'skip_reason': None, 'outcome': dict(row.outcome) | {'validation_price_evidence': proof},
+            }])
     assert len({r.validation_version for r in saved})==2
     windows=db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage=='window')).all()
     assert len(windows)==2 and all(w.state=='ready' and w.attempt_count==1 for w in windows), [(w.lane,w.state,w.reason,w.attempt_count) for w in windows]

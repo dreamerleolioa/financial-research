@@ -578,6 +578,11 @@ def upsert_forward_validation_results(
     require_existing_conflict: bool = False,
     expected_revisions: Mapping[tuple, str | None] | None = None,
 ) -> dict[str, int]:
+    from ai_stock_sentinel.daily_radar.price_acceptance import (
+        PRICE_EVIDENCE, RETRYABLE_PRICE_REASONS, verify_price_lock,
+    )
+    from ai_stock_sentinel.daily_radar.validation_preparation import ValidationAcceptanceConflict
+
     outcome_rows = sorted(
         (row for row in outcomes if row.get("candidate_id") is not None),
         key=lambda row: (int(row["candidate_id"]), int(row["window_days"]), str(row["validation_version"])),
@@ -634,6 +639,7 @@ def upsert_forward_validation_results(
                 "Daily Radar validation identity must match its scoring candidate"
             )
         research_window = outcome["validation_version"] == rights.RESEARCH_VERSION
+        verify_price_lock(outcome, symbol=candidate_symbol, basis="next_open" if research_window else "signal_close")
         statement = select(DailyRadarForwardValidationResult).where(
             DailyRadarForwardValidationResult.candidate_id == int(candidate_id),
             DailyRadarForwardValidationResult.window_days == int(outcome["window_days"]),
@@ -654,6 +660,20 @@ def upsert_forward_validation_results(
                 or forward_validation_result_revision(existing) != expected_revisions[key]):
             continue
         if existing is not None and _mapping(existing.outcome).get("historical_repair"):
+            continue
+        saved_lock = (existing.outcome or {}).get(PRICE_EVIDENCE) if existing is not None else None
+        if saved_lock is not None:
+            incoming_lock = _mapping(outcome.get("outcome")).get(PRICE_EVIDENCE)
+            if incoming_lock is not None and incoming_lock["sha256"] != saved_lock["sha256"]:
+                raise ValidationAcceptanceConflict("validation_price_version_changed")
+            continue
+        if existing is not None and existing.status == "validated" and outcome.get("skip_reason") in RETRYABLE_PRICE_REASONS:
+            continue
+        if (existing is not None and existing.skip_reason == "conflicting_price_records"
+                and outcome.get("skip_reason") in {
+                    "official_validation_price_missing", "official_validation_events_unverified",
+                }):
+            # Failed collection supplies no evidence that the prior conflict is gone.
             continue
         payload = dict(_mapping(outcome.get("outcome")))
         if (research_window and existing is not None and existing.status == "skipped"
@@ -761,11 +781,14 @@ def _summary_outcome(column, dialect):
     """
     if dialect == 'postgresql':
         from sqlalchemy.dialects.postgresql import array
-        return column.op('-')('reviewed_official_window').op('#-')(
-            array(['historical_repair', 'prior_evidence']))
+        return (column.op('-')('reviewed_official_window')
+                .op('#-')(array(['historical_repair', 'prior_evidence']))
+                .op('#-')(array(['validation_price_evidence', 'stock']))
+                .op('#-')(array(['validation_price_evidence', 'benchmark'])))
     if dialect == 'sqlite':
         return func.json_remove(column, '$.reviewed_official_window',
-                                '$.historical_repair.prior_evidence', type_=JSON)
+                                '$.historical_repair.prior_evidence', '$.validation_price_evidence.stock',
+                                '$.validation_price_evidence.benchmark', type_=JSON)
     raise ValueError('unsupported_validation_summary_dialect')
 
 
@@ -1477,6 +1500,7 @@ DAILY_RADAR_FORWARD_ADAPTER = ForwardValidationAdapter(
     entry_price=_entry_price,
     defense_reference=_defense_reference,
     freshness_status=_data_freshness_status,
+    reject_price_conflicts=True,
 )
 
 

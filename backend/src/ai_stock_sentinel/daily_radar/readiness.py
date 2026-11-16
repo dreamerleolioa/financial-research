@@ -37,7 +37,9 @@ from ai_stock_sentinel.db.models import DailyRadarRun, DailyRadarCandidate
 def recovery_action(reason):
     """Stable classes consumed by reports and the durable executor."""
     if reason in {"conflicting_price_records", "adjusted_history_changed", "price_basis_mismatch",
-                  "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict", 'calendar_window_unverified', UNVERIFIED}:
+                  "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict",
+                  "signal_price_anchor_mismatch", "adjustment_factor_unverified", "official_corporate_action_in_window",
+                  'calendar_window_unverified', UNVERIFIED}:
         return "needs_review"
     if reason in {"research_recovery_budget_exhausted", "budget_exhausted"}:
         return "resume"
@@ -176,6 +178,7 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
 def scoring_prerequisite_inputs(session, *, run_date):
     """Actual publication prerequisites without scanning validation history."""
     from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+    from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
     prepared = get_daily_radar_prepared_run(session, run_date=run_date, market="TW")
     steps = prepared.step_statuses if prepared else {}
     blockers = []
@@ -201,6 +204,12 @@ def scoring_prerequisite_inputs(session, *, run_date):
             cache_rows = _require_complete_daily_radar_raw_rows(get_final_raw_data_rows_for_symbols(
                 session, run_date=run_date, symbols=prepared.selected_symbols),
                 selected_symbols=prepared.selected_symbols, run_date=run_date)
+            if snapshots_enabled():
+                from ai_stock_sentinel.daily_radar.price_acceptance import signal_price_gaps
+                rejected = signal_price_gaps(session, cache_rows, run_date=run_date)
+                if rejected:
+                    blockers.append({"reason": "daily_radar_raw_data_incomplete",
+                        "missing_symbols": sorted(rejected), "price_reasons": rejected, "next_action": "resume"})
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {"code": str(exc.detail)}
             blockers.append({"reason": detail.get("code"),

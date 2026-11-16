@@ -223,9 +223,10 @@ def test_conflict_marker_blocks_only_windows_containing_its_trading_date():
     rows = prices([106] * 10)
     rows[6]["ohlc_conflict_fields"] = ["high"]
     assert diagnostic(candidate(), rows, window=5)["status"] == "confirmed"
-    result = diagnostic(candidate(), rows, window=10)
-    assert result["status"] == "insufficient_data"
-    assert result["missing_reason"] == "candidate_history_gap_or_invalid_ohlc"
+    result = evaluate(candidate(), rows, window=10)
+    assert result["status"] == "skipped"
+    assert result["skip_reason"] == "conflicting_price_records"
+    assert "forward_return_pct" not in result["outcome"]
 
 
 def test_reference_date_mismatch_and_future_rows_are_not_used():

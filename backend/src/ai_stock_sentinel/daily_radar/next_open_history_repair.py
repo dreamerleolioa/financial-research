@@ -23,6 +23,8 @@ from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATIO
 from ai_stock_sentinel.daily_radar.schemas import DailyRadarForwardValidationRunRequest
 from ai_stock_sentinel.daily_radar.trading_calendar import CALENDAR_STEP, TradingCalendar, load_calendar, months
 from ai_stock_sentinel.daily_radar.validation_inputs import validation_candidate_revision
+from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
+from ai_stock_sentinel.daily_radar.work_queue import LostLease
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun, DailyRadarPreparedRun
 from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult as Result
 
@@ -159,6 +161,8 @@ class _Tape:
                 raise ValueError('next_open_capture_too_many_calls')
             try:
                 value = getattr(self.provider, name)(*args, **kwargs)
+            except (SourceDependencyBusy, LostLease):
+                raise
             except Exception:
                 self.calls.append({'request': signature, 'failed': True})
                 raise RuntimeError('next_open_captured_provider_failure') from None

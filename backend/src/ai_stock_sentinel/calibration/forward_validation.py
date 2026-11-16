@@ -26,6 +26,7 @@ class ForwardValidationAdapter:
     entry_price: Callable[[Mapping[str, Any], Mapping[date, Mapping[str, float]], date], float | None]
     defense_reference: Callable[[Mapping[str, Any]], Mapping[str, Any]]
     freshness_status: Callable[[Mapping[str, Any]], str]
+    reject_price_conflicts: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,15 @@ def evaluate_forward_window(
 
     candidate_prices = normalize_price_series(price_series)
     benchmark_by_date = normalize_price_series(benchmark_prices)
+    if adapter.reject_price_conflicts:
+        relevant_days = expected_days
+        if relevant_days is None:
+            relevant_days = [day for day, _ in future_price_rows(
+                benchmark_by_date, signal_date, as_of_date)][:window_days]
+        relevant_days = {signal_date, *relevant_days}
+        if any(row.get(PRICE_CONFLICT_FIELDS_KEY) and parse_date(row.get("date")) in relevant_days
+               for series in (price_series, benchmark_prices) for row in series):
+            return _skip(base, "conflicting_price_records")
     if expected_days is not None:
         for series, reason, required in (
             (benchmark_by_date, "missing_benchmark", [signal_date, *expected_days]),

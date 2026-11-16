@@ -990,18 +990,16 @@ def test_overlapping_final_snapshots_keep_conflict_through_due_planning_and_pers
             as_of_date=date(2026, 6, 8), windows=[5],
             windows_by_candidate=prepared.evaluation_windows_by_candidate)
         outcome = evaluation.outcomes[0]
-        assert outcome["status"] == "validated"
-        assert outcome["outcome"]["forward_return_pct"] == 10
-        assert outcome["outcome"]["observation_diagnostic"]["status"] == "insufficient_data"
-        assert outcome["outcome"]["observation_diagnostic"]["missing_reason"] == "candidate_history_gap_or_invalid_ohlc"
+        assert outcome["status"] == "skipped"
+        assert outcome["skip_reason"] == "conflicting_price_records"
+        assert "forward_return_pct" not in outcome["outcome"]
         upsert_forward_validation_results(session, evaluation.outcomes)
         saved = persisted_forward_validation_outcomes(session, candidates, windows=[5], as_of_date=date(2026, 6, 8))
         report = build_forward_validation_report_from_outcomes(
             candidates, saved, market="TW", sample_source="test", as_of_date=date(2026, 6, 8),
             windows=[5], benchmark_prices=benchmark)
-        stats = report["observation_diagnostics"]["cohorts"][0]["windows"]["5"]["all_selected"]
-        assert stats["status_counts"] == {"insufficient_data": 1}
-        assert stats["confirmation_rate"] is None and stats["invalidation_rate"] is None
+        assert saved[0]["skip_reason"] == "conflicting_price_records"
+        assert report["skip_reasons"] == {"conflicting_price_records": 1}
 
 
 def test_benchmark_prices_fall_back_to_latest_prepared_market_context() -> None:
@@ -1707,16 +1705,16 @@ def test_due_mode_recomputes_candidate_refresh_after_benchmark_expands(monkeypat
             self.calls.append(ordered)
             rows = {
                 "TAIEX": [
-                    _price("2026-06-01", 1000, 1000, 1000, 1000),
-                    _price("2026-06-02", 1001, 1001, 1001, 1001),
-                    _price("2026-06-03", 1002, 1002, 1002, 1002),
+                    _price("2026-06-01", 1000, 1002, 998, 1000),
+                    _price("2026-06-02", 1001, 1003, 999, 1001),
+                    _price("2026-06-03", 1002, 1004, 1000, 1002),
                     _price("2026-06-05", 1003, 1003, 1003, 1003),
                 ],
                 "2330.TW": [
-                    _price("2026-06-01", 100, 100, 100, 100),
-                    _price("2026-06-02", 101, 101, 101, 101),
-                    _price("2026-06-03", 102, 102, 102, 102),
-                    _price("2026-06-04", 999, 999, 999, 999),
+                    _price("2026-06-01", 100, 102, 98, 100),
+                    _price("2026-06-02", 101, 103, 99, 101),
+                    _price("2026-06-03", 102, 104, 100, 102),
+                    _price("2026-06-04", 999, 1001, 997, 999),
                     _price("2026-06-05", 103, 103, 103, 103),
                 ],
             }

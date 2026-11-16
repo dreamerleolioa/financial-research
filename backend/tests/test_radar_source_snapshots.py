@@ -146,10 +146,13 @@ def test_research_failed_miss_preserves_other_symbols_cache_hits(archive, monkey
 
 def test_one_shot_run_archives_with_a_single_connection(archive, monkeypatch):
     import pandas as pd
+    from decimal import Decimal
     from sqlalchemy.pool import QueuePool
     from ai_stock_sentinel.daily_radar import run_router
     from ai_stock_sentinel.daily_radar.raw_data import YFinanceBatchTechnicalFetcher
     from ai_stock_sentinel.daily_radar.schemas import DailyRadarRunRequest
+    from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
+    from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_daily_bars
     from test_daily_radar_api import (FakeUniverseProvider, FakeMarketIndexContextProvider,
         FakeBackgroundChipContextProvider, FakePhase1AvwapDailyPriceProvider, FakeMarketSessionProvider)
     from test_daily_radar_technical_repair import _frame
@@ -162,6 +165,11 @@ def test_one_shot_run_archives_with_a_single_connection(archive, monkeypatch):
     monkeypatch.setattr('ai_stock_sentinel.daily_radar.raw_data.yf.download',
         lambda *args, **kwargs: pd.concat({'2330.TW': _frame(end=str(day))}, axis=1))
     with Session(engine) as db:
+        quote = _frame(end=str(day)).iloc[-1]
+        upsert_taiwan_daily_bars(db, [MarketDailyBar(symbol='2330.TW', market='TW', name='fixture',
+            trade_date=day, **{key: Decimal(str(quote[key.title()])) for key in ('open','high','low','close')},
+            volume=1, amount=1, source_provider='twse', source_dataset='fixture')])
+        db.commit()
         result = run_router.run_daily_radar_endpoint(payload=DailyRadarRunRequest(run_date=day, market='TW'), db=db,
             universe_provider=FakeUniverseProvider(),
             technical_fetcher=YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None, source_store=SourceSnapshotStore(engine)),

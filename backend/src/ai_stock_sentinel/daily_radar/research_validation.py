@@ -22,6 +22,11 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     load_benchmark_prices_from_prepared_market_context,
     validate_forward_validation_benchmark,
 )
+from ai_stock_sentinel.daily_radar.price_acceptance import (
+    accept_next_open_prices, lock_reviewed_next_open, refused_prices,
+)
+from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
+from ai_stock_sentinel.daily_radar.work_queue import LostLease
 
 
 RESEARCH_VALIDATION_VERSION = rights.RESEARCH_VERSION
@@ -267,6 +272,8 @@ def _recover_rights_window(candidate, row, yahoo, marked, benchmark, calendar, *
         )
         if result["status"] != "validated":
             raise ValueError("twse_rights_window_evaluation_failed")
+    except (SourceDependencyBusy, LostLease):
+        raise
     except Exception as exc:
         reason = str(exc)
         provider.diagnostics.append({
@@ -291,6 +298,8 @@ def _classify_corporate_action(row, yahoo, marked, benchmark, *, as_of_date, pro
             symbol, signal, row["window_days"], as_of_date, yahoo_rows=yahoo, benchmark_rows=benchmark,
             marked_rows=marked, provider=provider,
         )
+    except (SourceDependencyBusy, LostLease):
+        raise
     except Exception as exc:
         # An unavailable, incomplete or contradictory report preserves the original gap.
         reason = str(exc)
@@ -316,8 +325,75 @@ def _classify_corporate_action(row, yahoo, marked, benchmark, *, as_of_date, pro
     }}
 
 
+def _recovery_matches_official_events(outcome, events, days):
+    scope = {str(day) for day in days[1:]}
+    material = [(e["family"], e["effective_date"]) for e in events or ()
+                if e["effective_date"] in scope and not (e["family"] == "rights" and e.get("cash_dividend"))]
+    payload = outcome["outcome"]
+    if rights.PROVENANCE_KEY in payload:
+        event = payload[rights.PROVENANCE_KEY]["event"]
+        expected = ("rights", event["ex_date"])
+    elif corporate_actions.PROVENANCE_KEY in payload:
+        event = payload[corporate_actions.PROVENANCE_KEY]["event"]
+        family = "reduction" if event["type"] == "cash_reduction" else "rights"
+        expected = (family, event["effective_date"])
+    else:
+        return False
+    return material == [expected]
+
+
+def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, provider,
+                               as_of_date, benchmark_symbol, calendar):
+    from ai_stock_sentinel.calibration.research_prices import _mark_conflicts
+    from ai_stock_sentinel.daily_radar.next_open_history_repair import _Tape, _verify_after
+    from ai_stock_sentinel.daily_radar.next_open_official_repair import collect_window
+    from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
+
+    accepted = accept_next_open_prices(candidate, days, yahoo, official)
+    base = evaluate_research_window(
+        candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
+        window_days=len(days) - 1, as_of_date=as_of_date, benchmark_symbol=benchmark_symbol,
+        trading_calendar=calendar.sessions, validate_signal_session=True,
+    )
+    if not accepted.reason:
+        return accepted.with_proof(base) if base["status"] == "validated" else base
+    if accepted.reason in {"official_corporate_action_in_window", "official_validation_price_missing"}:
+        # Keep the established rights/distribution/reduction rules. A recovered
+        # window must still independently prove its official inputs before use.
+        marked = {r["date"]: dict(r) for r in yahoo}
+        _mark_conflicts(marked, official.stock)
+        marked = list(marked.values())
+        row = evaluate_research_window(
+            candidate, price_series=marked, benchmark_prices=benchmark, window_days=len(days) - 1,
+            as_of_date=as_of_date, benchmark_symbol=benchmark_symbol,
+            trading_calendar=calendar.sessions, validate_signal_session=True,
+        )
+        recovered = _recover_rights_window(
+            candidate, row, yahoo, marked, benchmark, calendar.sessions,
+            as_of_date=as_of_date, scoped=False, provider=provider,
+        ) if row["skip_reason"] == rights.CONFLICT_REASON else None
+        if recovered is None and row["skip_reason"] in {rights.CONFLICT_REASON, "missing_future_price"}:
+            recovered = _classify_corporate_action(row, yahoo, marked, benchmark, as_of_date=as_of_date,
+                                                   provider=provider)
+        if recovered and _recovery_matches_official_events(recovered, official.events, days):
+            tape = _Tape(provider)
+            symbol = candidate["symbol"]
+            tape.fetched = {symbol: yahoo, "TAIEX": benchmark}
+            tape.repaired = {symbol: marked, "TAIEX": benchmark}
+            try:
+                proof = collect_window(candidate, {"window_days": len(days) - 1, "outcome": {}},
+                                       recovered, calendar=calendar, provider=tape)
+                _verify_after(candidate, proof, calendar)
+                return lock_reviewed_next_open(proof)
+            except (SourceDependencyBusy, LostLease):
+                raise
+            except (ValueError, RuntimeError, OSError):
+                pass
+    return bind_validation_input(candidate, refused_prices(base | {"target_date": str(days[-1])}, accepted.reason))
+
+
 def run_research_validation(session, request, *, as_of_date: date, price_provider, calendar_provider=None,
-                            candidate_ids=None, prepare_only=False):
+                            candidate_ids=None, prepare_only=False, official_price_collector=None):
     """Bounded, resumable research. The router owns the single transaction."""
     windows = ordered_positive_values(request.windows)
     scoped = request.conflict_recovery_symbols is not None
@@ -410,7 +486,7 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             [request.benchmark_symbol], start_date=price_start, end_date=as_of_date
         ).get(request.benchmark_symbol, []))
         repair = getattr(price_provider, "repair", None)
-        if callable(repair):
+        if callable(repair) and official_price_collector is None:
             required = sorted(set(reference_days) | {price_start, as_of_date})
             benchmark = repair({request.benchmark_symbol: benchmark},
                 required_dates_by_symbol={request.benchmark_symbol: required},
@@ -442,11 +518,24 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
                     future = [d for d in candidate_calendar if d > parse_date(candidate["record_date"])]
                     required.update(future[:max(due)])
                 required_by_symbol[symbol] = sorted(required)
-            if callable(repair):
+            if callable(repair) and official_price_collector is None:
                 prices = repair(prices, required_dates_by_symbol=required_by_symbol, as_of_date=as_of_date)
             for symbol in batch:
+                official = None
+                if official_price_collector is not None and official_calendar is not None:
+                    official = official_price_collector.collect(
+                        symbol, min(parse_date(c["record_date"]) for c, _, _ in by_symbol[symbol]),
+                        max(required_by_symbol[symbol]),
+                    )
                 for candidate, due, candidate_calendar in by_symbol[symbol]:
                     for window in due:
+                        if official is not None:
+                            signal = parse_date(candidate["record_date"])
+                            days = [signal, *[day for day in candidate_calendar if signal < day <= as_of_date][:window]]
+                            outcomes.append(_evaluate_locked_next_open(candidate, days, yahoo=yahoo.get(symbol, []),
+                                benchmark=benchmark, official=official, provider=price_provider, as_of_date=as_of_date,
+                                benchmark_symbol=request.benchmark_symbol, calendar=official_calendar))
+                            continue
                         row = evaluate_research_window(
                             candidate, price_series=prices.get(symbol, []), benchmark_prices=benchmark,
                             window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,

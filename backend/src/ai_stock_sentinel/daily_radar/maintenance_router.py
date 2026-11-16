@@ -326,9 +326,17 @@ def run_daily_radar_forward_validation_endpoint(
 ) -> DailyRadarForwardValidationRunResponse:
     request = payload or DailyRadarForwardValidationRunRequest()
     as_of_date = request.as_of_date or dependencies._backend_today()
+    from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector
+    from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
+
+    collector = (OfficialPriceCollector(research_price_provider)
+                 if request.market == "TW" and request.benchmark_symbol == "TAIEX"
+                 and request.conflict_recovery_symbols is None and snapshots_enabled() else None)
     if request.return_basis == "next_open":
         try:
-            result = run_research_validation(db, request, as_of_date=as_of_date, price_provider=research_price_provider, calendar_provider=calendar_provider)
+            result = run_research_validation(db, request, as_of_date=as_of_date,
+                price_provider=research_price_provider, calendar_provider=calendar_provider,
+                official_price_collector=collector)
         except CalendarUnavailableError as exc:
             raise HTTPException(status_code=503, detail={"code": str(exc)}) from exc
         except ValidationAcceptanceConflict as exc:
@@ -341,7 +349,7 @@ def run_daily_radar_forward_validation_endpoint(
     try:
         return run_signal_close_validation(db, request, as_of_date=as_of_date,
             price_provider=price_provider, calendar_provider=calendar_provider,
-            raw_price_loader=load_price_series_from_raw_data)
+            raw_price_loader=load_price_series_from_raw_data, official_price_collector=collector)
     except ValidationAcceptanceConflict as exc:
         raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
     except ValueError as exc:

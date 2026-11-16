@@ -1,5 +1,5 @@
 """Shared signal-close execution with a read-only collection seam for durable work."""
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date
 import logging
 from fastapi import HTTPException
@@ -17,6 +17,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 )
 from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
 from ai_stock_sentinel.daily_radar.schemas import DailyRadarForwardValidationRunResponse
+from ai_stock_sentinel.daily_radar.price_acceptance import accept_signal_close_prices, refused_prices
 from ai_stock_sentinel.daily_radar.validation_preparation import (
     ValidationPreparation, accept_validation_results, capture_validation_acceptance,
 )
@@ -24,8 +25,65 @@ from ai_stock_sentinel.daily_radar.validation_preparation import (
 logger = logging.getLogger("ai_stock_sentinel.daily_radar.maintenance_router")
 
 
+def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar, request,
+                                  collect_official, fetch_prices):
+    from ai_stock_sentinel.calibration.forward_validation import evaluate_forward_window
+    from ai_stock_sentinel.daily_radar.forward_validation import _with_market_lifecycle_diagnostics
+    from ai_stock_sentinel.daily_radar.observation_validation import evaluate_observation
+    from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
+    from ai_stock_sentinel.daily_radar.window_identity import bind_window
+
+    by_symbol = defaultdict(list)
+    for candidate in candidates:
+        signal = date.fromisoformat(candidate["record_date"])
+        days = [day for day in calendar.sessions if day > signal]
+        windows = (request.windows if windows_by_candidate is None else
+                   windows_by_candidate.get(f'id:{candidate["candidate_id"]}', []))
+        for window in windows:
+            if len(days) >= window:
+                by_symbol[candidate["symbol"]].append((candidate, [signal, *days[:window]]))
+
+    outcomes = []
+    for symbol, windows in by_symbol.items():
+        start = min(days[0] for _, days in windows)
+        end = max(days[-1] for _, days in windows)
+        official = collect_official(symbol, start, end)
+        adjusted = fetch_prices([symbol], start_date=start, end_date=end).get(symbol, [])
+        for candidate, days in windows:
+            accepted = accept_signal_close_prices(candidate, days, adjusted, official)
+            row = evaluate_forward_window(
+                candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
+                adapter=DAILY_RADAR_FORWARD_ADAPTER, window_days=len(days) - 1,
+                as_of_date=calendar.through, benchmark_symbol=request.benchmark_symbol,
+                validation_version=FORWARD_VALIDATION_VERSION, hit_threshold_pct=0,
+                trading_calendar=calendar.sessions,
+            )
+            if (accepted.reason == "official_validation_price_missing"
+                    and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}):
+                lifecycle = _with_market_lifecycle_diagnostics(
+                    [row | {"skip_reason": "missing_future_price"}],
+                    price_series_by_symbol={symbol: list(official.stock.values())},
+                    benchmark_prices=list(official.benchmark.values()), trading_calendar=calendar.sessions,
+                    as_of_date=calendar.through,
+                )[0]
+                if lifecycle["skip_reason"] == "trading_terminated_in_window":
+                    outcomes.append(bind_validation_input(candidate, lifecycle))
+                    continue
+            if accepted.reason and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}:
+                row = refused_prices(row, accepted.reason)
+            elif row["status"] == "validated":
+                row["outcome"]["observation_diagnostic"] = evaluate_observation(
+                    candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
+                    window_days=len(days) - 1, as_of_date=calendar.through,
+                )
+                row = accepted.with_proof(bind_window(row, days[1:], "signal_close"))
+            outcomes.append(bind_validation_input(candidate, row))
+    return outcomes
+
+
 def run_signal_close_validation(db, request, *, as_of_date, price_provider, calendar_provider,
-                                candidate_ids=None, prepare_only=False, raw_price_loader=None):
+                                candidate_ids=None, prepare_only=False, raw_price_loader=None,
+                                official_price_collector=None):
     raw_price_loader = raw_price_loader or load_price_series_from_raw_data
     start_date = request.start_date
     if request.mode == "due" and start_date is None:
@@ -63,16 +121,18 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         candidate_record_dates,
         default=start_date or as_of_date,
     )
-    with metrics.stage("load_raw_prices"):
-        price_series = raw_price_loader(
-            db,
-            symbols=sorted(symbols | {request.benchmark_symbol}),
-            start_date=price_start_date,
-            end_date=as_of_date,
-        )
-        metrics.counts["price_rows"] = sum(len(rows) for rows in price_series.values())
+    price_series = {}
+    if official_price_collector is None:
+        with metrics.stage("load_raw_prices"):
+            price_series = raw_price_loader(
+                db,
+                symbols=sorted(symbols | {request.benchmark_symbol}),
+                start_date=price_start_date,
+                end_date=as_of_date,
+            )
+            metrics.counts["price_rows"] = sum(len(rows) for rows in price_series.values())
     benchmark_prices = price_series.get(request.benchmark_symbol, [])
-    if not benchmark_prices:
+    if not benchmark_prices and official_price_collector is None:
         with metrics.stage("load_benchmark"):
             benchmark_prices = load_benchmark_prices_from_prepared_market_context(
                 db,
@@ -138,6 +198,7 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
                 as_of_date=as_of_date,
                 calendar=calendar,
             )
+    if request.mode == "due" and official_price_collector is None:
         with metrics.stage("prepare_prices"):
             preparation = prepare_due_forward_validation(
                 candidates,
@@ -157,24 +218,29 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         if calendar is None:
             windows_by_candidate = preparation.evaluation_windows_by_candidate
     with metrics.stage("evaluate"):
-        evaluation = build_forward_validation_report(
-            candidates,
-            price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
-            benchmark_prices=benchmark_prices,
-            market=request.market,
-            sample_source="production_db",
-            as_of_date=as_of_date,
-            windows=request.windows,
-            benchmark_symbol=request.benchmark_symbol,
-            windows_by_candidate=windows_by_candidate,
-            trading_calendar=calendar.sessions if calendar else None,
-        )
+        if official_price_collector is not None and calendar is not None:
+            db.rollback()
+            outcomes = _collect_locked_signal_prices(candidates, windows_by_candidate, calendar=calendar,
+                request=request, collect_official=official_price_collector.collect, fetch_prices=fetch_prices)
+        else:
+            outcomes = build_forward_validation_report(
+                candidates,
+                price_series_by_symbol={symbol: price_series.get(symbol, []) for symbol in symbols},
+                benchmark_prices=benchmark_prices,
+                market=request.market,
+                sample_source="production_db",
+                as_of_date=as_of_date,
+                windows=request.windows,
+                benchmark_symbol=request.benchmark_symbol,
+                windows_by_candidate=windows_by_candidate,
+                trading_calendar=calendar.sessions if calendar else None,
+            ).outcomes
     if prepare_only:
-        return ValidationPreparation(candidates=candidates, outcomes=evaluation.outcomes, calendar=calendar,
+        return ValidationPreparation(candidates=candidates, outcomes=outcomes, calendar=calendar,
             as_of_date=as_of_date, return_basis="signal_close", benchmark_prices=benchmark_prices,
             diagnostics=source_errors)
     with metrics.stage("upsert"):
-        write_summary = accept_validation_results(db, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
+        write_summary = accept_validation_results(db, outcomes, calendar=calendar, acceptance=acceptance)
         metrics.counts["records_written"] = write_summary["records_written"]
     with metrics.stage("read_persisted"):
         persisted_outcomes = persisted_forward_validation_outcomes(
@@ -196,7 +262,8 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
             benchmark_prices=benchmark_prices,
             trading_calendar=calendar.sessions if calendar else None,
         )
-        report.update({key: evaluation.report[key] for key in ("current_run_skip_reasons", "current_run_gaps")})
+        from ai_stock_sentinel.daily_radar.forward_validation import current_run_validation_diagnostics
+        report.update(current_run_validation_diagnostics(outcomes))
         if source_errors:
             report.update({"source_recovery": source_errors[:64], "source_recovery_summary": {
                 "total_count": len(source_errors), "reported_count": min(len(source_errors), 64),

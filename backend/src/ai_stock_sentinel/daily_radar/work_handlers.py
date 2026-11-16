@@ -260,6 +260,7 @@ class WorkHandlers:
         from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs, upsert_forward_validation_results, persisted_forward_validation_outcomes, forward_validation_result_revision
         from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
         from ai_stock_sentinel.daily_radar.readiness import classify_window, recovery_action, validation_candidate_revision
+        from ai_stock_sentinel.daily_radar.validation_preparation import ValidationAcceptanceConflict
         scope = claim.scope
         signal, asof = date.fromisoformat(scope['signal_date']), date.fromisoformat(scope['as_of_date'])
         calendar = load_calendar(self.db, start_date=signal, as_of_date=asof)
@@ -287,9 +288,13 @@ class WorkHandlers:
                     forward_validation_result_revision(result_row(self.db))}
         provider = (CachedForwardPrices(self.db, store=self.store) if scope['return_basis'] == 'signal_close'
                     else RecoveringResearchPriceProvider(session=self.db, source_store=self.store))
+        from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector
+        official_provider = (RecoveringResearchPriceProvider(session=None, source_store=self.store)
+                             if scope['return_basis'] == 'signal_close' else provider)
         execute = run_signal_close_validation if scope['return_basis'] == 'signal_close' else run_research_validation
         bundle = execute(self.db, request, as_of_date=asof, price_provider=provider,
-            calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar), candidate_ids=[scope['candidate_id']], prepare_only=True)
+            calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar), candidate_ids=[scope['candidate_id']],
+            prepare_only=True, official_price_collector=OfficialPriceCollector(official_provider))
         revision = [validation_candidate_revision(c) for c in bundle.candidates]
         def apply(db):
             from ai_stock_sentinel.daily_radar.input_manifests import serialize_publication
@@ -311,7 +316,11 @@ class WorkHandlers:
                 if state in {'invalid_window', 'missing_diagnostic', 'input_unverified'}:
                     return {'state': 'needs_review', 'reason': reason, 'result': {'manual_repair_required': True}}
             kwargs = {'terminal_skip_reasons': RESEARCH_TERMINAL_REASONS} if scope['return_basis'] == 'next_open' else {}
-            upsert_forward_validation_results(db, bundle.outcomes, expected_revisions=expected, **kwargs)
+            try:
+                upsert_forward_validation_results(db, bundle.outcomes, expected_revisions=expected, **kwargs)
+            except ValidationAcceptanceConflict:
+                return {'state': 'needs_review', 'reason': 'validation_price_version_changed',
+                        'result': {'manual_repair_required': True}}
             accepted = result_row(db)
             if accepted is not None and accepted.evaluation_as_of_date and accepted.evaluation_as_of_date > asof:
                 return {'state': 'needs_review', 'reason': 'newer_validation_result_preserved',
@@ -323,8 +332,11 @@ class WorkHandlers:
             state, reason, accepted_target = classify_window(current[0], saved[0] if saved else None,
                 basis=scope['return_basis'], window=scope['window_days'], as_of_date=asof, calendar=calendar)
             action = recovery_action(reason) if reason else None
+            collection_gap = next((outcome['skip_reason'] for outcome in bundle.outcomes
+                                   if outcome.get('skip_reason') and outcome['skip_reason'] != reason), None)
             return {'state': 'ready' if state in {'validated', 'terminal'} else 'needs_review' if action in {'needs_review', 'repair_calendar', 'repair_diagnostic'} else 'waiting_provider',
-                'reason': reason, 'result': {'before': before, 'after': saved, 'expected_target_date': str(accepted_target)}}
+                'reason': reason, 'result': {'before': before, 'after': saved, 'expected_target_date': str(accepted_target),
+                                             **({'collection_gap': collection_gap} if collection_gap else {})}}
         return Collected(apply)
 
     def collect_avwap(self, claim):

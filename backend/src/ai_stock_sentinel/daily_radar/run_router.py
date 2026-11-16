@@ -31,6 +31,7 @@ from ai_stock_sentinel.daily_radar.dependencies import (
     get_phase1_avwap_daily_price_provider,
 )
 from ai_stock_sentinel.daily_radar.market_context import MarketIndexContextProvider
+from ai_stock_sentinel.daily_radar.price_acceptance import signal_price_gaps
 from ai_stock_sentinel.daily_radar.pipeline_support import (
     _capped_daily_radar_universe,
     _full_margin_contexts_by_symbol,
@@ -116,6 +117,7 @@ def execute_prepared_scoring(db, *, payload, commit=True):
         selected_symbols=selected_symbols,
         run_date=run_date,
     )
+    _require_official_signal_prices(db, cache_rows, market=request.market, run_date=run_date)
     background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
         db,
         symbols=selected_symbols,
@@ -144,6 +146,15 @@ def execute_prepared_scoring(db, *, payload, commit=True):
 def _scoring_input_context(prepared, rows):
     from ai_stock_sentinel.daily_radar.input_manifests import prepared_input_context
     return prepared_input_context(prepared, rows)
+
+
+def _require_official_signal_prices(db, rows, *, market, run_date):
+    if market != "TW" or not snapshots_enabled():
+        return
+    rejected = signal_price_gaps(db, rows, run_date=run_date)
+    if rejected:
+        raise HTTPException(409, detail={"code": "daily_radar_raw_data_incomplete",
+            "run_date": str(run_date), "missing_symbols": sorted(rejected), "price_reasons": rejected})
 
 
 @router.post(
@@ -254,6 +265,7 @@ def run_daily_radar_endpoint(
             selected_symbols=selected_symbols,
             run_date=run_date,
         )
+        _require_official_signal_prices(db, cache_rows, market=market, run_date=run_date)
         if market == "TW":
             attach_official_turnover(db, cache_rows, run_date=run_date)
         failure_stage = "daily_radar_service"
