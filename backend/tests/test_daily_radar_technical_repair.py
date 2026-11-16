@@ -130,7 +130,8 @@ def _repair_fixture(symbol="2330.TW", factor=0.95):
     return original, repaired, official
 
 
-def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_date=RUN_DATE, unrepaired=None):
+def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_date=RUN_DATE,
+           unrepaired=None, face_value_reports=None):
     calls = []
     official_calls = []
 
@@ -155,6 +156,7 @@ def _fetch(monkeypatch, original, repaired, official, *, symbol="2330.TW", run_d
     fetcher = YFinanceBatchTechnicalFetcher(
         name_resolver=lambda _: None,
         official_bar_loader=load_official,
+        face_value_reports=face_value_reports,
     )
     return fetcher.fetch([symbol], run_date=run_date), calls, official_calls
 
@@ -171,6 +173,67 @@ def _repair_history_gap_fixture(*, factor=1.0, symbol="5904.TWO"):
     unrepaired = repaired.copy()
     repaired.loc[gap_date, ["Open", "High", "Low", "Close", "Adj Close"]] = float("nan")
     return original, repaired, unrepaired, official, gap_date
+
+
+@pytest.mark.parametrize("case", [
+    "verified", "no_missing_prices", "conflict_before_gap", "unverified_ratio", "wrong_symbol",
+    "post_event_change", "bad_target_factor",
+])
+def test_6949_face_value_change_requires_official_terms_and_preserves_accepted_history(monkeypatch, case):
+    symbol = "6949.TW"
+    original, repaired, unrepaired, official, gap = _repair_history_gap_fixture(symbol=symbol)
+    accepted = original.copy(deep=True)
+    pre_event = pd.Timestamp("2026-09-01")
+    price_columns = ["Open", "High", "Low", "Close", "Adj Close"]
+    if case in {"no_missing_prices", "conflict_before_gap"}:
+        repaired.loc[gap, price_columns] = unrepaired.loc[gap, price_columns]
+    if case == "conflict_before_gap":
+        repaired.loc["2026-09-09", price_columns] = float("nan")
+    repaired.loc[pre_event, price_columns] *= 20
+    if case == "post_event_change":
+        repaired.loc["2026-09-08", price_columns] *= 20
+    if case == "bad_target_factor":
+        repaired.loc[pd.Timestamp(RUN_DATE), "Adj Close"] *= 1.1
+    requests = []
+
+    def capture(path, params):
+        requests.append((path, params))
+        if path.endswith("/TWTB8U"):
+            return {
+                "stat": "OK", "params": params,
+                "fields": ["恢復買賣日期", "股票代號", "詳細資料"],
+                "data": [["115/09/07", "6949", "6949,20260827,20260907"]],
+            }, {"snapshot_sha256": "publication"}
+        assert path.endswith("/TWTB7U")
+        return {
+            "stat": "OK", "params": params,
+            "fields": ["恢復買賣日期", "股票代號", "變更股票面額換股率",
+                       "變更前面額", "變更後面額", "恢復買賣參考價"],
+            "data": [["115/09/07", "2330" if case == "wrong_symbol" else "6949",
+                      "10" if case == "unverified_ratio" else "20.00000000", "10.00", "0.50",
+                      "6949  ,20260827,20260907"]],
+        }, {"snapshot_sha256": "terms"}
+
+    result, downloads, _ = _fetch(monkeypatch, original, repaired, official, symbol=symbol,
+                                  unrepaired=unrepaired, face_value_reports=capture)
+    technical = result[symbol]
+    pd.testing.assert_frame_equal(original, accepted)
+    assert len(downloads) == 4
+    assert len(requests) == 2
+    if case in {"unverified_ratio", "wrong_symbol", "post_event_change", "bad_target_factor"}:
+        assert technical["data_dates"]["ohlcv"] == "2026-09-14"
+        assert technical["refresh_diagnostics"]["is_final"] is False
+        return
+    assert technical["data_dates"]["ohlcv"] == str(RUN_DATE)
+    assert technical["refresh_diagnostics"]["is_final"] is True
+    assert technical["price_history"][:-1] == [
+        {"date": str(index.date()), "close": row.Close}
+        for index, row in accepted.iloc[-79:].iterrows()
+    ]
+    proof = technical["source_provenance"]["repair"]["face_value_change"]
+    assert proof["effective_date"] == "2026-09-07"
+    assert proof["exchange_ratio"] == 20
+    assert proof["reconciled_dates"] == ["2026-09-01"]
 
 
 @pytest.mark.parametrize("factor", [1.0, 0.95])

@@ -141,22 +141,49 @@ def test_conflict_rechecks_only_sources_and_wakes_window_only_on_changed_content
     assert window.state==('pending' if changed else 'needs_review')
 
 
-def test_real_ohlcv_unit_fetches_only_target_and_does_not_mark_partial_cohort_complete(db,monkeypatch):
+@pytest.mark.parametrize("face_value_evidence", [False, True])
+def test_real_ohlcv_unit_fetches_only_target_and_does_not_mark_partial_cohort_complete(db,monkeypatch,face_value_evidence):
     from ai_stock_sentinel.daily_radar.work_queue import WorkClaim
     from ai_stock_sentinel.daily_radar.work_handlers import WorkHandlers
-    from ai_stock_sentinel.daily_radar import dependencies
+    from ai_stock_sentinel.daily_radar import raw_data
     from ai_stock_sentinel.db.models import StockRawData
-    from test_daily_radar_api import _technical_payload,FakeBatchTechnicalFetcher
+    from test_daily_radar_api import _technical_payload
     day=date(2026,11,6)
     db.add(DailyRadarPreparedRun(run_date=day,market='TW',status='prepared',selected_symbols=['2330.TW','2317.TW'],
         symbol_count=2,universe=[],errors=[],step_statuses={}))
     db.commit()
-    fetcher=FakeBatchTechnicalFetcher({'2330.TW':_technical_payload('2330.TW',day)})
-    monkeypatch.setattr(dependencies,'get_daily_radar_technical_fetcher',lambda session:fetcher)
     monkeypatch.setenv('DAILY_RADAR_DURABLE_EXECUTION_ENABLED','true')
+    monkeypatch.setenv('DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED','false')
     handlers=WorkHandlers(db)
+    proofs = []
+
+    def make_technical_fetcher(*, source_store, **kwargs):
+        assert source_store is handlers.store
+
+        def fetch(symbols, *, run_date):
+            assert symbols == ['2330.TW'] and run_date == day
+            payload = _technical_payload('2330.TW', day)
+            if face_value_evidence:
+                for report in ('TWTB8U', 'TWTB7U'):
+                    _, proof = source_store.capture(
+                        provider='twse', url=f'https://www.twse.com.tw/rwd/zh/change/{report}',
+                        params={'response': 'json'}, fetch=lambda: {'stat': 'OK'},
+                    )
+                    proofs.append(proof)
+                payload['source_provenance'] = {'repair': {'face_value_change': {'sources': proofs}}}
+            return {'2330.TW': payload}
+
+        return SimpleNamespace(fetch=fetch)
+
+    monkeypatch.setattr(raw_data, 'YFinanceBatchTechnicalFetcher', make_technical_fetcher)
     claim=WorkClaim(1,'token',1,'a'*64,'ohlcv','publication',day,{'symbol':'2330.TW'})
     collected=handlers.collect(claim)
+    for proof in proofs:
+        assert handlers.store.seen[proof['request_hash']] == proof
+    if proofs:
+        handlers.collect(claim)
+        for proof in proofs:
+            assert handlers.store.seen[proof['request_hash']] == proof
     db.rollback()
     result=collected.apply(db)
     assert result['state']=='ready'

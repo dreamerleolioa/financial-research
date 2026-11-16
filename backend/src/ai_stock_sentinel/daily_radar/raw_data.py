@@ -13,6 +13,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
 from ai_stock_sentinel.data_sources.symbol_metadata import resolve_symbol_name
 from ai_stock_sentinel.daily_radar.data_quality import (
     missing_daily_radar_candidate_technical_fields,
@@ -25,6 +26,7 @@ from ai_stock_sentinel.daily_radar.market_bar_repository import DEFAULT_MARKET_B
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
 from ai_stock_sentinel.daily_radar.technical_repair import (
     TechnicalRepairRejected,
+    verify_face_value_change,
     verified_repaired_frame,
 )
 from ai_stock_sentinel.db.models import StockRawData, TaiwanDailyBar
@@ -52,11 +54,13 @@ class YFinanceBatchTechnicalFetcher:
         name_resolver: Callable[[str], str | None] = resolve_symbol_name,
         official_bar_loader: OfficialDailyBarLoader | None = None,
         source_store=None,
+        face_value_reports: Callable | None = None,
     ) -> None:
         self._name_resolver = name_resolver
         self._official_bar_loader = official_bar_loader
         self.diagnostics: dict[str, dict[str, Any]] = {}
         self.source_store = source_store
+        self._face_value_reports = face_value_reports
 
     def fetch(self, symbols: Sequence[str], *, run_date: date) -> Mapping[str, Mapping[str, Any]]:
         ordered_symbols = _ordered_unique_symbols(symbols)
@@ -219,6 +223,9 @@ class YFinanceBatchTechnicalFetcher:
             for symbol in pending:
                 self._record_attempt(symbol, "repaired_adjustment", "yahoo_repair_unavailable", exc)
             return provenance
+        face_value_reports = self._face_value_reports or RecoveringResearchPriceProvider(
+            total_timeout=12, max_requests=8, source_store=self.source_store,
+        ).capture_twse_report
         for symbol in pending:
             try:
                 repaired = _frame_on_or_before_run_date(
@@ -230,11 +237,14 @@ class YFinanceBatchTechnicalFetcher:
                         symbol=symbol, run_date=run_date,
                     )
                 except TechnicalRepairRejected as exc:
-                    if str(exc) != "repair_history_values_missing" or symbol not in raw_frames:
+                    raw_history_can_help = str(exc) == "repair_history_values_missing" or (
+                        str(exc) == "adjusted_history_changed" and symbol.endswith(".TW")
+                    )
+                    if not raw_history_can_help or symbol not in raw_frames:
                         raise
-                    frame, source = verified_repaired_frame(
-                        frames[symbol], repaired, official_by_symbol[symbol],
-                        symbol=symbol, run_date=run_date, unrepaired_history=raw_frames[symbol],
+                    frame, source = self._verify_with_raw_history(
+                        frames[symbol], repaired, official_by_symbol[symbol], raw_frames[symbol],
+                        symbol=symbol, run_date=run_date, capture=face_value_reports,
                     )
             except TechnicalRepairRejected as exc:
                 self._record_attempt(symbol, "repaired_adjustment", str(exc), exc)
@@ -245,6 +255,31 @@ class YFinanceBatchTechnicalFetcher:
             frames[symbol], provenance[symbol] = frame, source
             self._record_attempt(symbol, "repaired_adjustment", "accepted")
         return provenance
+
+    def _verify_with_raw_history(self, original, repaired, official, raw, *, symbol, run_date, capture):
+        try:
+            return verified_repaired_frame(
+                original, repaired, official, symbol=symbol, run_date=run_date, unrepaired_history=raw,
+            )
+        except TechnicalRepairRejected as exc:
+            conflict = exc.details.get("conflict", {})
+            if not symbol.endswith(".TW") or conflict.get("source") != "repaired_raw":
+                raise
+            self._record_attempt(symbol, "repaired_history", str(exc), exc)
+            try:
+                change = verify_face_value_change(
+                    symbol, start_date=original.index[0].date(),
+                    conflict_date=date.fromisoformat(conflict["date"]),
+                    end_date=original.index[-1].date(), capture=capture,
+                )
+            except TechnicalRepairRejected:
+                raise
+            except Exception as error:
+                raise TechnicalRepairRejected("face_value_evidence_unavailable") from error
+        return verified_repaired_frame(
+            original, repaired, official, symbol=symbol, run_date=run_date, unrepaired_history=raw,
+            face_value_change=change,
+        )
 
     def _safe_resolve_name(self, symbol: str) -> str | None:
         try:
@@ -266,12 +301,13 @@ class LocalFirstBatchTechnicalFetcher:
         provider_mode: str | None = None,
         min_trading_bars: int = 60,
         name_resolver: Callable[[str], str | None] = resolve_symbol_name,
+        source_store=None,
     ) -> None:
         self._session = session
         from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
         self._fallback_fetcher = fallback_fetcher or YFinanceBatchTechnicalFetcher(
             name_resolver=name_resolver, official_bar_loader=self._load_official_bars,
-            source_store=store_for_session(session),
+            source_store=source_store if source_store is not None else store_for_session(session),
         )
         self._provider_mode = provider_mode or os.getenv(
             "DAILY_RADAR_TW_OHLCV_PROVIDER_MODE",
