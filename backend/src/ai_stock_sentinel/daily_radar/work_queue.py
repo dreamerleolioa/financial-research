@@ -56,14 +56,21 @@ def insert(db, model):
     return (pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert)(model)
 
 
+def work_insert_values(*, identity, stage, lane, run_date, scope, input_revision,
+                       retry_at=None, state="pending", dependencies=(), priority=50, not_before=None):
+    return dict(work_key=fingerprint(identity), stage=stage, lane=lane, run_date=run_date,
+                identity=deepcopy(identity), scope=deepcopy(scope), input_revision=input_revision,
+                state=state, retry_at=retry_at or utcnow(), not_before=not_before or retry_at or utcnow(),
+                dependencies=list(dependencies), priority=priority, attempt_count=0)
+
+
 def ensure_work(db, *, identity, stage, lane, run_date, scope, input_revision,
                 retry_at=None, state="pending", dependencies=(), priority=50, not_before=None):
-    key = fingerprint(identity)
-    db.execute(insert(db, RadarWorkItem).values(work_key=key, stage=stage, lane=lane,
-        run_date=run_date, identity=deepcopy(identity), scope=deepcopy(scope), input_revision=input_revision,
-        state=state, retry_at=retry_at or utcnow(), not_before=not_before or retry_at or utcnow(), dependencies=list(dependencies), priority=priority,
-        attempt_count=0).on_conflict_do_nothing(index_elements=["work_key"]))
-    return db.scalar(select(RadarWorkItem).where(RadarWorkItem.work_key == key))
+    values = work_insert_values(identity=identity, stage=stage, lane=lane, run_date=run_date,
+        scope=scope, input_revision=input_revision, retry_at=retry_at, state=state,
+        dependencies=dependencies, priority=priority, not_before=not_before)
+    db.execute(insert(db, RadarWorkItem).values(values).on_conflict_do_nothing(index_elements=["work_key"]))
+    return db.scalar(select(RadarWorkItem).where(RadarWorkItem.work_key == values["work_key"]))
 
 
 def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240):
