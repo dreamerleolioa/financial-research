@@ -8,6 +8,7 @@ from math import isclose
 from statistics import median
 from collections.abc import Mapping
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from ai_stock_sentinel.calibration.forward_validation import OHLC_PRICE_FIELDS, number
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
@@ -24,11 +25,19 @@ FACTOR_TOL = 1e-5
 
 
 @dataclass(frozen=True)
+class EventReport:
+    start_date: str
+    end_date: str
+    source: Mapping
+    detail: bool = False
+
+
+@dataclass(frozen=True)
 class OfficialPriceEvidence:
     stock: Mapping
     benchmark: Mapping
     events: list | None
-    report_sources: tuple = ()
+    report_sources: tuple[EventReport, ...] = ()
     event_coverage: frozenset | None = None
 
 
@@ -97,7 +106,7 @@ def _window(rows, dates):
         if quote is None or row.get("date") != day or not row.get("price_source"):
             return None
         values.append({"date": day, **quote, "price_source": row["price_source"],
-                       **({"official_price_report": _report_version(row["official_price_report"])}
+                       **({"official_price_report": _source_identity(row["official_price_report"])}
                           if row.get("official_price_report") else {})})
     return values
 
@@ -125,20 +134,44 @@ def _proportional_factor(observed, baseline):
     return None
 
 
-def _report_version(proof):
-    return {key: proof[key] for key in ("source_url", "snapshot_sha256") if key in proof}
+def _source_identity(source):
+    return {key: source[key] for key in
+            ("source_url", "provider", "source_operation", "parser_version", "sdk_version")
+            if key in source}
+
+
+def _event_evidence(official, dates):
+    events = sorted((event for event in official.events if event["effective_date"] in dates),
+                    key=lambda event: (event["effective_date"], fingerprint(event)))
+    reports = {}
+    for report in official.report_sources:
+        covered = {day for day in dates if report.start_date <= day <= report.end_date}
+        if not covered:
+            continue
+        source = _source_identity(report.source)
+        if report.detail:
+            source["snapshot_sha256"] = report.source["snapshot_sha256"]
+        else:
+            # Range reports prove parsed events and coverage for these dates.
+            # Their query and raw checksum also describe unrelated dates/symbols.
+            url = urlsplit(source["source_url"])
+            source["source_url"] = url._replace(query="", fragment="").geturl()
+        _, days = reports.setdefault(fingerprint(source), (source, set()))
+        days.update(covered)
+    return events, [source | {"dates": sorted(days)} for _, (source, days) in sorted(reports.items())]
 
 
 def _price_lock(candidate, basis, stock, benchmark, official, *, vendor=(), factors=()):
     source_versions = {row["price_source"] for row in [*stock, *benchmark]}
-    vendor_versions = {proof["snapshot_sha256"] for row in vendor
-                       if (proof := row.get("source_capture")) and proof.get("snapshot_sha256")}
+    events, reports = _event_evidence(official, {row["date"] for row in stock[1:]})
+    vendor_rows = [{"date": row["date"], **_quote(row), "price_source": row.get("price_source"),
+                    "source": _source_identity(row.get("source_capture") or {})}
+                   for row in sorted(vendor, key=lambda row: row["date"])]
     data = {
         "version": VERSION, "return_basis": basis, "symbol": candidate["symbol"],
         "signal_date": candidate["record_date"], "stock": stock, "benchmark": benchmark,
-        "source_versions": sorted(source_versions), "vendor_versions": sorted(vendor_versions),
-        "event_reports": [_report_version(proof) for proof in official.report_sources],
-        "events": official.events, "factors": list(factors),
+        "source_versions": sorted(source_versions), "vendor_window_sha256": fingerprint(vendor_rows),
+        "event_reports": reports, "events": events, "factors": list(factors),
     }
     return AcceptedPrices(stock, benchmark, data | {"sha256": fingerprint(data)})
 
@@ -240,12 +273,54 @@ def refused_prices(row, reason):
                               or row.get("outcome", {}).get("expected_target_date")}}
 
 
-def lock_reviewed_next_open(row):
-    """The official repair evaluator already retains the full used inputs."""
-    evidence = row["outcome"]["reviewed_official_window"]
+def _stable_reviewed_input(value, detail_paths):
+    if isinstance(value, dict):
+        # A source receipt identifies a full captured response. Its stable
+        # source and the verified prices/terms identify the calculation.
+        receipt_fields = set()
+        if "snapshot_sha256" in value:
+            receipt_fields.update(("snapshot_id", "request_hash", "captured_at", "expires_at"))
+            if urlsplit(value.get("source_url") or "").path not in detail_paths:
+                receipt_fields.add("snapshot_sha256")
+        return {key: _stable_reviewed_input(item, detail_paths) for key, item in value.items()
+                if key not in receipt_fields}
+    if isinstance(value, (list, tuple)):
+        return [_stable_reviewed_input(item, detail_paths) for item in value]
+    return value
+
+
+def _reviewed_inputs_sha256(row):
+    from ai_stock_sentinel.calibration import official_corporate_actions, twse_rights_recovery
+    outcome = row["outcome"]
+    evidence = outcome["reviewed_official_window"]
+    version_input = {key: evidence[key] for key in (
+        "version", "symbol", "signal_date", "session_dates", "stock", "benchmark",
+        "calculation_stock", "calculation_benchmark",
+    ) if key in evidence}
+    replay = evidence.get("event_replay", {})
+    version_input["replay_prices"] = {key: replay[key] for key in ("yahoo", "marked", "benchmark") if key in replay}
+    # Recovery requests use the individual window. Keep their exact
+    # report contents while dropping capture timestamps and batch receipts.
+    version_input["replay_calls"] = replay.get("calls", [])
+    version_input["event"] = {key: outcome[key] for key in (
+        official_corporate_actions.PROVENANCE_KEY, twse_rights_recovery.PROVENANCE_KEY, "split_event",
+    ) if key in outcome}
+    detail_paths = {twse_rights_recovery.RIGHTS_DETAIL, official_corporate_actions.TWSE_REDUCTION_DETAIL}
+    return fingerprint(_stable_reviewed_input(version_input, detail_paths))
+
+
+def lock_reviewed_next_open(row, official):
+    """Freeze the full replay separately from the window's price version."""
+    outcome = row["outcome"]
+    evidence = outcome["reviewed_official_window"]
+    events, reports = _event_evidence(official, set(evidence["session_dates"]))
     lock = {"version": VERSION, "return_basis": "next_open", "symbol": row["symbol"],
-            "signal_date": row["signal_date"], "reviewed_official_window_sha256": fingerprint(evidence)}
-    return row | {"outcome": row["outcome"] | {PRICE_EVIDENCE: lock | {"sha256": fingerprint(lock)}}}
+            "signal_date": row["signal_date"], "reviewed_inputs_sha256": _reviewed_inputs_sha256(row),
+            "events": events, "event_reports": reports}
+    return row | {"outcome": outcome | {
+        PRICE_EVIDENCE: lock | {"sha256": fingerprint(lock)},
+        "reviewed_official_window_sha256": fingerprint(evidence),
+    }}
 
 
 def verify_price_lock(row, *, symbol, basis):
@@ -260,6 +335,16 @@ def verify_price_lock(row, *, symbol, basis):
     if "reviewed_official_window_sha256" in proof:
         if proof["reviewed_official_window_sha256"] != fingerprint(outcome.get("reviewed_official_window")):
             raise ValueError("invalid_validation_price_lock")
+        return
+    if "reviewed_inputs_sha256" in proof:
+        from ai_stock_sentinel.daily_radar.next_open_official_repair import verify_event_report_receipts
+
+        if (not isinstance(outcome.get("reviewed_official_window"), dict)
+                or outcome.get("reviewed_official_window_sha256") != fingerprint(outcome["reviewed_official_window"])
+                or proof["reviewed_inputs_sha256"] != _reviewed_inputs_sha256(row)):
+            raise ValueError("invalid_validation_price_lock")
+        replay = outcome["reviewed_official_window"].get("event_replay", {})
+        verify_event_report_receipts(replay.get("calls", []))
         return
     stock, benchmark = proof.get("stock"), proof.get("benchmark")
     if (not isinstance(stock, list) or not isinstance(benchmark, list)
@@ -280,14 +365,22 @@ class OfficialPriceCollector:
         self.sources = []
 
     def capture_twse_report(self, path, params):
-        payload, source = self.provider.capture_twse_report(path, params)
-        self.sources.append(source)
-        return payload, source
+        return self._capture_range_report(self.provider.capture_twse_report, path, params)
 
     def capture_tpex_report(self, path, params):
-        payload, source = self.provider.capture_tpex_report(path, params)
-        self.sources.append(source)
+        return self._capture_range_report(self.provider.capture_tpex_report, path, params)
+
+    def _capture_range_report(self, capture, path, params):
+        from datetime import datetime
+        payload, source = capture(path, params)
+        if "startDate" in params:
+            start, end = (str(datetime.strptime(params[key].replace("/", ""), "%Y%m%d").date())
+                          for key in ("startDate", "endDate"))
+            self.sources.append(EventReport(start, end, source))
         return payload, source
+
+    def _capture_event_detail(self, day, source):
+        self.sources.append(EventReport(str(day), str(day), source, detail=True))
 
     def collect(self, symbol, start, end):
         from ai_stock_sentinel.daily_radar.next_open_action_scope import _events
@@ -313,7 +406,7 @@ class OfficialPriceCollector:
             benchmark.update(collect_prices("TAIEX", first, last))
             self.sources = []
             try:
-                month_events = _events(symbol, first, last, self)
+                month_events = _events(symbol, first, last, self, record_detail=self._capture_event_detail)
             except (SourceDependencyBusy, LostLease):
                 raise
             except (ValueError, RuntimeError, OSError):

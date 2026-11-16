@@ -360,6 +360,9 @@ def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, p
     if accepted.reason in {"official_corporate_action_in_window", "official_validation_price_missing"}:
         # Keep the established rights/distribution/reduction rules. A recovered
         # window must still independently prove its official inputs before use.
+        signal, target = str(days[0]), str(days[-1])
+        yahoo = [r for r in yahoo if signal <= r["date"] <= target]
+        benchmark = [r for r in benchmark if signal <= r["date"] <= target]
         marked = {r["date"]: dict(r) for r in yahoo}
         _mark_conflicts(marked, official.stock)
         marked = list(marked.values())
@@ -384,7 +387,7 @@ def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, p
                 proof = collect_window(candidate, {"window_days": len(days) - 1, "outcome": {}},
                                        recovered, calendar=calendar, provider=tape)
                 _verify_after(candidate, proof, calendar)
-                return lock_reviewed_next_open(proof)
+                return lock_reviewed_next_open(proof, official)
             except (SourceDependencyBusy, LostLease):
                 raise
             except (ValueError, RuntimeError, OSError):

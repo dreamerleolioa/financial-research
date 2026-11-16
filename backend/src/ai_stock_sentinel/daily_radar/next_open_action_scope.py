@@ -78,7 +78,7 @@ def excluded_actions(prior, symbol, signal, sessions, through):
                            for f in values.values()) for fact in values.values()), key=fingerprint)
 
 
-def _events(symbol, start, end, provider):
+def _events(symbol, start, end, provider, *, record_detail=None):
     code = symbol.split('.')[0]
     days = (start, end)
     events = []
@@ -95,9 +95,11 @@ def _events(symbol, start, end, provider):
                     continue
                 first, notice = day, row.get('權/息')
                 if family == 'reduction':
-                    action, _ = actions._twse_reduction(code, day, row, provider.capture_twse_report)
+                    action, detail = actions._twse_reduction(code, day, row, provider.capture_twse_report)
                     if action is None:
                         raise ValueError('next_open_prior_action_scope_unverified')
+                    if record_detail is not None:
+                        record_detail(day, detail)
                     first = action.halt_start
                 item = {'family': family, 'start_date': str(first), 'effective_date': str(day), 'notice': notice}
                 if family == 'rights':
@@ -113,7 +115,7 @@ def _events(symbol, start, end, provider):
                 if family == 'rights' and notice == '息':
                     if row['詳細資料'] != f'{code},{day:%Y%m%d}':
                         raise ValueError('next_open_prior_action_scope_unverified')
-                    raw, _ = provider.capture_twse_report(rights.RIGHTS_DETAIL,
+                    raw, detail = provider.capture_twse_report(rights.RIGHTS_DETAIL,
                         {'response': 'json', 'STK_NO': code, 'T1': day.strftime('%Y%m%d')})
                     cash = '(每股配發現金股利)除息'
                     others = {'A. 按普通股股東持股比例每千股無償配股': '股', 'B. 員工紅利轉增資': '股',
@@ -124,6 +126,8 @@ def _events(symbol, start, end, provider):
                         raise ValueError('next_open_prior_action_scope_unverified')
                     item['cash_dividend'] = rights._amount(rows_detail[0][cash], '元／股')
                     item['cash_terms'] = actions._decimal_text(rows_detail[0][cash], '元／股')
+                    if record_detail is not None:
+                        record_detail(day, detail)
                 events.append(item)
     elif symbol.endswith('.TWO'):
         for path, field, code_field, family, fields in (

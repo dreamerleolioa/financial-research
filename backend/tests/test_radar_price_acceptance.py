@@ -161,7 +161,7 @@ def test_failed_month_does_not_discard_an_earlier_proven_window_in_same_batch(mo
             raise OSError("official outage")
         return [bar(day, 100.0) for day in DAYS if start_date <= day <= end_date]
 
-    def events(symbol, start, end, provider):
+    def events(symbol, start, end, provider, *, record_detail=None):
         if start.month == 7:
             raise OSError("official event outage")
         return []
@@ -213,3 +213,56 @@ def test_missing_official_evidence_does_not_replace_known_price_conflict(db):
     assert upsert_forward_validation_results(db, [missing])["records_written"] == 0
     saved = db.scalar(select(DailyRadarForwardValidationResult))
     assert saved.skip_reason == "conflicting_price_records"
+
+
+def test_reviewed_next_open_lock_versions_terms_and_retains_full_receipt_integrity():
+    from ai_stock_sentinel.calibration.twse_rights_recovery import RIGHTS_DETAIL
+    from ai_stock_sentinel.daily_radar.price_acceptance import lock_reviewed_next_open
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+
+    quote = bar(TARGET, 100.0)
+    detail_url = f"https://www.twse.com.tw{RIGHTS_DETAIL}?STK_NO=5880&T1=20260604"
+    report = {"subscription_price": 75.0}
+    receipt = {"source_url": detail_url, "snapshot_sha256": fingerprint(report),
+               "captured_at": "2026-06-04T12:00:00+00:00"}
+    row = {"symbol": "5880.TW", "signal_date": str(SIGNAL), "outcome": {
+        "official_rights_recovery": {"event": {
+            "ex_date": str(TARGET), "subscription_price": 75.0,
+            **receipt,
+        }},
+        "reviewed_official_window": {
+            "symbol": "5880.TW", "signal_date": str(SIGNAL), "session_dates": [str(TARGET)],
+            "stock": [quote], "benchmark": [quote],
+            "event_replay": {"yahoo": [quote | {"source_capture": {
+                "provider": "yfinance", "snapshot_sha256": "b" * 64,
+            }}], "row": {"evaluation_as_of_date": str(TARGET)},
+                "calls": [{"request": {"method": "capture_twse_report"}, "value": [report, receipt]}]},
+        },
+    }}
+    source = official([quote])
+    standalone = lock_reviewed_next_open(row, source)
+    batch = deepcopy(row)
+    replay = batch["outcome"]["reviewed_official_window"]["event_replay"]
+    replay["yahoo"][0]["source_capture"]["snapshot_sha256"] = "c" * 64
+    replay["row"]["evaluation_as_of_date"] = "2026-06-30"
+    replay["calls"][0]["value"][1]["captured_at"] = "2026-06-30T12:00:00+00:00"
+    batched = lock_reviewed_next_open(batch, source)
+    assert standalone["outcome"][PRICE_EVIDENCE] == batched["outcome"][PRICE_EVIDENCE]
+    assert standalone["outcome"]["reviewed_official_window_sha256"] != batched["outcome"]["reviewed_official_window_sha256"]
+    verify_price_lock(batched, symbol="5880.TW", basis="next_open")
+
+    detail_changed = deepcopy(batch)
+    detail_changed["outcome"]["official_rights_recovery"]["event"]["snapshot_sha256"] = "d" * 64
+    assert lock_reviewed_next_open(detail_changed, source)["outcome"][PRICE_EVIDENCE] != standalone["outcome"][PRICE_EVIDENCE]
+
+    tampered = deepcopy(batch)
+    tampered["outcome"]["reviewed_official_window"]["event_replay"]["calls"][0]["value"][0]["subscription_price"] = 76.0
+    with pytest.raises(ValueError, match="next_open_official_event_report_hash_invalid"):
+        verify_price_lock(lock_reviewed_next_open(tampered, source), symbol="5880.TW", basis="next_open")
+
+    batch["outcome"]["official_rights_recovery"]["event"]["subscription_price"] = 76.0
+    corrected = lock_reviewed_next_open(batch, source)
+    assert corrected["outcome"][PRICE_EVIDENCE]["sha256"] != standalone["outcome"][PRICE_EVIDENCE]["sha256"]
+    replay["yahoo"][0]["close"] = 120.0
+    with pytest.raises(ValueError, match="invalid_validation_price_lock"):
+        verify_price_lock(batched, symbol="5880.TW", basis="next_open")

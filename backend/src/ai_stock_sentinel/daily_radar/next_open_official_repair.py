@@ -260,19 +260,23 @@ def _later_sessions(calendar, target):
     return tuple(day for day in calendar.sessions if target < day <= calendar.through)[:POST_WINDOW_LOOKAHEAD_SESSIONS]
 
 
+def verify_event_report_receipts(calls):
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+    for call in calls:
+        if call['request']['method'] in ('capture_twse_report', 'capture_tpex_report') and not call.get('failed'):
+            raw, source = call['value']
+            if not _source(source) or source['snapshot_sha256'] != fingerprint(raw):
+                raise ValueError('next_open_official_event_report_hash_invalid')
+
+
 def _verify_event(candidate, after, frozen, kind, calendar, target):
     from ai_stock_sentinel.daily_radar.next_open_history_repair import _Tape
-    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
     if not isinstance(frozen, dict) or frozen.get('kind') != kind:
         raise ValueError('next_open_official_event_replay_missing')
     row = _event_input(candidate, after['window_days'], calendar, frozen['marked'], frozen['benchmark'])
     if frozen.get('row') != row:
         raise ValueError('next_open_official_event_identity_invalid')
-    for call in frozen['calls']:
-        if call['request']['method'] in ('capture_twse_report','capture_tpex_report') and not call.get('failed'):
-            raw, source = call['value']
-            if not _source(source) or source['snapshot_sha256'] != fingerprint(raw):
-                raise ValueError('next_open_official_event_report_hash_invalid')
+    verify_event_report_receipts(frozen['calls'])
     replay = _Tape(evidence=frozen)
     if kind == 'rights':
         mode = frozen.get('rights_verification')
