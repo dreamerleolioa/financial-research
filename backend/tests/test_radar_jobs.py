@@ -1,9 +1,9 @@
 from datetime import date, datetime, timezone, timedelta
 import pytest
-from sqlalchemy import create_engine, select, func
+from sqlalchemy import create_engine, event, select, func
 from sqlalchemy.orm import Session
 from test_radar_work_queue import jsonb
-from ai_stock_sentinel.db.models import Base, RadarJob, RadarWorkItem, RadarJobWork
+from ai_stock_sentinel.db.models import Base, DailyRadarPreparedRun, RadarJob, RadarWorkItem, RadarJobWork
 from ai_stock_sentinel.daily_radar.work_queue import claim_work, finish_work
 from ai_stock_sentinel.daily_radar.jobs import create_job, reconcile_job, job_status, due_jobs, stage_time
 
@@ -25,6 +25,68 @@ def test_idempotent_intent_and_cross_midnight_resume_keep_date(db):
     assert due_jobs(db, now=NOW + timedelta(days=2))[0]['run_date'] == '2026-11-06'
     assert job_status(db, job.id)['data_ready'] is False
     assert db.scalar(select(func.count()).select_from(RadarJob)) == 1
+
+
+def test_publication_reconcile_reads_existing_queue_in_batches(db):
+    day = date(2026, 11, 6)
+    symbols = [f'{code}.TW' for code in range(1000, 1221)]
+    db.add(DailyRadarPreparedRun(run_date=day, market='TW', selected_symbols=symbols,
+                                  universe=[], symbol_count=len(symbols)))
+    db.commit()
+    job_id = create_job(db, run_date=day, lanes=['publication'], now=NOW).id
+    statements = []
+
+    def record(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement.upper().split())
+
+    engine = db.get_bind()
+    event.listen(engine, 'before_cursor_execute', record)
+    try:
+        reconcile_job(db, job_id, now=NOW)
+    finally:
+        event.remove(engine, 'before_cursor_execute', record)
+
+    queue_writes = [sql for sql in statements if sql[0] in {'INSERT', 'UPDATE', 'DELETE'}
+                    and {'RADAR_WORK_ITEMS', 'RADAR_JOB_WORK'}.intersection(sql[:3])]
+    assert not queue_writes, f'Existing queue issued {len(queue_writes)} writes'
+    assert len(statements) < 80
+    items = db.scalars(select(RadarWorkItem).order_by(RadarWorkItem.id)).all()
+    assert len(items) == 671
+    scoring = next(item for item in items if item.stage == 'scoring')
+    inputs = [item for item in items if item.stage in {'lending', 'full-margin', 'ohlcv', 'market-context'}]
+    assert scoring.dependencies == [item.work_key for item in inputs]
+    assert [item.scope['symbol'] for item in inputs if item.stage == 'ohlcv'] == symbols
+
+
+def test_publication_reconcile_repairs_missing_and_changed_memberships(db):
+    day = date(2026, 11, 6)
+    symbols = ['2330.TW', '2317.TW']
+    db.add(DailyRadarPreparedRun(run_date=day, market='TW', selected_symbols=symbols,
+                                  universe=[], symbol_count=len(symbols)))
+    db.commit()
+    job_id = create_job(db, run_date=day, lanes=['publication'], now=NOW).id
+    items = db.scalars(select(RadarWorkItem).order_by(RadarWorkItem.id)).all()
+    for item in items:
+        if item.stage in {'market-session', 'institutional', 'market-bars', 'prepare'}:
+            item.state, item.retry_at = 'ready', None
+    db.commit()
+    reconcile_job(db, job_id, now=NOW)
+    first, second = [item for item in items if item.stage == 'ohlcv']
+    claim = claim_work(db, work_id=first.id, now=NOW)
+    assert claim is not None
+    membership = db.get(RadarJobWork, (job_id, first.id))
+    membership.active, membership.required = False, False
+    db.delete(db.get(RadarJobWork, (job_id, second.id)))
+    db.commit()
+
+    reconcile_job(db, job_id, now=NOW)
+
+    for item in (first, second):
+        membership = db.get(RadarJobWork, (job_id, item.id))
+        assert membership.active and membership.required
+    assert first.state == 'running' and first.lease_token == claim.token and first.attempt_count == 1
+    assert second.state == 'pending'
+    assert db.scalar(select(func.count()).select_from(RadarWorkItem)) == len(items)
 
 
 def test_stage_times_preserve_next_day_scoring_gate():

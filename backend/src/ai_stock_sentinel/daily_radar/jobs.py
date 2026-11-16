@@ -3,10 +3,10 @@ from collections import Counter
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
-from sqlalchemy import select, update, or_, text
+from sqlalchemy import and_, select, update, or_, text
 from ai_stock_sentinel.db.models import RadarJob, RadarWorkItem, RadarJobWork, RadarWorkAttempt, DailyRadarPreparedRun
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
-from ai_stock_sentinel.daily_radar.work_queue import ensure_work, insert, database_now, aware
+from ai_stock_sentinel.daily_radar.work_queue import ensure_work, insert, database_now, aware, work_insert_values
 
 POLICY = 'radar-durable-v1'
 LANES = ('publication', 'signal_close', 'next_open', 'auxiliary')
@@ -38,20 +38,60 @@ def create_job(db, *, run_date, lanes=LANES, now=None):
     return job
 
 
+def _upsert_members(db, job_id, work_ids, required):
+    statement = insert(db, RadarJobWork).values([
+        {'job_id': job_id, 'work_id': work_id, 'required': required, 'active': True}
+        for work_id in work_ids
+    ])
+    db.execute(statement.on_conflict_do_update(index_elements=['job_id', 'work_id'],
+        set_={'active': True, 'required': statement.excluded.required},
+        where=or_(RadarJobWork.active.is_(False), RadarJobWork.required != statement.excluded.required)))
+
+
 def member(db, job, work, *, required=True):
-    db.execute(insert(db, RadarJobWork).values(job_id=job.id, work_id=work.id, required=required, active=True)
-        .on_conflict_do_update(index_elements=['job_id', 'work_id'], set_={'active': True, 'required': required}))
+    _upsert_members(db, job.id, [work.id], required)
     return work
 
 
+def _units(db, job, stages, *, generation=None, deps=(), lane='publication', required=True, now=None):
+    """Reuse existing work and only write missing work or changed job memberships."""
+    run_date = job.run_date
+    dependencies = [work.work_key for work in deps]
+    planned = []
+    for stage, scope in stages:
+        identity = {'policy': POLICY, 'date': str(run_date), 'stage': stage, 'generation': generation, **scope}
+        planned.append(work_insert_values(identity=identity, stage=stage, lane=lane, run_date=run_date,
+            scope=scope | {'generation': generation}, input_revision=fingerprint(identity),
+            dependencies=dependencies, priority=100 if lane == 'auxiliary' else list(TIMES).index(stage),
+            retry_at=now, not_before=stage_time(run_date, stage)))
+    if not planned:
+        return []
+
+    query = select(RadarWorkItem, RadarJobWork.active, RadarJobWork.required).outerjoin(RadarJobWork,
+        and_(RadarJobWork.work_id == RadarWorkItem.id, RadarJobWork.job_id == job.id))
+
+    def load(keys):
+        return {work.work_key: (work, active, is_required)
+                for work, active, is_required in db.execute(query.where(RadarWorkItem.work_key.in_(list(keys))))}
+
+    unique = {item['work_key']: item for item in planned}
+    existing = load(unique)
+    missing = {key: item for key, item in unique.items() if key not in existing}
+    if missing:
+        db.execute(insert(db, RadarWorkItem).values(list(missing.values()))
+            .on_conflict_do_nothing(index_elements=['work_key']))
+        existing.update(load(missing))
+
+    changed_members = [work.id for work, active, is_required in existing.values()
+                       if active is not True or is_required != required]
+    if changed_members:
+        _upsert_members(db, job.id, changed_members, required)
+    return [existing[item['work_key']][0] for item in planned]
+
+
 def unit(db, job, stage, *, generation=None, scope=None, deps=(), lane='publication', required=True, now=None):
-    scope = dict(scope or {})
-    identity = {'policy': POLICY, 'date': str(job.run_date), 'stage': stage, 'generation': generation, **scope}
-    work = ensure_work(db, identity=identity, stage=stage, lane=lane, run_date=job.run_date,
-        scope=scope | {'generation': generation}, input_revision=fingerprint(identity),
-        dependencies=[w.work_key for w in deps], priority=100 if lane == 'auxiliary' else list(TIMES).index(stage),
-        retry_at=now, not_before=stage_time(job.run_date, stage))
-    return member(db, job, work, required=required)
+    return _units(db, job, [(stage, dict(scope or {}))], generation=generation, deps=deps,
+                  lane=lane, required=required, now=now)[0]
 
 
 WINDOW_PLAN_CANDIDATES = 5
@@ -278,21 +318,22 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
     closed = session.state == 'terminal' and (session.result or {}).get('status') == 'closed'
     if closed:
         db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
+            RadarJobWork.active.is_(True),
             RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(
                 RadarWorkItem.lane.in_(('publication', 'auxiliary')), RadarWorkItem.stage != 'market-session')))
             .values(active=False))
     if not closed and set(job.lanes) & {'publication', 'auxiliary'}:
-        archives = [unit(db, job, stage, scope={'market': market}, deps=[session], now=now)
-                    for stage in ('institutional', 'market-bars') for market in ('TW', 'TWO')]
+        archives = _units(db, job, ((stage, {'market': market})
+            for stage in ('institutional', 'market-bars') for market in ('TW', 'TWO')), deps=[session], now=now)
         prep = unit(db, job, 'prepare', deps=archives, now=now)
         gaps = (prep.result or {}).get('archive_gaps') or {}
-        gap_units = []
+        gap_stages = []
         for trade_date, markets in sorted(gaps.items()):
             day = date.fromisoformat(trade_date)
             if not job.run_date - timedelta(days=240) <= day <= job.run_date or set(markets) - {'TW', 'TWO'}:
                 raise ValueError('radar_archive_dependency_scope_invalid')
-            for market in markets:
-                gap_units.append(unit(db, job, 'market-bars', scope={'market': market, 'trade_date': trade_date}, deps=[session], now=now))
+            gap_stages.extend(('market-bars', {'market': market, 'trade_date': trade_date}) for market in markets)
+        gap_units = _units(db, job, gap_stages, deps=[session], now=now)
         if gap_units and prep.state != 'running':
             prep.dependencies = list(dict.fromkeys([w.work_key for w in archives + gap_units]))
         prepared = db.scalar(select(DailyRadarPreparedRun).where(
@@ -314,21 +355,20 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
                 scope['generation'] = gen
                 scope.pop('managed_symbols', None)
             if 'publication' in job.lanes:
-                required = [unit(db, job, stage, generation=gen, scope={'symbol': symbol}, deps=[prep], now=now)
-                    for stage in ('lending', 'full-margin', 'ohlcv') for symbol in prepared.selected_symbols]
-                required.append(unit(db, job, 'market-context', generation=gen, deps=[prep], now=now))
+                stages = [(stage, {'symbol': symbol}) for stage in ('lending', 'full-margin', 'ohlcv')
+                          for symbol in prepared.selected_symbols]
+                stages.append(('market-context', {}))
+                required = _units(db, job, stages, generation=gen, deps=[prep], now=now)
                 unit(db, job, 'scoring', generation=gen, deps=required, now=now)
             if 'auxiliary' in job.lanes:
                 from ai_stock_sentinel.daily_radar.managed_raw_data import select_managed_raw_data_symbols
                 if 'managed_symbols' not in scope:
                     selection = select_managed_raw_data_symbols(db, run_date=job.run_date)
                     scope['managed_symbols'], scope['managed_deferred'] = list(selection.symbols), selection.deferred_recent_symbol_count
-                for symbol in prepared.selected_symbols:
-                    unit(db, job, 'avwap', generation=gen, scope={'symbol': symbol}, deps=[prep], lane='auxiliary', required=False, now=now)
-                for symbol in scope['managed_symbols']:
-                    unit(db, job, 'managed-raw', generation=gen, scope={'symbol': symbol,
-                        'managed_symbols': scope['managed_symbols'], 'deferred': scope['managed_deferred']},
-                        deps=[prep], lane='auxiliary', required=False, now=now)
+                stages = [('avwap', {'symbol': symbol}) for symbol in prepared.selected_symbols]
+                stages.extend(('managed-raw', {'symbol': symbol, 'managed_symbols': scope['managed_symbols'],
+                    'deferred': scope['managed_deferred']}) for symbol in scope['managed_symbols'])
+                _units(db, job, stages, generation=gen, deps=[prep], lane='auxiliary', required=False, now=now)
     if set(job.lanes) & {'signal_close', 'next_open'}:
         from ai_stock_sentinel.daily_radar.trading_calendar import VERSION as CALENDAR_VERSION
         calendar_work = unit(db, job, 'calendar', scope={'start_date': str(job.run_date - timedelta(days=364)),
