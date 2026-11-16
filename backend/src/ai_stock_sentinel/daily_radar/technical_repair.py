@@ -1,12 +1,14 @@
 """Extend verified Yahoo adjustment history with final official market prices."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 import math
 from typing import Any
 
 import pandas as pd
 
+from ai_stock_sentinel.calibration.twse_rights_recovery import FACE_VALUE, _dated_rows, _report_rows
 from ai_stock_sentinel.daily_radar.market_bar_repository import DEFAULT_MARKET_BAR_DATASET
 
 
@@ -19,6 +21,43 @@ class TechnicalRepairRejected(ValueError):
     def __init__(self, reason, *, details=None):
         super().__init__(reason)
         self.details = details or {}
+
+
+@dataclass(frozen=True)
+class VerifiedFaceValueChange:
+    symbol: str
+    effective_date: date
+    exchange_ratio: float
+    sources: tuple[dict, dict]
+
+
+def verify_face_value_change(symbol, *, start_date, conflict_date, end_date, capture):
+    """Cross-check the resumption notice and published exchange terms."""
+    params = {"response": "json", "startDate": start_date.strftime("%Y%m%d"),
+              "endDate": end_date.strftime("%Y%m%d")}
+    payload, notice_source = capture(FACE_VALUE, params)
+    code = symbol.removesuffix(".TW")
+    events = [(day, row) for day, row in _dated_rows(payload, params, "恢復買賣日期", ["詳細資料"])
+              if str(row["股票代號"]).strip() == code]
+    if len(events) != 1 or not conflict_date < events[0][0] <= end_date:
+        raise TechnicalRepairRejected("face_value_event_unverified")
+    effective_date, notice = events[0]
+    day_key = effective_date.strftime("%Y%m%d")
+    payload, terms_source = capture("/rwd/zh/change/TWTB7U", {"response": "json", "date": day_key})
+    if not isinstance(payload.get("params"), dict) or payload["params"].get("date") != day_key:
+        raise TechnicalRepairRejected("face_value_terms_unverified")
+    expected_day = f"{effective_date.year - 1911:03d}/{effective_date:%m/%d}"
+    fields = ("股票代號", "恢復買賣日期", "變更股票面額換股率", "變更前面額", "變更後面額", "恢復買賣參考價")
+    matches = [row for row in _report_rows(payload, fields)
+               if str(row["股票代號"]).strip() == code and row["恢復買賣日期"] == expected_day]
+    if len(matches) != 1 or "".join(str(matches[0]["恢復買賣參考價"]).split()) != notice["詳細資料"]:
+        raise TechnicalRepairRejected("face_value_terms_unverified")
+    terms = matches[0]
+    ratio = _number(terms["變更股票面額換股率"])
+    old, new = _number(terms["變更前面額"]), _number(terms["變更後面額"])
+    if min(old, new, ratio) <= 0 or ratio == 1 or not math.isclose(ratio, old / new, rel_tol=1e-8):
+        raise TechnicalRepairRejected("face_value_ratio_unverified")
+    return VerifiedFaceValueChange(symbol, effective_date, ratio, (notice_source, terms_source))
 
 
 def _history_changed(day, field, accepted, observed, source):
@@ -46,6 +85,7 @@ def verified_repaired_frame(
     run_date: date,
     unrepaired_history: Any | None = None,
     adjustment_from_repaired_data: bool = True,
+    face_value_change: VerifiedFaceValueChange | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     market, provider = ("TWO", "tpex") if symbol.endswith(".TWO") else ("TW", "twse")
     if (
@@ -77,6 +117,12 @@ def verified_repaired_frame(
         raise TechnicalRepairRejected("repair_dates_invalid")
     if set(repaired_dates) - set(original_dates) - {run_date}:
         raise TechnicalRepairRejected("intermediate_history_missing")
+    if face_value_change is not None and (
+        unrepaired_history is None
+        or face_value_change.symbol != symbol
+        or not original_dates[0] < face_value_change.effective_date <= original_dates[-1]
+    ):
+        raise TechnicalRepairRejected("face_value_event_unverified")
     by_date = dict(zip(repaired_dates, range(len(repaired_dates))))
     target = repaired.iloc[by_date[run_date]]
     raw_prices = {field: _number(target[field]) for field in PRICE_FIELDS}
@@ -107,6 +153,7 @@ def verified_repaired_frame(
         raise TechnicalRepairRejected("adjustment_factor_invalid")
     history_fields = (*PRICE_FIELDS, "Adj Close")
     unrepaired_by_date: dict[date, Any] = {}
+    reconciled_dates: set[date] = set()
     if unrepaired_history is not None:
         if unrepaired_history.empty or any(field not in unrepaired_history for field in history_fields):
             raise TechnicalRepairRejected("unrepaired_history_missing")
@@ -141,11 +188,17 @@ def verified_repaired_frame(
                 ):
                     raise _history_changed(data_date, field, baseline[field], prices[field] * ratio, "unrepaired_adjusted")
             candidate = repaired.iloc[by_date[data_date]]
-            for field in history_fields:
-                if pd.notna(candidate[field]) and not math.isclose(
-                    _number(candidate[field]), prices[field], rel_tol=1e-6, abs_tol=0.0,
-                ):
-                    raise _history_changed(data_date, field, prices[field], candidate[field], "repaired_raw")
+            values = {field: _number(candidate[field]) for field in history_fields if pd.notna(candidate[field])}
+            mismatches = [field for field, value in values.items()
+                          if not math.isclose(value, prices[field], rel_tol=1e-6)]
+            if not mismatches:
+                continue
+            if (face_value_change is None or data_date >= face_value_change.effective_date
+                    or not all(math.isclose(value / face_value_change.exchange_ratio, prices[field], rel_tol=1e-6)
+                               for field, value in values.items())):
+                field = mismatches[0]
+                raise _history_changed(data_date, field, prices[field], values[field], "repaired_raw")
+            reconciled_dates.add(data_date)
     # Every existing price must retain its adjustment basis. Never replace the
     # accepted history with the library's dividend/split repair heuristics.
     history_rows: dict[date, Any] = {}
@@ -156,7 +209,7 @@ def verified_repaired_frame(
         baseline = original.iloc[position]
         candidate = repaired.iloc[by_date[data_date]]
         missing_prices = candidate.loc[list(history_fields)].isna()
-        if missing_prices.any():
+        if missing_prices.any() or data_date in reconciled_dates:
             if unrepaired_history is None:
                 raise TechnicalRepairRejected("repair_history_values_missing")
             candidate = unrepaired_by_date[data_date]
@@ -222,5 +275,12 @@ def verified_repaired_frame(
         provenance["repair"]["history_validation_fallback"] = {
             "provider": "yfinance", "repair_enabled": False,
             "data_dates": history_fallback_dates,
+        }
+    if reconciled_dates and face_value_change is not None:
+        provenance["repair"]["face_value_change"] = {
+            "effective_date": str(face_value_change.effective_date),
+            "exchange_ratio": face_value_change.exchange_ratio,
+            "sources": list(face_value_change.sources),
+            "reconciled_dates": sorted(str(day) for day in reconciled_dates),
         }
     return result, provenance
