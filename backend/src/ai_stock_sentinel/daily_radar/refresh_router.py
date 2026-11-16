@@ -479,6 +479,18 @@ def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher
             run_date=run_date,
         ),
     )
+    from ai_stock_sentinel.daily_radar.price_acceptance import verify_signal_bars
+    from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
+
+    rejected_bars = {}
+    if request.market == "TW" and snapshots_enabled():
+        verified_bars, rejected_bars = verify_signal_bars(db, rows, run_date=run_date)
+        rows = [row for row in rows if row.symbol in verified_bars]
+        for row in rows:
+            technical = dict(row.technical)
+            sources = dict(technical.get("source_provenance") or {})
+            sources["official_signal_anchor"] = verified_bars[row.symbol]
+            row.technical = technical | {"source_provenance": sources}
     attach_official_turnover(db, rows, run_date=run_date)
     refreshed_universe = refresh_daily_radar_universe_technical_tracks(universe, rows)
     prepared.universe = [_universe_entry_payload(entry) for entry in refreshed_universe]
@@ -508,6 +520,7 @@ def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher
         )
         for symbol in missing_symbols
     }
+    missing_symbol_reasons.update(rejected_bars)
     status = "failed" if missing_symbols else "completed"
     rows_by_symbol = {row.symbol: row for row in stored_rows}
     attempts_by_symbol = getattr(technical_fetcher, "diagnostics", {})

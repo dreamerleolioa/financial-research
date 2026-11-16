@@ -64,8 +64,11 @@ def test_run_input_replay_is_idempotent_but_never_resurrects_old_revision():
 
 def test_readiness_detects_current_inputs_changed_after_publication(monkeypatch):
     from copy import deepcopy
+    from decimal import Decimal
     from ai_stock_sentinel.db.models import (DailyRadarPreparedRun, StockRawData, DailyRadarCandidate,
-        DailyRadarForwardValidationResult, SharedBackgroundContext, Phase1AvwapSnapshot)
+        DailyRadarForwardValidationResult, SharedBackgroundContext, Phase1AvwapSnapshot, TaiwanDailyBar)
+    from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
+    from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_daily_bars
     from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_cache_records
     from ai_stock_sentinel.daily_radar.input_manifests import freeze_execution_inputs, prepared_input_context
     from ai_stock_sentinel.daily_radar.readiness import read_readiness
@@ -74,12 +77,16 @@ def test_readiness_detects_current_inputs_changed_after_publication(monkeypatch)
     engine = create_engine('sqlite+pysqlite:///:memory:')
     Base.metadata.create_all(engine, tables=[m.__table__ for m in (DailyRadarRun, DailyRadarPreparedRun,
         StockRawData, DailyRadarCandidate, DailyRadarForwardValidationResult, SharedBackgroundContext,
-        Phase1AvwapSnapshot, RadarInputManifest, RadarRunInput)])
+        Phase1AvwapSnapshot, RadarInputManifest, RadarRunInput, TaiwanDailyBar)])
     monkeypatch.setenv('DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED', 'true')
     day = date(2026, 6, 1)
     with Session(engine) as db:
         raw = StockRawData(symbol='2330.TW', record_date=day, raw_data_is_final=True,
             technical=_technical_payload('2330.TW', day), institutional={}, fundamental={})
+        upsert_taiwan_daily_bars(db, [MarketDailyBar(symbol=raw.symbol, market='TW', name='fixture',
+            trade_date=day, **{key: Decimal(str(raw.technical['ohlcv'][key]))
+                               for key in ('open','high','low','close')}, volume=1, amount=1,
+            source_provider='twse', source_dataset='fixture')])
         prepared = DailyRadarPreparedRun(run_date=day, market='TW', status='prepared', selected_symbols=['2330.TW'],
             symbol_count=1, universe=[], market_context=_market_context(), step_statuses=_completed_segmented_step_statuses(day))
         db.add_all([raw, prepared]); db.flush()
@@ -98,7 +105,8 @@ def test_readiness_detects_current_inputs_changed_after_publication(monkeypatch)
         raw.technical = changed
         db.commit()
         second = read_readiness(db, run_date=day)
-        assert second['scoring']['ready'] is True
+        assert second['scoring']['ready'] is False
+        assert second['scoring']['blockers'][0]['price_reasons'] == {'2330.TW': 'official_signal_bar_mismatch'}
         assert second['publication']['state'] == 'published'
         assert second['publication']['input_manifest']['matches_current_inputs'] is False
         assert second['data_ready'] is False

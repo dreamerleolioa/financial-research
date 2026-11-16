@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from types import SimpleNamespace
 from datetime import date, timedelta
 import logging
 import math
@@ -428,7 +429,7 @@ def prepare_daily_radar_raw_payloads(
     """Freeze archive inputs; the caller owns release of its read transaction."""
     ordered = _ordered_unique_symbols(symbols)
     existing = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered)
-    reusable = {row.symbol for row in current_daily_radar_raw_rows(existing, run_date=run_date)}
+    reusable = _reusable_final_symbols(session, existing, run_date=run_date)
     missing = [symbol for symbol in ordered if symbol not in reusable]
     if missing and isinstance(technical_fetcher, LocalFirstBatchTechnicalFetcher):
         technical_fetcher.prepare_fetch(missing, run_date=run_date, official_bars=official_bars)
@@ -464,15 +465,22 @@ def ensure_daily_radar_raw_rows(
 
     institutional_payloads = institutional_payloads_by_symbol or {}
     existing_final = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
-    reusable_final_symbols = {
-        row.symbol
-        for row in current_daily_radar_raw_rows(existing_final, run_date=run_date)
-    }
+    reusable_final_symbols = _reusable_final_symbols(session, existing_final, run_date=run_date)
     missing_symbols = [symbol for symbol in ordered_symbols if symbol not in reusable_final_symbols]
     if missing_symbols:
         if fetched_payloads is None:
             fetcher = technical_fetcher or YFinanceBatchTechnicalFetcher()
             fetched_payloads = fetcher.fetch(missing_symbols, run_date=run_date)
+        from ai_stock_sentinel.daily_radar.price_acceptance import verify_signal_bars
+        from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
+
+        if snapshots_enabled():
+            _, rejected = verify_signal_bars(session, [SimpleNamespace(symbol=symbol, technical=technical)
+                for symbol, technical in fetched_payloads.items()
+                if _is_supported_local_bar_symbol(symbol)], run_date=run_date)
+            # Retain the existing evidence when the replacement still disagrees.
+            fetched_payloads = {symbol: technical for symbol, technical in fetched_payloads.items()
+                if rejected.get(symbol) != "official_signal_bar_mismatch"}
         _store_missing_rows(
             session,
             run_date=run_date,
@@ -501,6 +509,18 @@ def ensure_daily_radar_raw_rows(
 
     final_rows = get_final_raw_data_rows_for_symbols(session, run_date=run_date, symbols=ordered_symbols)
     return current_daily_radar_raw_rows(final_rows, run_date=run_date)
+
+
+def _reusable_final_symbols(session, existing, *, run_date):
+    from ai_stock_sentinel.daily_radar.price_acceptance import verify_signal_bars
+    from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
+
+    rows = current_daily_radar_raw_rows(existing, run_date=run_date)
+    if not snapshots_enabled():
+        return {row.symbol for row in rows}
+    _, rejected = verify_signal_bars(session,
+        [row for row in rows if _is_supported_local_bar_symbol(row.symbol)], run_date=run_date)
+    return {row.symbol for row in rows if rejected.get(row.symbol) != "official_signal_bar_mismatch"}
 
 
 def reusable_daily_radar_raw_rows(rows: Iterable[StockRawData]) -> list[StockRawData]:

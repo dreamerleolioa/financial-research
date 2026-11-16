@@ -8,6 +8,7 @@ from sqlalchemy import select
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun, RadarJobWork, RadarWorkItem
 from ai_stock_sentinel.daily_radar.jobs import create_job, reconcile_job
 from ai_stock_sentinel.daily_radar.readiness import inventory_items
+from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector, OfficialPriceEvidence
 from radar_calendar_support import calendar
 from test_radar_jobs import db
 from test_daily_radar_validation_read import add_run, add_candidate, add_result
@@ -36,6 +37,12 @@ def setup(db, *, diagnostic_gap=False):
 def active(db, job):
     return db.scalars(select(RadarWorkItem).join(RadarJobWork).where(
         RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True), RadarWorkItem.stage == 'window')).all()
+
+
+def official_prices(monkeypatch, rows):
+    indexed = {row['date']: dict(row) | {'price_source': 'official-test'} for row in rows}
+    monkeypatch.setattr(OfficialPriceCollector, 'collect',
+        lambda self, symbol, start, end: OfficialPriceEvidence(indexed, indexed, []))
 
 
 def test_candidate_input_change_replaces_old_active_window_without_idle_wait(db):
@@ -105,6 +112,7 @@ def test_collection_acceptance_uses_semantic_candidate_revision(db, monkeypatch,
     candidate, job = setup(db)
     scope = dict(active(db, job)[0].scope)
     rows = [_price(str(date(2026, 6, d)), 100, 110, 90, 100) for d in (1, 2, 3, 4, 5, 8)]
+    official_prices(monkeypatch, rows)
     monkeypatch.setattr(YFinanceForwardPriceProvider, 'fetch', lambda self, symbols, **kw: {s: rows for s in symbols})
     bundle = WorkHandlers(db).collect_window(SimpleNamespace(scope=scope, run_date=DAY))
     if change == 'name': candidate.name = '只修正顯示名稱'
@@ -141,6 +149,7 @@ def test_shadow_then_selected_has_range_independent_revision(db, monkeypatch, ba
     scope = next(w.scope for w in active(db, job) if w.scope['candidate_id'] == shadow.id)
     rows = [dict(_price(str(date(2026, 6, d)), 100, 110, 90, 100), price_basis='unadjusted_price',
         price_source='fixture', corporate_actions_checked=True, dividends=0, stock_splits=0) for d in (1,2,3,4,5,8,9)]
+    official_prices(monkeypatch, rows)
     monkeypatch.setattr(YFinanceForwardPriceProvider, 'fetch', lambda self, symbols, **kw: {s: rows for s in symbols})
     monkeypatch.setattr(RecoveringResearchPriceProvider, 'fetch', lambda self, symbols, **kw: {s: rows for s in symbols})
     monkeypatch.setattr(RecoveringResearchPriceProvider, 'repair', lambda self, series, **kw: series)

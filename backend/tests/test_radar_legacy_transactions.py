@@ -10,6 +10,7 @@ from sqlalchemy import event, select, func
 from ai_stock_sentinel.daily_radar import run_router
 from ai_stock_sentinel.daily_radar.background_context import update_background_chip_context_cache
 from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
+from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.market_bar_service import refresh_taiwan_market_bars
 from ai_stock_sentinel.daily_radar.pipeline_support import _refresh_daily_radar_context_step
 from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
@@ -35,6 +36,12 @@ def test_one_shot_collects_every_source_before_domain_write(db, monkeypatch, sna
     monkeypatch.setenv('DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED', str(snapshots).lower())
     monkeypatch.setenv('DAILY_RADAR_DURABLE_EXECUTION_ENABLED', str(durable).lower())
     monkeypatch.setattr(run_router, 'load_market_exploration', lambda *args, **kwargs: ([], None))
+    if snapshots:
+        quote = FakeBatchTechnicalFetcher().fetch(['2330.TW'], run_date=DAY)['2330.TW']['ohlcv']
+        upsert_taiwan_daily_bars(db, [MarketDailyBar(symbol='2330.TW', market='TW', name='fixture',
+            trade_date=DAY, **{key: Decimal(str(quote[key])) for key in ('open','high','low','close')},
+            volume=1, amount=1, source_provider='twse', source_dataset='fixture')])
+        db.commit()
     seen = set()
     def checked(obj, method, label):
         original = getattr(obj, method)

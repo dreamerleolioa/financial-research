@@ -107,6 +107,21 @@ def test_light_reader_preserves_terminal_and_input_identity_checks(db, defect):
     assert 'reviewed_official_window' not in saved['outcome']
 
 
+def test_summary_omits_frozen_price_arrays_but_keeps_evidence_version(db):
+    _, candidate = seed_both(db)
+    row = db.scalar(select(Result).where(Result.window_days == 20,
+        Result.validation_version == RESEARCH_VALIDATION_VERSION))
+    proof = {'version': 'radar-validation-prices-v1', 'sha256': 'f' * 64,
+             'stock': [{'close': 100.0}], 'benchmark': [{'close': 1000.0}]}
+    row.outcome = dict(row.outcome) | {'validation_price_evidence': proof}
+    db.commit()
+    saved = validation.persisted_forward_validation_outcomes(db, [candidate], windows=[20],
+        as_of_date=DAY, validation_version=RESEARCH_VALIDATION_VERSION)[0]
+    assert saved['outcome']['validation_price_evidence'] == {
+        'version': proof['version'], 'sha256': proof['sha256']}
+    assert result_snapshot(row)['outcome']['validation_price_evidence'] == proof
+
+
 @pytest.mark.parametrize('marker', ['absent', 'null', 'empty', 'prior_only', 'prior_only_null', 'metadata'])
 def test_window_exclusion_projects_evidence_and_preserves_prior_only_ownership(db, marker):
     _, snapshot = seed_both(db)
