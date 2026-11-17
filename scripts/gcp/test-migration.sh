@@ -2,7 +2,8 @@
 # Disposable PG17 fixture, published only on loopback; no source data or credentials.
 set -euo pipefail
 if [[ $# -eq 0 ]]; then
-  test_targets=(tests/test_gcp_migration.py tests/test_gcp_production.py tests/test_gcp_schema_preflight.py tests/test_gcp_restore.py)
+  test_targets=(tests/test_gcp_migration.py tests/test_gcp_production.py tests/test_gcp_schema_preflight.py
+                tests/test_gcp_online_migration.py tests/test_gcp_restore.py)
 elif [[ $# -eq 1 && "$1" == --image-only ]]; then
   : "${GCP_MIGRATION_IMAGE:?Set GCP_MIGRATION_IMAGE for the exact-image check}"
   test_targets=(tests/test_gcp_migration.py::test_runtime_image_verifies_schema_without_ddl_permissions)

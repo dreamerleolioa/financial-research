@@ -1,16 +1,19 @@
 # 正式 schema 檢查與獨立 migration
 
-一般部署保留 `gcp-production` 的人工核准，API startup 保持 `DATABASE_MIGRATION_MODE=verify`。
-部署使用已通過 CI PG17 演練的同一固定映像，先執行獨立唯讀 job；只有 schema 完全符合映像 head 才更新服務。
-資料庫落後時部署會停止，維護者須另行取得 migration 授權、完成備份及 writer drain，再執行 owner job。
-正常部署不會自動進入維護、停排程、備份、upgrade、解除維護或補跑 Radar。
+正式發布只經過 `gcp-production` 一個人工核准關卡，涵蓋該版本的自動 migration 及後端部署。API startup 保持 `DATABASE_MIGRATION_MODE=verify`。
+同一個 workflow job 先在 PG17 驗證固定映像並留下 digest，再檢查正式 schema。若 DB 落後一個符合下列格式的 revision，發布會執行獨立 migration Job，完成後再次唯讀確認 schema 等於映像 head，再更新服務。
+自動路徑可保留 API 與排程運作，省去手動停機和備份。其他 migration 由維護者依下方 owner 流程處理。
 
 ```mermaid
 flowchart TD
     A[固定映像通過 CI 與人工核准] --> B[唯讀 schema-check job]
-    B --> C{正式 schema 等於映像 head}
-    C -->|是| D[更新 Cloud Run 並驗證 Ready 與流量]
-    C -->|否| E[停止部署並保留 job 診斷]
+    B --> C{正式 schema 狀態}
+    C -->|已達 head| D[更新 Cloud Run 並驗證 Ready 與流量]
+    C -->|一個合格 revision| N[執行自動 migration Job]
+    N --> O{唯讀檢查已達 head}
+    O -->|是| D
+    O -->|否| E[停止部署並保留 job 診斷]
+    C -->|不合格或讀取失敗| E
     E --> F[維護者取得獨立 migration 人工核准]
     F --> G[開維護 暫停六類 writer 停用實例 排空連線]
     G --> H[建立備份並在隔離 PG17 實際還原驗證]
@@ -22,8 +25,31 @@ flowchart TD
 ```
 
 矩形是動作、菱形是檢查。連線失敗、未初始化、未知／分歧版本都阻止部署，不當成需要自動 upgrade。
-唯讀 job JSON 區分 `ready`、`migration_required`、`uninitialized`、`incompatible`；列出 current、expected、pending revisions。
-非 ready 為非零 exit；不得只憑 job 已啟動宣稱檢查成功。
+唯讀 job JSON 區分 `ready`、`migration_required`、`uninitialized`、`incompatible`，並列出 current、expected、pending revisions 與 `online_eligible`。自動分支須另以唯讀模式確認 `online_eligible=true`，連線失敗不能當作需要 migration。
+
+## 可由 CI 自動執行的 revision
+
+第一版只允許單一直接接續的 revision，限一個 `add_nullable_column` 或 `create_table` 操作。範例如下，revision ID 在實際 PR 中使用自己的值。
+
+```python
+from ai_stock_sentinel.operations.online_ddl import apply
+
+revision = "123456789abc"
+down_revision = "23456789abcd"
+operation = ("add_nullable_column", "daily_radar_candidates", "example_note", "text")
+
+def upgrade():
+    apply(operation)
+
+def downgrade():
+    raise NotImplementedError
+```
+
+新增獨立空表時使用 `("create_table", "example_table", (("note", "text"),))`。支援型別為 `bigint`、`boolean`、`integer`、`jsonb`、`text`、`timestamptz`。只處理 `public` 的獨立一般表，欄位可空、無預設值或新約束。範例中的 revision 不會在正式庫執行。實際 PR 要核對舊版 API、排程與新增欄位或表的讀寫相容性。
+
+資格檢查比對 revision 的 Python 語法樹是否符合格式，額外 SQL、其他操作、依賴與多個待升版本都走 owner 流程。Job 使用與 owner 流程共用的 PostgreSQL advisory lock，在同一個交易重新核對版本與資格。新增欄位使用 `NOWAIT` 取得表鎖；交易失敗時 DDL 與 Alembic revision 一併回滾。
+
+部署失敗時在原 run 選 **Re-run failed jobs**。發布 job 會讀取先前已驗證的映像 digest，DB 已達 head 時直接繼續部署。每次嘗試使用新 Cloud Run revision 名稱。若 main 已更新，改用對應最新 main 的 run。DB 提交後到新版 Ready 前，舊版容器若重啟可能因 head 不符而無法服務，應優先完成新版本部署。GitHub Pages 在設定正式後端發布的分支上會等待後端健康檢查成功。
 
 ## 一次性設定：需另外取得正式資源／IAM 授權
 
@@ -37,11 +63,13 @@ flowchart TD
 | 預先建立的 job `financial-research-prod-schema-check` | `asia-east1`，下方固定設定；CI 只 update 此既有 job，不 create |
 | 既有 `financial-prod-deploy` | 此 job 範圍的 `run.jobs.get`、`run.jobs.update`、`run.jobs.run`、`run.executions.get`；此唯讀 SA 範圍的 `iam.serviceAccounts.actAs`。沿用既有 project `run.operations.get` 供 CLI 等待完成；若缺漏，只補此讀取權限 |
 | 維護者與 `financial-prod-migrator` | 沿用原本獨立 owner migration 身分；不把 actAs migrator、owner secret 或 DDL 權限交給部署者 |
+| `financial-prod-migrate-release@financial-research-20261019.iam.gserviceaccount.com` | 只由同一個受保護的 `gcp-production` WIF 身分登入。對 `financial-research-prod-online-migrate` 綁定 `run.jobs.get`、`run.jobs.update`、`run.jobs.run`、`run.executions.get`，等待操作另需 `run.operations.get`。只可 actAs 既有的 `financial-prod-migrator`。對 `asia-east1` 的 `financial-research` 映像庫綁定 `roles/artifactregistry.reader`，供更新 Job 時讀取固定映像。 |
+| 預先建立的 job `financial-research-prod-online-migrate` | `asia-east1`。維護者建立後由專用發布身分更新並執行。沿用 migrator DB role 及固定版本的 secret，與人工 owner job 使用不同 job 名稱。 |
 
 使用限定此 job 的自訂角色及 resource binding，不授予專案層級 Run Admin／Developer。
 上述最小權限仍需在首次設定時核對實際 IAM 與 CLI 回應；本機 fake-cloud 測試不能證明正式 IAM 已完成。
 權限依 [Cloud Run IAM](https://cloud.google.com/run/docs/reference/iam/roles) 與
-[job 執行文件](https://cloud.google.com/run/docs/execute/jobs)；CLI 使用
+[job 執行文件](https://cloud.google.com/run/docs/execute/jobs)；更新 Job 的映像權限見 [Cloud Run Job 的必要角色](https://docs.cloud.google.com/run/docs/create-jobs#required-roles)。CLI 使用
 [jobs update](https://cloud.google.com/sdk/gcloud/reference/run/jobs/update) 與 `jobs execute --wait`。
 
 經核准後由維護者建立 job（`REVIEWED_IMAGE` 必須是已測試的完整 registry `@sha256:` digest）：
@@ -60,7 +88,20 @@ gcloud run jobs create financial-research-prod-schema-check \
 這個 job 不開 HTTP、不公開任何診斷路由，probe 強制唯讀交易及固定 DB／角色／Cloud SQL socket。
 schema-check 和 deploy 共用現行 CI concurrency；維護期間不得另行並行部署、手動改 job 或執行其他 DB 維護。
 
-## migration：維護者入口，與部署 CI 分離
+自動 migration 首次使用前，維護者以同一個已驗證映像建立專用 Job，依表格配置 IAM。沿用限制 repo、workflow、main、事件及 environment subject 的 production WIF provider，將該 subject 綁定到新增的 migration release 身分。這個身分可更新具有 DB owner 權限的 Job，WIF 條件與人工核准都是權限邊界。維護者也應核對 deployer 對該 Job 無執行權、對 migrator SA 無 actAs。初次設定只建立 Job，等正式 workflow 核准後再執行。
+
+```bash
+gcloud run jobs create financial-research-prod-online-migrate \
+  --project=financial-research-20261019 --region=asia-east1 --image="$REVIEWED_IMAGE" \
+  --service-account=financial-prod-migrator@financial-research-20261019.iam.gserviceaccount.com \
+  --set-cloudsql-instances=financial-research-20261019:asia-east1:financial-postgres \
+  --set-secrets=DATABASE_URL=financial-prod-migrator-database-url:1 \
+  --set-env-vars=EXPECTED_DATABASE_NAME=financial_research \
+  --command=python --args=-m,ai_stock_sentinel.operations.schema,--migrate-online \
+  --tasks=1 --parallelism=1 --max-retries=0 --task-timeout=120 --cpu=1 --memory=512Mi
+```
+
+## 不符合自動資格的 migration：維護者入口
 
 1. 先核對唯讀 job 的 current／expected／pending，review 對應 migration 及固定映像。未知或分歧版本先調查。
 2. 另行取得正式 migration、停寫及必要部署／解除維護授權。暫停六類 writer、取消或等待既有作業；開維護並設 `--scaling=0`，不得保留可運行的 revision tag。維護 gate 不會停止既有請求，要確認實例已停止、DB 連線已排空。

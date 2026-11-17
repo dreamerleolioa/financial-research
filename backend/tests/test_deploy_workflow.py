@@ -65,7 +65,7 @@ def test_deployment_reuses_all_ci_checks() -> None:
     record_step = next(step for step in recorder['steps'] if step.get('uses', '').startswith('actions/upload-artifact@'))
     assert record_step['name'] == 'Publish verified CI tree ${{ steps.tree.outputs.sha }}'
     assert record_step['with']['name'] == 'verified-ci-tree-${{ steps.tree.outputs.sha }}'
-    assert jobs['deploy-frontend']['needs'] == ['verify-deployment-ci']
+    assert jobs['deploy-frontend']['needs'] == ['verify-deployment-ci', 'deploy-gcp-production']
     assert jobs['deploy-gcp-production']['needs'] == ['verify-deployment-ci']
     assert any(step.get('run') == 'python3 .github/scripts/verify_deployment_ci.py'
                for step in jobs['verify-deployment-ci']['steps'])
@@ -103,11 +103,41 @@ def test_gcp_deployment_waits_for_verification_and_environment_approval():
     assert any('bash scripts/gcp/deploy-production.sh' in command for command in commands)
 
 
-def _job_condition_matches(condition, *, event, ref, deploy):
+def test_production_release_couples_migration_to_verified_image_and_single_approval():
+    jobs = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)['jobs']
+    assert [name for name, job in jobs.items() if job.get('environment') == 'gcp-production'] == [
+        'deploy-gcp-production'
+    ]
+    steps = jobs['deploy-gcp-production']['steps']
+    by_name = {step.get('name'): step for step in steps}
+    ordered = [
+        'Verify the exact image against PostgreSQL 17', 'Save verified image for deployment retries',
+        'Check schema for the approved release', 'Authenticate as the migration release identity',
+        'Apply the eligible migration', 'Verify the schema and deploy the same image',
+        'Verify private service health',
+    ]
+    assert [step['name'] for step in steps if step.get('name') in ordered] == ordered
+    expected_digest = '${{ steps.previous-image.outputs.digest || steps.image.outputs.digest }}'
+    for name in (ordered[2], ordered[4], ordered[5]):
+        assert by_name[name]['env']['IMAGE_DIGEST'] == expected_digest
+    for name in ordered[3:5]:
+        assert by_name[name]['if'] == "steps.preflight.outputs.migration_required == 'true'"
+    migration_auth = by_name[ordered[3]]['with']
+    assert migration_auth['service_account'].startswith('financial-prod-migrate-release@')
+    assert migration_auth['export_environment_variables'] == 'false'
+    assert by_name[ordered[4]]['env']['CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE'] == (
+        '${{ steps.migration-auth.outputs.credentials_file_path }}'
+    )
+    assert 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE' not in by_name[ordered[5]]['env']
+
+
+def _job_condition_matches(condition, *, event, ref, deploy, backend='success',
+                           deploy_ref='refs/heads/main', ci='success', cancelled=False):
     """Evaluate the actual gate's small Boolean/equality expression, without eval."""
-    values = {'github.event_name': event, 'github.ref': ref,
-              'inputs.deploy_gcp_production': deploy}
-    expression = re.sub(r'github\.event_name|github\.ref|inputs\.deploy_gcp_production',
+    values = {'github.event_name': event, 'github.ref': ref, 'inputs.deploy_gcp_production': deploy,
+              'needs.deploy-gcp-production.result': backend, 'vars.GCP_PRODUCTION_DEPLOY_REF': deploy_ref,
+              'needs.verify-deployment-ci.result': ci, 'cancelled()': cancelled}
+    expression = re.sub('|'.join(map(re.escape, values)),
                         lambda match: repr(values[match[0]]), condition)
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     tree = ast.parse(re.sub(r'!(?!=)', 'not ', expression), mode='eval')
@@ -120,8 +150,11 @@ def _job_condition_matches(condition, *, event, ref, deploy):
         if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
             operation = all if isinstance(node.op, ast.And) else any
             return operation(read(value) for value in node.values)
-        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
-            return read(node.left) == read(node.comparators[0])
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            if isinstance(node.ops[0], ast.Eq):
+                return read(node.left) == read(node.comparators[0])
+            if isinstance(node.ops[0], ast.NotEq):
+                return read(node.left) != read(node.comparators[0])
         raise AssertionError(f'Unsupported deployment condition: {ast.dump(node)}')
 
     return bool(read(tree.body))
@@ -167,9 +200,24 @@ def test_deployment_event_and_branch_boundaries(event, ref, deploy, pages_allowe
                                   event=event, ref=ref, deploy=deploy) is pages_allowed
 
 
+@pytest.mark.parametrize(('backend', 'deploy_ref', 'ci', 'cancelled', 'pages_allowed'), [
+    ('success', 'refs/heads/main', 'success', False, True),
+    ('failure', 'refs/heads/main', 'success', False, False),
+    ('skipped', 'refs/heads/main', 'success', False, False),
+    ('skipped', '', 'success', False, True),
+    ('skipped', '', 'failure', False, False),
+    ('success', 'refs/heads/main', 'success', True, False),
+])
+def test_pages_waits_for_configured_backend_release(backend, deploy_ref, ci, cancelled, pages_allowed):
+    job = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)['jobs']['deploy-frontend']
+    assert _job_condition_matches(job['if'], event='push', ref='refs/heads/main', deploy=False,
+                                  backend=backend, deploy_ref=deploy_ref, ci=ci, cancelled=cancelled) is pages_allowed
+
+
 @pytest.mark.parametrize(('arguments', 'targets'), [
     ([], ['tests/test_gcp_migration.py', 'tests/test_gcp_production.py',
-          'tests/test_gcp_schema_preflight.py', 'tests/test_gcp_restore.py']),
+          'tests/test_gcp_schema_preflight.py', 'tests/test_gcp_online_migration.py',
+          'tests/test_gcp_restore.py']),
     (['--image-only'], ['tests/test_gcp_migration.py::test_runtime_image_verifies_schema_without_ddl_permissions']),
 ])
 def test_pg17_rehearsal_selects_the_ci_suite_or_the_single_image_check(tmp_path, arguments, targets):

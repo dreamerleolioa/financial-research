@@ -15,7 +15,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
-from ai_stock_sentinel.operations import preimage
+from ai_stock_sentinel.operations import online_ddl, preimage
 
 DATABASE = 'financial_research'
 READER = 'financial_prod_debug_readonly'
@@ -37,7 +37,7 @@ def classify(script, current):
     heads = sorted(script.get_heads())
     require(len(heads) == 1, 'Image must contain exactly one Alembic head')
     report = {'version': 'production-schema-v1', 'current_revisions': sorted(current),
-              'expected_revisions': heads, 'pending_revisions': []}
+              'expected_revisions': heads, 'pending_revisions': [], 'online_eligible': False}
     if current == heads:
         report['status'] = 'ready'
     elif not current:
@@ -48,6 +48,7 @@ def classify(script, current):
         try:
             pending = list(script.iterate_revisions(heads[0], current[0]))
             report.update(status='migration_required', pending_revisions=[r.revision for r in reversed(pending)])
+            report['online_eligible'] = len(pending) == 1 and online_ddl.eligible(pending[0], current[0])
         except Exception as error:
             # Alembic uses different exception classes for unknown/divergent revisions.
             from alembic.util.exc import CommandError
@@ -92,6 +93,35 @@ def probe(connection, script, *, database=DATABASE, user=READER):
         return inspect_schema(connection, script)
 
 
+def upgrade(connection, config, script, revision):
+    config.attributes['connection'] = connection
+    try:
+        command.upgrade(config, revision)
+    finally:
+        config.attributes.pop('connection', None)
+    after = inspect_schema(connection, script)
+    require(after['status'] == 'ready', 'Migration did not reach the image head')
+    return after
+
+
+def migrate_online(connection, config, script, *, database=DATABASE, user=MIGRATOR):
+    with connection.begin():
+        connection.execute(text("SET LOCAL lock_timeout = '250ms'"))
+        connection.execute(text("SET LOCAL statement_timeout = '3s'"))
+        connection.execute(text("SET LOCAL transaction_timeout = '5s'"))
+        connection.execute(text("SET LOCAL search_path = public, pg_catalog"))
+        actual = connection.execute(text('SELECT current_database(), current_user')).one()
+        require(tuple(actual) == (database, user), 'Wrong migration database or role')
+        require(connection.scalar(text('SELECT pg_try_advisory_xact_lock(:key)'), {'key': MIGRATION_LOCK}),
+                'Another production migration is running')
+        report = inspect_schema(connection, script)
+        if report['status'] == 'ready':
+            return {**report, 'applied_revisions': []}
+        require(report['online_eligible'], 'Pending revisions are outside the automatic migration policy')
+        after = upgrade(connection, config, script, report['expected_revisions'][0])
+    return {**after, 'applied_revisions': report['pending_revisions']}
+
+
 def migrate(connection, config, script, *, from_revision, to_revision, backup_tables_sha256, backup_preimage_sha256,
             database=DATABASE, user=MIGRATOR):
     """Fence and upgrade on one transaction/connection, including Alembic's DDL."""
@@ -112,19 +142,16 @@ def migrate(connection, config, script, *, from_revision, to_revision, backup_ta
         require(others == 0, 'Database writers/connections have not drained')
         require(preimage.capture(connection, current_tables(connection)) == backup_preimage_sha256,
                 'Live data/schema/sequences differ from the approved backup; create and restore a fresh drained backup')
-        config.attributes['connection'] = connection
-        try:
-            command.upgrade(config, to_revision)
-        finally:
-            config.attributes.pop('connection', None)
-        after = inspect_schema(connection, script)
-        require(after['status'] == 'ready', 'Migration did not reach the image head')
+        after = upgrade(connection, config, script, to_revision)
     return {**after, 'applied_revisions': report['pending_revisions']}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--migrate', action='store_true', help='Owner job only; never used by deployment CI')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--migrate', action='store_true', help='Drained owner job only')
+    mode.add_argument('--migrate-online', action='store_true', help='Approved release job only')
+    mode.add_argument('--online-pending', action='store_true', help='Read only; succeed for one eligible pending revision')
     parser.add_argument('--from-revision')
     parser.add_argument('--to-revision')
     args = parser.parse_args(argv)
@@ -143,6 +170,7 @@ def main(argv=None):
                     'Migration backup/approval expired; create a new plan')
             require(re.fullmatch('[a-f0-9]{64}', os.environ.get('MIGRATION_BACKUP_MANIFEST_SHA256', '')),
                     'Verified backup manifest checksum required')
+        if args.migrate or args.migrate_online:
             from ai_stock_sentinel.db.session import get_database_url
             require(os.getenv('EXPECTED_DATABASE_NAME') == DATABASE, 'Expected production database is required')
             url = migration_url(get_database_url())
@@ -158,15 +186,21 @@ def main(argv=None):
         engine = create_engine(url, poolclass=NullPool, connect_args={'options': options, 'connect_timeout': 15})
         try:
             with engine.connect() as connection:
-                result = (migrate(connection, config, script, from_revision=args.from_revision, to_revision=args.to_revision,
-                                  backup_tables_sha256=os.environ.get('MIGRATION_BACKUP_TABLES_SHA256'),
-                                  backup_preimage_sha256=os.environ.get('MIGRATION_BACKUP_PREIMAGE_SHA256'))
-                          if args.migrate else probe(connection, script))
+                if args.migrate:
+                    result = migrate(connection, config, script, from_revision=args.from_revision, to_revision=args.to_revision,
+                                     backup_tables_sha256=os.environ.get('MIGRATION_BACKUP_TABLES_SHA256'),
+                                     backup_preimage_sha256=os.environ.get('MIGRATION_BACKUP_PREIMAGE_SHA256'))
+                elif args.migrate_online:
+                    result = migrate_online(connection, config, script)
+                else:
+                    result = probe(connection, script)
         finally:
             engine.dispose()
         if args.migrate:
             result['backup_manifest_sha256'] = os.environ['MIGRATION_BACKUP_MANIFEST_SHA256']
         print(json.dumps(result))
+        if args.online_pending:
+            return 0 if result['online_eligible'] else 2
         return 0 if result['status'] == 'ready' else 2
     except Exception as error:
         # Never emit a DSN, password or raw driver/subprocess exception.
