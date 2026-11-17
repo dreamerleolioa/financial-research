@@ -84,7 +84,7 @@ def test_production_job_event_gate(event, ref, configured, dispatch, expected):
     condition = job['if'].replace('vars.GCP_PRODUCTION_DEPLOY_REF', repr(configured))
     assert _job_condition_matches(condition, event=event, ref=ref, deploy=dispatch) is expected
     assert job['environment'] == 'gcp-production'
-    assert set(job['needs']) == {'test-backend', 'test-frontend', 'test-postgres-migration'}
+    assert job['needs'] == ['verify-deployment-ci']
 
 
 def test_unconfirmed_production_migration_never_calls_cloud(tmp_path):

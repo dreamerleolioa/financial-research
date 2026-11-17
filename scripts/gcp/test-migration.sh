@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Disposable PG17 fixture, published only on loopback; no source data or credentials.
 set -euo pipefail
+if [[ $# -eq 0 ]]; then
+  test_targets=(tests/test_gcp_migration.py tests/test_gcp_production.py tests/test_gcp_schema_preflight.py tests/test_gcp_restore.py)
+elif [[ $# -eq 1 && "$1" == --image-only ]]; then
+  : "${GCP_MIGRATION_IMAGE:?Set GCP_MIGRATION_IMAGE for the exact-image check}"
+  test_targets=(tests/test_gcp_migration.py::test_runtime_image_verifies_schema_without_ddl_permissions)
+else
+  echo "Usage: $0 [--image-only]" >&2
+  exit 2
+fi
+
 clients=$(mktemp -d /tmp/fr-gcp-clients.XXXXXX)
 container_id=
 cleanup() {
@@ -35,4 +45,4 @@ done
 export GCP_MIGRATION_TEST_HOST=127.0.0.1 GCP_MIGRATION_TEST_BIN="$clients"
 export PGUSER=postgres PGPASSWORD=fixture-only-password
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../backend"
-uv run pytest tests/test_gcp_migration.py tests/test_gcp_production.py tests/test_gcp_schema_preflight.py tests/test_gcp_restore.py -q
+uv run pytest "${test_targets[@]}" -q

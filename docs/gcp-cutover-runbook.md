@@ -100,8 +100,13 @@ libpq 的 PGHOSTADDR／PGSERVICE／PGSERVICEFILE／PGSYSCONFDIR／PGOPTIONS 覆�
   一般 CI 不改 IAM；不授予 deployer setIamPolicy，不代表 migrator，也不執行資料還原。
 - main 合併前，確認 Zeabur `financial-research-hae` 的 GitHub 自動部署仍未綁定，執行中的舊後端保持服務。
   避免合併準備工具時連帶重啟舊正式機。
-- 使用者自行 push／merge；三組 backend／frontend／PG17 checks 與 gcp-production approval 均保留。
-  main 部署 Pages 時仍使用既有 `VITE_API_URL`，合併準備變更本身不會把前端切到 GCP。
+- PR CI 的 backend／frontend／PG17 checks 全部通過後，記錄實際受測的 Git tree。
+  Pages 與 Cloud Run 發布都要求相符紀錄。Squash merge 改變 commit SHA 時，只要 Git tree 一致即可沿用 PR 結果。
+  Pages 建置仍使用 `VITE_API_URL`。Cloud Run 經 `gcp-production` 核准後，驗證固定映像可在 PG17 以唯讀資料庫權限啟動，再核對正式 schema 和發布後健康狀態。
+- 如果部署找不到有效紀錄（例如合併後 Git tree 改變，或 CI artifact 到期），在 Actions 的 `CI/CD` 選 `main` 手動執行，保持 `deploy_gcp_production` 未勾選。
+  確認該 CI run 的 SHA 等於待發布版本，再於 `main` 仍指向該版本時重跑原本失敗的部署。這一步也可為經授權直接推到 `main` 的版本補上 CI 紀錄。
+- [GitHub Actions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs) 的重跑期限為首次執行後 30 天。
+  超過期限時，Cloud Run 可從 `main` 重新勾選 `deploy_gcp_production` 執行部署；Pages 則由下一次經授權的 `main` push 發布，且新版本的 Git tree 也須通過 CI。
 
 ## 正式 HTTPS 入口與維護模式
 

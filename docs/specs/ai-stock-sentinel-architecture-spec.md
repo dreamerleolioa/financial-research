@@ -91,7 +91,7 @@
 
 | Workflow | 責任 |
 | -------- | ---- |
-| `deploy.yml` | PR/main 執行 backend tests 與 frontend lint/E2E/build；main push 的 GitHub Pages deploy 必須等待兩個驗證 job 成功 |
+| `deploy.yml` | PR CI 執行 backend tests、frontend lint/E2E/build 與 PG17 遷移演練。main 部署沿用相符 Git tree 的成功紀錄，再建置 Pages 正式產物或驗證並發布 Cloud Run 映像。 |
 | `daily-radar.yml` | 先由 Actions run 原始 `created_at` 與 cron slot 解析 immutable `run_date`，再呼叫 `/internal/daily-radar/market-session` 做 TWSE 開休市 guard；休市時 scheduled pipeline 與一般手動 step skip，provider 異常時 fail closed。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是明確歷史日期的 maintenance exceptions，不依賴目前 `run_date` 的 `market_open`；各 backfill 仍受 endpoint 日期範圍與未來日期驗證約束。開市後 17:30 先呼叫 `refresh-institutional-flows` 歸檔 TWSE/TPEX 市場級法人日報，18:00 `prepare-universe` 只從完整 archive 建立四條分法人軌道，再分段執行 `refresh-market-bars`、`refresh-avwap`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context`、`run-scoring`；每段共用同一 `run_date`，手動執行未指定日期時使用原始 `created_at` 對應的台北日期。22:30 raw refresh 只更新 OHLCV 與近期分析 raw data；scoring 只讀已落庫 cache/snapshot，對 institutional-flow archive/lending/full-margin/OHLCV/market-context 不完整時 fail closed，AVWAP 不完整只保留 optional evidence caveat；另有 07:00 TWT repair-and-rescore 補修排程，依序補修 full margin、OHLCV 與 AVWAP，full margin 與 OHLCV 完成後才重跑 scoring；無論前段是否成功都繼續補齊 managed raw data，任何補修未完成均讓 repair monitor 失敗，Re-run 仍保留原本 run date |
 | `daily-radar-chip-context.yml` | 維護/補跑 lending/full margin；週日更新 TDCC weekly major holders；寫入 `shared_background_contexts` |
 | `active-etf-holdings.yml` | 台灣時間平日 08:00、19:00 呼叫 MoneyDJ-only internal refresh；19:00 取得較完整的當日持股，08:00 保留補抓。逐基金成功快照會保留，只有明確尚未公布可作允許的 partial，其餘 error 或快照／基金計數缺口都讓 workflow fail |
