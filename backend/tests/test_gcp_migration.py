@@ -155,11 +155,28 @@ def test_pg17_financial_restore_excludes_n8n_and_detects_drift(pg17, tmp_path):
     assert not thread.is_alive()
     assert errors == []
     restore(target_env, tmp_path / "source")
+    def projection_contract(connection):
+        with connection.cursor() as cur:
+            cur.execute("SELECT md5(p.prosrc), p.prosecdef, p.proisstrict, p.proleakproof, p.proconfig, "
+                        "p.provolatile,p.proparallel,t.tgtype,t.tgenabled,t.tgqual,t.tgconstraint,t.tgnargs,t.tgattr::text "
+                        "FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgname='radar_validation_projection_v1'")
+            return cur.fetchone()
+    assert projection_contract(source) == projection_contract(target)
     actual = snapshot(target_env, "verify-financial", tmp_path / "target")
     assert manifests.compare(expected, actual) == []
+    changed = json.loads(json.dumps(actual))
+    changed['public.daily_radar_candidates']['trigger_functions'] = ['different body']
+    assert 'public.daily_radar_candidates: trigger_functions differs' in manifests.compare(expected, changed)
+    legacy_financial = json.loads(json.dumps(expected))
+    legacy_financial['public.daily_radar_candidates'].pop('trigger_functions')
+    assert 'public.daily_radar_candidates: trigger_functions differs' in manifests.compare(legacy_financial, actual)
     with psycopg2.connect(host=target_env["PGHOST"], port=65439, dbname=target_env["PGDATABASE"]) as check:
         sequences.verify(check, sequences.parse_state(tmp_path / "source/sequence-state.sql"))
     with target.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pg_trigger WHERE tgname='radar_validation_projection_v1'")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT md5(prosrc) FROM pg_proc WHERE proname='radar_validation_projection_v1'")
+        assert cur.fetchone()[0] == 'a69c626b4f5147b3ab77b335e4836fc3'
         cur.execute("SELECT to_regclass('public.n8n_workflow_entity')")
         assert cur.fetchone()[0] is None
         cur.execute("INSERT INTO users(google_sub,email) VALUES ('next-sub','next@example.invalid') RETURNING id")
@@ -177,6 +194,18 @@ def test_pg17_financial_restore_excludes_n8n_and_detects_drift(pg17, tmp_path):
     assert refused.returncode != 0
     assert "Cross-application foreign key" in refused.stderr
     assert not (tmp_path / "refused/database.sql.gz").exists()
+    with source.cursor() as cur:
+        cur.execute("ALTER TABLE users DROP COLUMN forbidden_n8n_id")
+        cur.execute("CREATE TRIGGER unreviewed BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION radar_validation_projection_v1()")
+    refused = subprocess.run(["bash", str(SCRIPTS / "snapshot.sh"), "export-financial", str(tmp_path / "unknown-trigger")],
+                             env=source_env, text=True, capture_output=True, timeout=30)
+    assert refused.returncode != 0 and 'User triggers require dependency review' in refused.stderr
+    with source.cursor() as cur:
+        cur.execute("DROP TRIGGER unreviewed ON users")
+        cur.execute("CREATE OR REPLACE FUNCTION radar_validation_projection_v1() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$")
+    refused = subprocess.run(["bash", str(SCRIPTS / "snapshot.sh"), "export-financial", str(tmp_path / "changed-trigger-body")],
+                             env=source_env, text=True, capture_output=True, timeout=30)
+    assert refused.returncode != 0 and 'User triggers require dependency review' in refused.stderr
     source.close()
     target.close()
 
@@ -195,6 +224,16 @@ def test_pg17_health_schema_restore_is_empty_and_detects_unwanted_rows(pg17, tmp
     restore(target_env, tmp_path / "source")
     actual = snapshot(target_env, "verify-health-schema", tmp_path / "target")
     assert manifests.compare(expected, actual) == []
+    legacy_health = json.loads(json.dumps(expected))
+    for table in legacy_health.values():
+        table.pop('trigger_functions')
+    assert manifests.compare(legacy_health, actual) == []
+    unproven_dependency = json.loads(json.dumps(actual))
+    unproven_dependency['public.users']['trigger_functions'] = ['unproven body']
+    assert 'public.users: trigger_functions differs' in manifests.compare(legacy_health, unproven_dependency)
+    incomplete_target = json.loads(json.dumps(actual))
+    incomplete_target['public.users'].pop('trigger_functions')
+    assert 'public.users: trigger_functions differs' in manifests.compare(expected, incomplete_target)
     assert all(item["rows"] == 0 for item in actual.values())
     with target.cursor() as cur:
         cur.execute("CREATE OR REPLACE FUNCTION touch_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.payload = 'wrong'; RETURN NEW; END $$")

@@ -35,6 +35,14 @@ def inventory_input_revision(db, *, as_of_date):
     candidates = select(*columns).join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id).where(
         DailyRadarRun.id.in_(runs), taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
     run_query = select(*run_columns).where(DailyRadarRun.id.in_(runs))
+    if db.get_bind().dialect.name == 'postgresql':
+        # The database trigger maintains the exact candidate input projection.
+        # Run-level fields (canonical status/date/pool count) remain independent.
+        columns = [DailyRadarCandidate.id, DailyRadarCandidate.validation_input_hash]
+        candidates = candidates.with_only_columns(*columns)
+        invalid = candidates.where(func.length(DailyRadarCandidate.validation_input_hash) != 32).limit(1)
+        if db.execute(invalid).first() is not None:
+            raise ValueError('radar_validation_projection_unrecorded')
     return fingerprint({'candidates': _digest(db, candidates, columns, DailyRadarCandidate.id),
                         'runs': _digest(db, run_query, run_columns, DailyRadarRun.id)})
 

@@ -35,7 +35,8 @@ def test_cli_round_trip_records_exact_date_and_enforces_lane_deadlines(tmp_path)
             self.check();body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             result={'job_id':7,'requested_run_date':'2026-11-06','effective_run_date':'2026-11-06'}
             if self.path.endswith('/jobs'):
-                assert body=={'market':'TW','run_date':'2026-11-06'};self.reply(result,202);return
+                assert body=={'market':'TW','run_date':'2026-11-06',
+                    'lanes':['publication','signal_close','next_open']};self.reply(result,202);return
             assert self.path.endswith('/jobs/7/advance') and body=={}
             advances.append(self.path)
             self.reply(result|{'advanced_count':1 if len(advances)==1 else 0,'runnable_now':False,'data_ready':len(advances)>1})

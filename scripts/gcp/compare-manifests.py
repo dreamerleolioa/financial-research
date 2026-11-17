@@ -49,6 +49,18 @@ def compare(source: dict, target: dict) -> list[str]:
         for field, default in (("triggers", []), ("schema_objects", None)):
             if source[name].get(field, default) != target[name].get(field, default):
                 differences.append(f"{name}: {field} differs")
+        expected = source[name].get("trigger_functions", [])
+        actual = target[name].get("trigger_functions", [])
+        legacy_functions = (source[name].get("schema_objects") or {}).get("functions")
+        if "trigger_functions" not in source[name] and isinstance(legacy_functions, list):
+            # Legacy health exports already prove every function via the full
+            # schema_objects comparison above. Financial exports had no such
+            # evidence and remain strict; new exports require the new field.
+            matches = all(definition in legacy_functions for definition in actual)
+        else:
+            matches = expected == actual
+        if not matches:
+            differences.append(f"{name}: trigger_functions differs")
     return differences
 
 

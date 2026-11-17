@@ -230,16 +230,19 @@ def scoring_prerequisite_inputs(session, *, run_date):
     return prepared, steps, blockers, cache_rows
 
 
-def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False):
+def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False, scope='all'):
     """Caller holds a read-only/no-autoflush session; never fetches providers."""
+    if scope not in {'all', 'publication'}:
+        raise ValueError('invalid_readiness_scope')
     prepared, steps, blockers, cache_rows = scoring_prerequisite_inputs(session, run_date=run_date)
     run = session.scalar(select(DailyRadarRun).where(DailyRadarRun.id.in_(canonical_radar_run_ids(
         market="TW", start_date=run_date, end_date=run_date))))
     stored_selected_count = session.scalar(select(func.count()).select_from(DailyRadarCandidate).where(
         DailyRadarCandidate.run_id == run.id, DailyRadarCandidate.selection_status == "selected")) if run else None
     output_complete = bool(run and stored_selected_count == run.candidate_count)
-    validation = validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
+    validation = (validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
                                       sample_limit=None if include_all_validation_gaps else 100)
+                  if scope == 'all' else {})
     from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
     input_summary = None
     current_digest = None
@@ -262,7 +265,7 @@ def read_readiness(session, *, run_date: date, lookback_days=365, include_all_va
         input_summary["matches_current_inputs"] = bool(current_digest and input_summary.get("fingerprint") == current_digest)
         if input_summary["state"] == "recorded":
             output_complete = output_complete and input_summary["output_complete"]
-    return {"version": "radar-readiness-v1", "market": "TW", "requested_run_date": str(run_date),
+    return {"version": "radar-readiness-v1", "scope": scope, "market": "TW", "requested_run_date": str(run_date),
         "effective_run_date": str(run_date), "lookback_days": lookback_days,
         "sample_start_date": str(run_date - timedelta(days=lookback_days - 1)),
         "scoring": {"ready": not blockers, "blockers": blockers,
@@ -276,7 +279,7 @@ def read_readiness(session, *, run_date: date, lookback_days=365, include_all_va
             "input_manifest": input_summary},
         "validation": validation,
         "auxiliary": {key: steps.get(key) for key in ("refresh-avwap", "refresh-managed-raw-data")},
-        "data_ready": bool(run and run.status == "completed" and output_complete and not blockers
+        "data_ready": None if scope == 'publication' else bool(run and run.status == "completed" and output_complete and not blockers
                            and (input_summary is None or (input_summary["state"] == "recorded"
                                 and input_summary["matches_current_inputs"]))
                            and all(r["ready"] for r in validation.values()))}
