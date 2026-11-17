@@ -62,7 +62,9 @@ elif a[:3]==['run','jobs','execute']:
   data=json.loads(os.environ['SERVICE_JSON'])
   data['metadata']['annotations'].update({'run.googleapis.com/scalingMode':'manual','run.googleapis.com/manualInstanceCount':'0'})
   Path(os.environ['SERVICE_STATE']).write_text(json.dumps(data))
- sys.exit(int(os.environ.get('SCHEMA_EXIT','0')))
+ if a[3]=='financial-research-prod-online-migrate':
+  sys.exit(int(os.environ.get('ONLINE_EXIT','0')))
+ sys.exit(int(os.environ.get('SCHEMA_ELIGIBLE_EXIT','0') if '--online-pending' in Path(os.environ['CLOUD_LOG']).read_text().splitlines()[-2] else os.environ.get('SCHEMA_EXIT','0')))
 ''')
     fake.chmod(0o700)
     # Match the private fixture rather than inheriting the deployment job's mode.
@@ -72,6 +74,57 @@ elif a[:3]==['run','jobs','execute']:
            'SERVICE_STATE': str(tmp_path/'service-state.json'),
            'CLOUD_LOG': str(tmp_path / 'cloud.jsonl')}
     return env, Path(env['CLOUD_LOG'])
+
+
+@pytest.mark.parametrize(('ready', 'eligible', 'expected'), [('0', '0', 'false'), ('1', '0', 'true'), ('1', '1', None)])
+def test_release_preflight_is_read_only_and_requires_positive_eligibility(tmp_path, ready, eligible, expected):
+    env, log = cloud_fixture(tmp_path)
+    output = tmp_path / 'outputs'
+    env.update(SCHEMA_EXIT=ready, SCHEMA_ELIGIBLE_EXIT=eligible, GITHUB_OUTPUT=str(output))
+    run = subprocess.run(['bash', str(SCRIPTS / 'deploy-production.sh'), IMAGE, '--release-preflight'],
+                         cwd=ROOT, env=env, capture_output=True, text=True)
+    assert (run.returncode == 0) == (expected is not None), run.stderr
+    if expected is not None:
+        assert output.read_text().splitlines() == [f'migration_required={expected}']
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert not any(call[:2] == ['run', 'deploy'] for call in calls)
+    assert not any('migrator' in arg for call in calls for arg in call)
+
+
+@pytest.mark.parametrize('identity', ['financial-prod-deploy', 'financial-prod-migrate-release'])
+def test_online_release_job_requires_dedicated_identity_and_pins_image(tmp_path, identity):
+    env, log = cloud_fixture(tmp_path)
+    fake = tmp_path / 'gcloud'
+    fake.write_text(fake.read_text().replace('financial-prod-deploy@', identity + '@'))
+    run = subprocess.run(['bash', str(SCRIPTS / 'migrate-production-online.sh'), IMAGE],
+                         cwd=ROOT, env=env, capture_output=True, text=True)
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    if identity == 'financial-prod-deploy':
+        assert run.returncode != 0
+        assert calls == [['auth', 'list', '--filter=status:ACTIVE', '--format=value(account)']]
+    else:
+        assert run.returncode == 0, run.stderr
+        configure, execute = calls[1:]
+        assert configure[:4] == ['run', 'jobs', 'update', 'financial-research-prod-online-migrate']
+        assert '--image=' + IMAGE in configure and '--max-retries=0' in configure
+        assert '--args=-m,ai_stock_sentinel.operations.schema,--migrate-online' in configure
+        assert execute[:4] == ['run', 'jobs', 'execute', 'financial-research-prod-online-migrate']
+        assert '--wait' in execute
+
+
+@pytest.mark.parametrize(('status', 'percent', 'can_retry'), [
+    ('False', 100, True), ('Unknown', 100, False), ('False', 90, False),
+])
+def test_release_preflight_distinguishes_failed_rollout_from_in_progress(tmp_path, status, percent, can_retry):
+    env, _ = cloud_fixture(tmp_path)
+    state = json.loads(env['SERVICE_JSON'])
+    state['status']['latestCreatedRevisionName'] = 'failed-revision'
+    state['status']['conditions'] = [{'type': 'Ready', 'status': status}]
+    state['status']['traffic'][0]['percent'] = percent
+    env.update(SERVICE_JSON=json.dumps(state), GITHUB_OUTPUT=str(tmp_path / 'outputs'))
+    run = subprocess.run(['bash', str(SCRIPTS / 'deploy-production.sh'), IMAGE, '--release-preflight'],
+                         cwd=ROOT, env=env, capture_output=True, text=True)
+    assert (run.returncode == 0) == can_retry, run.stderr
 
 
 @pytest.mark.parametrize('exit_code', ['1', '2'])

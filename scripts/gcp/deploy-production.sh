@@ -8,6 +8,10 @@ access_mode=${GCP_PRODUCTION_ACCESS_MODE:-private}
 [[ "$access_mode" == private || "$access_mode" == public ]] || exit 1
 image=${1:?Pass the image verified against PostgreSQL 17, pinned by digest}
 [[ "$image" =~ ^asia-east1-docker\.pkg\.dev/financial-research-20261019/financial-research/backend@sha256:[a-f0-9]{64}$ ]] || exit 1
+mode=${2:-}
+[[ -z "$mode" || "$mode" == --release-preflight ]] || exit 2
+suffix=${GCP_RELEASE_REVISION_SUFFIX:-}
+[[ -z "$suffix" || "$suffix" =~ ^ci-[0-9]{1,20}-a[0-9]{1,4}$ ]] || exit 2
 identity=$(gcloud auth list --filter=status:ACTIVE --format='value(account)')
 [[ "$identity" == financial-prod-deploy@financial-research-20261019.iam.gserviceaccount.com ]] || {
   echo 'Unexpected deployment identity' >&2; exit 1;
@@ -20,23 +24,46 @@ verify_service() {
   python3 scripts/gcp/verify_production_service.py "$scratch/service.json" "$scratch/iam.json" "$@" --access-mode "$access_mode"
 }
 verify_deployable() {
-  verify_service "$@" > /dev/null
-python3 - "$scratch/service.json" <<'PY'
+  verify_service --allow-failed-rollout "$@" > /dev/null
+python3 - "$scratch/service.json" "$mode" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 annotations = data['metadata'].get('annotations', {})
 if annotations.get('run.googleapis.com/scalingMode') == 'manual' and annotations.get('run.googleapis.com/manualInstanceCount') == '0':
     raise SystemExit('Production writer drain is active; deployment is blocked')
+if sys.argv[2] == '--release-preflight':
+    env = data['spec']['template']['spec']['containers'][0]['env']
+    if any(entry['name'] == 'APP_MAINTENANCE_MODE' and entry.get('value') == 'true' for entry in env):
+        raise SystemExit('Production maintenance is active; the automatic release is blocked')
 PY
 }
+if [[ "$mode" == --release-preflight ]]; then
+  : "${GITHUB_OUTPUT:?The approved release workflow must receive the preflight result}"
+  verify_deployable
+  if bash scripts/gcp/check-production-schema.sh "$image"; then
+    needs_migration=false
+  elif bash scripts/gcp/check-production-schema.sh "$image" --online-pending; then
+    needs_migration=true
+  else
+    echo 'No verified automatic migration is available; refusing to deploy or run a write job.' >&2
+    exit 1
+  fi
+  verify_deployable
+  printf 'migration_required=%s\n' "$needs_migration" >> "$GITHUB_OUTPUT"
+  exit
+fi
 # CI updates only the existing isolated production service in its declared access mode.
 verify_deployable --write-env-updates "$scratch/env-updates.txt"
 # Same reviewed image, read-only DB role. Fail before changing the API service.
-bash scripts/gcp/check-production-schema.sh "$image"
+bash scripts/gcp/check-production-schema.sh "$image" || {
+  echo 'No service update was attempted because the schema does not match the release image or could not be verified.' >&2
+  exit 1
+}
 # The probe can take time; do not deploy over an operator drain started meanwhile.
 verify_deployable
 gcloud run deploy financial-research-prod \
   --project="$GCP_PROJECT_ID" --region=asia-east1 --image="$image" \
+  --revision-suffix="$suffix" \
   --service-account="financial-prod-api@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
   --execution-environment=gen2 \
   --add-cloudsql-instances="$GCP_PROJECT_ID:asia-east1:financial-postgres" \

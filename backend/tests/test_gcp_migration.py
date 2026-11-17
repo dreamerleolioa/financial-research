@@ -284,7 +284,7 @@ def test_runtime_image_verifies_schema_without_ddl_permissions(pg17):
         cli = subprocess.run(["docker", "exec", app_id, "python", "-m",
                               "ai_stock_sentinel.operations.schema", "--help"],
                              capture_output=True, text=True, timeout=15)
-        assert cli.returncode == 0 and '--migrate' in cli.stdout, cli.stderr
+        assert cli.returncode == 0 and '--migrate-online' in cli.stdout, cli.stderr
         subprocess.run(["docker", "exec", app_id, "python", "-c",
                         "from importlib.resources import files; assert (files('ai_stock_sentinel.operations')/'table-manifest.sql').is_file()"],
                        check=True, capture_output=True, timeout=15)

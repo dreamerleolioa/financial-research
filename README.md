@@ -155,7 +155,7 @@ frontend/
 			theme.ts
 .github/
 	workflows/
-		deploy.yml                         # Backend tests + frontend lint/E2E/build + GitHub Pages deploy
+		deploy.yml                         # PR CI and main deployment using the verified Git tree
 		daily-radar.yml                    # Daily Radar 內部排程
 		daily-radar-chip-context.yml       # Shared background context 更新
 		analysis-forward-validation.yml    # general analysis 每日驗證
@@ -178,7 +178,7 @@ docs/
 
 ## 部署
 
-Push to `main` 觸發測試、前端 build 與 GitHub Pages 部署；後端映像經 PostgreSQL 17 驗證與 `gcp-production` 人工核准後部署到 GCP Cloud Run，資料庫使用 Cloud SQL。前端與 internal workflows 都使用 GCP 正式入口；既有 secret 名稱 `ZEABUR_BACKEND_URL` 保留，但其值已是 GCP URL。正式 API 啟動只驗證 migration head，資料庫升版另外操作。
+PR CI 執行後端測試、前端 lint／E2E／build 與 PostgreSQL 17 遷移演練。Push 到 `main` 後，部署核對 Git tree 是否已通過 CI。Cloud Run 發布經 `gcp-production` 一次人工核准後，驗證固定映像、唯讀檢查 schema、自動套用符合資格的 migration，再部署並檢查健康。重跑同一個 Actions run 會沿用已驗證的映像；不符合自動資格的資料庫升版由維護者另行操作。正式後端發布已啟用時，GitHub Pages 等待後端健康檢查。前端與 internal workflows 都使用 GCP 正式入口，`ZEABUR_BACKEND_URL` secret 的值為 GCP URL。
 
 Daily Radar 另有 GitHub Actions workflow，可手動執行或於台灣市場交易日收盤後排程執行。正式 workflow 會分段 POST 到 `${ZEABUR_BACKEND_URL}/internal/daily-radar/*`，用 `DAILY_RADAR_INTERNAL_TOKEN` 做內部 API 驗證，且每個 step 都由 workflow 明確帶入 `run_date`。Scheduled run 會用 GitHub Actions run API 讀取該次 workflow run 不變的原始 `created_at`，再回推 `github.event.schedule` 對應的 UTC cron slot；因此 runner 延遲、跨過台灣午夜或對舊 run 按 Re-run 都會保留原本 intended trading date。手動執行可指定 `run_date`，未指定時則固定使用該 workflow run 首次建立當下的台北日期，Re-run 不會改日。一般下游 job 啟動前，workflow 先呼叫 `POST /internal/daily-radar/market-session`，以 TWSE `MI_INDEX` 確認該 `run_date` 是否開市；週末、國定假日或颱風停市會讓 scheduled pipeline 正常 skip，provider 失敗或回應無法判斷則 fail closed，不會被誤當成休市。明確日期範圍的 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是手動 maintenance exceptions，不依賴目前 `run_date` 的 `market_open`。台灣時間 17:30 `refresh-institutional-flows` 歸檔 TWSE/TPEX 全市場法人日報；17:45 `refresh-market-bars` 寫入 TWSE/TPEX 官方整表 OHLCV；18:00 `prepare-universe` 從 archive 分開建立外資當日、投信當日、外資近期累積、投信近期累積四條軌道並保存 capped 250 selected symbols；19:00 `refresh-avwap`；20:00 `refresh-lending`；21:30 `refresh-full-margin`；22:30 `refresh-ohlcv`；接續 `refresh-managed-raw-data` 補齊 近期 general 分析標的的 final raw rows；23:30 `refresh-market-context`；隔日 00:30 `run-scoring` 仍對同一個 intended trading date 做 scoring，只讀 DB cache/snapshot 並持久化 Daily Radar candidates。`refresh-managed-raw-data`不改 prepared selected symbols、universe tracks 或 canonical candidates，也不屬於 scoring required steps；`run-scoring` 要求 `refresh-institutional-flows`、`refresh-lending`、`refresh-full-margin`、`refresh-ohlcv`、`refresh-market-context` 完成。`refresh-avwap` 是 optional evidence step，失敗時 candidate detail 仍保留 `phase1_avwap_context.freshness` 與 `missing_reason`，不阻塞雷達發佈。另有台灣時間週二至週六 07:00 的補修排程，會對前一個 intended trading date 依序補修 `refresh-full-margin`、`refresh-ohlcv` 與 `refresh-avwap`，full margin 與 OHLCV 完成後才重跑 `run-scoring`；無論前段是否成功都繼續補齊 `refresh-managed-raw-data` 及兩種 forward validation，再彙整補修結果。任何補修仍不完整都會讓 repair monitor 失敗，避免近期分析的缺口被靜默忽略。
 

@@ -18,7 +18,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def verify(service, policy, expected_image=None, *, access_mode='private'):
+def verify(service, policy, expected_image=None, *, access_mode='private', allow_failed_rollout=False):
     require(service['metadata']['name'] == SERVICE, 'Wrong production service')
     require(access_mode in ('private', 'public'), 'Unknown production access mode')
     require(service['metadata'].get('annotations', {}).get(
@@ -51,7 +51,11 @@ def verify(service, policy, expected_image=None, *, access_mode='private'):
                 {'name': 'financial-prod-' + suffix, 'key': '1'}, f'Wrong secret/version: {name}')
     status = service['status']
     ready = status['latestReadyRevisionName']
-    require(status['latestCreatedRevisionName'] == ready, 'New revision is not ready')
+    failed_rollout = allow_failed_rollout and any(
+        condition['type'] == 'Ready' and condition['status'] == 'False'
+        for condition in status.get('conditions', [])
+    )
+    require(status['latestCreatedRevisionName'] == ready or failed_rollout, 'New revision is not ready')
     require(sum(traffic.get('percent', 0) for traffic in status['traffic']
                 if traffic.get('revisionName') == ready) == 100, 'Traffic must serve the ready revision')
     url = status['url']
@@ -84,10 +88,12 @@ if __name__ == '__main__':
     parser.add_argument('policy', type=Path)
     parser.add_argument('image', nargs='?')
     parser.add_argument('--access-mode', choices=('private', 'public'), default='private')
+    parser.add_argument('--allow-failed-rollout', action='store_true')
     parser.add_argument('--write-env-updates', type=Path)
     args = parser.parse_args()
     service = json.loads(args.service.read_text())
-    url = verify(service, json.loads(args.policy.read_text()), args.image, access_mode=args.access_mode)
+    url = verify(service, json.loads(args.policy.read_text()), args.image, access_mode=args.access_mode,
+                 allow_failed_rollout=args.allow_failed_rollout)
     if args.write_env_updates:
         args.write_env_updates.write_text(env_updates())
     print(url)

@@ -17,6 +17,7 @@ jobs:
   # ── 後端測試 ─────────────────────────────────────────────────
   test-backend:
     name: Backend Tests
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/codex/gcp-test-migration') || (github.event_name == 'workflow_dispatch' && !inputs.deploy_gcp_production)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -48,6 +49,7 @@ jobs:
 
   test-frontend:
     name: Frontend build
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/codex/gcp-test-migration') || (github.event_name == 'workflow_dispatch' && !inputs.deploy_gcp_production)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -86,15 +88,63 @@ jobs:
           VITE_API_URL: http://localhost:8000
           VITE_GOOGLE_CLIENT_ID: test-google-client-id
 
+  record-ci-success:
+    name: Record verified CI tree
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.deploy_gcp_production)
+    needs: [test-backend, test-frontend, test-postgres-migration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Identify the tested tree
+        id: tree
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "sha=$tree" >> "$GITHUB_OUTPUT"
+          echo "$tree" > "$RUNNER_TEMP/verified-ci-tree.txt"
+      - name: Publish verified CI tree ${{ steps.tree.outputs.sha }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-ci-tree-${{ steps.tree.outputs.sha }}
+          path: ${{ runner.temp }}/verified-ci-tree.txt
+          if-no-files-found: error
+          overwrite: true
+
+  verify-deployment-ci:
+    name: Verify existing CI result
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_gcp_production))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Find successful CI for the deployment tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/verify_deployment_ci.py
+
   # ── 前端 Build + Deploy to GitHub Pages ──────────────────────
   deploy-frontend:
     name: Deploy Frontend to GitHub Pages
     runs-on: ubuntu-latest
-    needs: [test-backend, test-frontend]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [verify-deployment-ci, deploy-gcp-production]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      needs.verify-deployment-ci.result == 'success' &&
+      (needs.deploy-gcp-production.result == 'success' ||
+      (needs.deploy-gcp-production.result == 'skipped' && github.ref != vars.GCP_PRODUCTION_DEPLOY_REF))
 
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
       pages: write
       id-token: write
 
@@ -108,6 +158,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Rerunning just the deployment can reuse an earlier workflow attempt's gate.
+      - name: Recheck CI result on deployment reruns
+        if: github.run_attempt != '1'
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/verify_deployment_ci.py
 
       - name: Setup pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -152,7 +210,7 @@ jobs:
   deploy-gcp-production:
     name: Deploy GCP production backend
     runs-on: ubuntu-latest
-    needs: [test-backend, test-frontend, test-postgres-migration]
+    needs: [verify-deployment-ci]
     if: github.ref == 'refs/heads/main' && github.ref == vars.GCP_PRODUCTION_DEPLOY_REF && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_gcp_production))
     environment: gcp-production
     concurrency:
@@ -160,6 +218,8 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
       id-token: write
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PRODUCTION_PROJECT_ID }}
@@ -169,6 +229,11 @@ jobs:
       GCP_PRODUCTION_ACCESS_MODE: ${{ vars.GCP_PRODUCTION_ACCESS_MODE || 'private' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Recheck CI result on deployment reruns
+        if: github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/verify_deployment_ci.py
       - name: Validate production deployment configuration
         shell: bash
         run: |
@@ -186,38 +251,92 @@ jobs:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v3
+      - name: Recover the verified image for this run
+        id: previous-image
+        if: github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/release_image.py
       - name: Configure Artifact Registry authentication
+        if: steps.previous-image.outputs.digest == ''
         run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.previous-image.outputs.digest == ''
         with:
           version: '0.13.8'
       - name: Set up Python for image verification
+        if: steps.previous-image.outputs.digest == ''
         run: uv python install 3.14
       - name: Install locked image verification dependencies
+        if: steps.previous-image.outputs.digest == ''
         working-directory: backend
         run: uv sync --locked
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.previous-image.outputs.digest == ''
       - name: Build immutable backend image
         id: image
+        if: steps.previous-image.outputs.digest == ''
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: backend
           push: true
           tags: asia-east1-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/financial-research/backend:${{ github.sha }}
       - name: Verify the exact image against PostgreSQL 17
+        if: steps.previous-image.outputs.digest == ''
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
           image="asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
           docker pull "$image"
-          GCP_MIGRATION_IMAGE="$image" bash scripts/gcp/test-migration.sh
-      # deploy-production.sh first runs the same image's read-only schema job.
-      # A mismatch stops here; owner migration requires backup/drain + approval.
-      - name: Check production schema and update production service
+          GCP_MIGRATION_IMAGE="$image" bash scripts/gcp/test-migration.sh --image-only
+          printf '%s\n' "$IMAGE_DIGEST" > "$RUNNER_TEMP/verified-backend-image.txt"
+      - name: Save verified image for deployment retries
+        if: steps.previous-image.outputs.digest == ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-backend-image-${{ github.sha }}
+          path: ${{ runner.temp }}/verified-backend-image.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Check schema for the approved release
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ steps.previous-image.outputs.digest || steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ $(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha) != "$GITHUB_SHA" ]]; then
+            echo 'This release was superseded. Use the workflow run for the current main commit.' >&2
+            exit 1
+          fi
+          bash scripts/gcp/deploy-production.sh "asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST" --release-preflight
+      - name: Authenticate as the migration release identity
+        id: migration-auth
+        if: steps.preflight.outputs.migration_required == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: financial-prod-migrate-release@financial-research-20261019.iam.gserviceaccount.com
+          export_environment_variables: false
+      - name: Apply the eligible migration
+        if: steps.preflight.outputs.migration_required == 'true'
+        env:
+          IMAGE_DIGEST: ${{ steps.previous-image.outputs.digest || steps.image.outputs.digest }}
+          CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE: ${{ steps.migration-auth.outputs.credentials_file_path }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:?Missing migration credentials}"
+          CLOUDSDK_CONFIG=$(mktemp -d)
+          export CLOUDSDK_CONFIG
+          trap 'rm -rf -- "$CLOUDSDK_CONFIG"' EXIT
+          gcloud auth login --cred-file="$CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE" --brief --quiet
+          bash scripts/gcp/migrate-production-online.sh "asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
+      - name: Verify the schema and deploy the same image
         id: deploy
         env:
-          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.previous-image.outputs.digest || steps.image.outputs.digest }}
+          GCP_RELEASE_REVISION_SUFFIX: ci-${{ github.run_id }}-a${{ github.run_attempt }}
         run: |
           set -euo pipefail
           bash scripts/gcp/deploy-production.sh "asia-east1-docker.pkg.dev/$GCP_PROJECT_ID/financial-research/backend@$IMAGE_DIGEST"
@@ -239,6 +358,7 @@ jobs:
 
   test-postgres-migration:
     name: PostgreSQL 17 migration rehearsal
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/codex/gcp-test-migration') || (github.event_name == 'workflow_dispatch' && !inputs.deploy_gcp_production)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
