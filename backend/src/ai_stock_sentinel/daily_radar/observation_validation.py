@@ -53,10 +53,12 @@ def load_observation_origins(session: Any, candidates: Sequence[Mapping[str, Any
     symbols = {str(c.get("symbol")) for c in candidates if c.get("selection_status") == "selected"}
     if not symbols:
         return {}
+    inputs = (DailyRadarCandidate.validation_projection if session.get_bind().dialect.name == 'postgresql'
+              else DailyRadarCandidate.input_snapshot)
     rows = session.execute(select(
         DailyRadarCandidate.id, DailyRadarCandidate.symbol, DailyRadarRun.run_date,
-        DailyRadarCandidate.input_snapshot["versions"].as_json(),
-        DailyRadarCandidate.input_snapshot["selection_version"].as_string(),
+        inputs["versions"].as_json(),
+        inputs["selection_version"].as_string(),
     ).join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
       .where(DailyRadarRun.id.in_(canonical_radar_run_ids(market=market, end_date=through_date)),
              ~DailyRadarRun.run_date.in_(excluded_dates),

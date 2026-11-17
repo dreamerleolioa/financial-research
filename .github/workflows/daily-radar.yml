@@ -1022,6 +1022,11 @@ jobs:
               args+=(--require-lanes publication,signal_close,next_open "${baseline[@]}")
             fi
           fi
+          # Mature windows cannot start before 23:50. Let deadline invocations
+          # cover a full day's windows within the unchanged 1200-second budget.
+          if [[ " ${args[*]} " == *" --require-lanes "* ]]; then
+            args+=(--max-work 2000)
+          fi
           python .github/scripts/run_daily_radar_jobs.py "${args[@]}"
       - name: Upload durable work evidence
         if: always()

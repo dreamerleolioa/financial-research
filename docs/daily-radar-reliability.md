@@ -12,6 +12,8 @@ Daily Radar 的執行狀態、當日發布、兩種歷史 validation 與輔助�
 - `auxiliary`：AVWAP 與 managed raw data 的獨立狀態。兩者不是 scoring 必要 refresh。
 - `data_ready`：當日 completed publication、目前 scoring prerequisites 及兩種 validation 都完整。不是所有歷史日期的無範圍保證，也不包含 auxiliary 完整度。
 
+發布 deadline 使用 `scope=publication`，只檢查同日 prerequisites、實際輸出及 input manifest，不掃歷史 validation；此範圍回傳 `validation={}`、`data_ready=null`，不能宣稱歷史完整。省略 scope 仍做完整盤點。
+
 沒有完整涵蓋樣本的官方交易日證據時，缺失窗口是 `unknown_maturity`；不以價格序列的筆數證明未成熟。signal_close 已 validated 的首次觀察仍核對診斷版本、origin 及診斷是否可用；repeat 不重複要求首次觀察診斷。`gaps` 最多回傳 100 筆，計數涵蓋完整樣本並標明截斷。
 
 公開觀察診斷與兩種 validation 的 pool 統計，只有在可信日曆涵蓋信號日至查詢截止日、且未滿指定交易日數時，才將缺結果或已保存的 `skipped / window_not_mature` 歸為未成熟。窗口成熟後，舊 `window_not_mature` 重新列為待補缺口；其他失敗、已驗證結果及缺診斷不因較窄日曆而被隱藏。此分類只影響讀取，不改寫歷史結果。
@@ -80,6 +82,22 @@ flowchart TD
 原 cron 時間保留，包括下一日 00:30 才可 scoring。新增每 30 分鐘的 resume trigger，沒有今天是否開市的前置 gate。開關關閉時保留既有流程；開啟時由新 driver 記錄／推進意圖，23:50 validation、00:30 publication、07:00 repair 仍用獨立 readiness deadline 判定失敗。一般早期 enqueue／advance 成功只表示已記錄或有進展。
 
 Durable driver 可用 `--known-validation-gaps` 讀取已審閱的 `radar-known-validation-gaps-v1` 檔案。檔案包含盤點截止日 `as_of_date` 及當日由唯讀 readiness 以 `include_all_validation_gaps=true` 回傳的 `gaps`。已知窗口依候選版本、日曆、目標日、原因及缺口結果版本精確比對。完整比對時，已知且相同的缺口仍列在 JSON 摘要，`readiness_deadline_passed` 仍為 false。新增、改變、無法完整比對的缺口，以及發布或內部工作失敗，仍讓 driver 非零退出。未傳入清單的執行保留嚴格告警。
+
+### 歷史規模與請求預算
+
+Migration `ef6a7b8c9d0e` 為 candidates 增加精簡 validation projection 與輸入 hash，由 PostgreSQL trigger 在同一寫入交易內維護，包含 raw SQL 更新；部署前需回填既有 candidates。規劃與候選讀取不再反覆解壓完整 replay JSON，canonical run、策略版本、輸入及日曆改變仍會使規劃失效。SQLite 保留原始欄位投影，兩條讀取路徑須有相同語意。
+
+金融備份只接受這個固定版本 trigger 的表、事件、函式內容 hash 與安全設定，另行匯出其函式依賴；未知 trigger 或被改寫的函式仍拒絕匯出。Manifest 比對包含 trigger 函式定義，還原需核對原始資料、函式內容及設定。正式升版仍先停寫、取得可還原備份並經獨立 migration gate；回填會更新 candidates 並持有交易鎖，隔離演練耗時不能替代正式環境的鎖與容量評估。
+
+每次規劃最多 50 個候選，完整盤點仍涵蓋所有窗口。已有可信 validated／terminal 結果的歷史窗口不另建立 active work；待補、待裁決與修復後重啟的窗口保留工作、lease 與結果版本保護。`accounted_windows` 表示已盤點數，不能代替最終 readiness。
+
+評分歷史摘要依交易日遞減、同日 symbol 遞增固定排序；實體列順序或 query plan 改變不能改變 scoring input manifest。同日原本沒有排序的舊 manifest，若排列不同，首次核對可能需要重新發布目前 canonical run；原 manifest 與歷史結果不覆寫。
+
+Driver 每次請求後原子保存 `jobs.json`，保留 job ID、日期、已完成請求、工作摘要與錯誤型別。工作剩餘預算不足一個正常請求時停止並標記 `time_budget`，留待續跑；實際請求 timeout 仍是失敗。最終 readiness 另有 180 秒預算，失敗保留先前進度並非零退出。Deadline 意圖只建立所要求的 lanes；publication 單獨檢查當日發布，validation 與 repair 仍執行完整盤點及原有缺口判斷。一般 workflow 最多 150 次 advance，deadline 最多 2,000 次，兩者工作時間上限仍為 1,200 秒；避免 23:50 才開放窗口卻被 150 次上限固定截斷。
+
+近正式規模的隔離驗證使用 `RADAR_SCALE_CANDIDATES=15500` 與 `RADAR_TEST_POSTGRES_DSN` 執行 `uv run pytest tests/test_radar_scale_workflow.py -q -s`。從已完成必要 refresh 的資料開始，涵蓋 migration 回填、15,500 個歷史候選／155,000 個窗口、當日 230 檔來源與實際評分、1,088 個缺口、提前分批續跑與同一輪 deadline、兩種 validation 落庫、完整 readiness 及冪等續跑。外部行情以固定證據替身提供，DB、HTTP router、driver、domain handler 與接受交易使用實際實作；不代表正式 provider 或部署已驗證。
+
+2026-11-17 隔離 PostgreSQL 17 驗收：1,088 個缺口全部完成（540 validated、548 有證據的 skipped），當日評分選出 100 檔、保存完整 230 檔輸出；提前續跑後，單輪 deadline 通過，最終 `data_ready=true` 且再續跑零工作。總耗時 715.96 秒，最慢 API 請求 12.16 秒，輸入版本彙整 0.060 秒，15,500 筆候選 migration 回填 3.30 秒。完整後端 gate 為 3,537 passed、1 skipped；skip 為未指定 exact runtime Docker image。當日評分必要來源日期與 requested/effective run_date 都固定在 fixture 的 2026-11-16，效能數字為本機量測。
 
 ### 切換與回滾
 

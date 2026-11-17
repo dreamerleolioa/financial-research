@@ -18,7 +18,7 @@ from test_gcp_migration import pg17  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / 'scripts/gcp'
-HEAD = 'de5f6a7b8c9d'
+HEAD = 'ef6a7b8c9d0e'
 BASE = 'bc3d4e5f6a7b'
 IMAGE = 'asia-east1-docker.pkg.dev/financial-research-20261019/financial-research/backend@sha256:' + 'a' * 64
 
@@ -30,7 +30,7 @@ def schema_module():
 
 @pytest.mark.parametrize('current,status,pending', [
     ([HEAD], 'ready', []),
-    ([BASE], 'migration_required', ['cd4e5f6a7b8c', HEAD]),
+    ([BASE], 'migration_required', ['cd4e5f6a7b8c', 'de5f6a7b8c9d', HEAD]),
     ([], 'uninitialized', []),
     (['unknown'], 'incompatible', []),
     ([BASE, HEAD], 'incompatible', []),
@@ -372,7 +372,7 @@ def test_pg17_migration_fences_and_atomic_rollback(pg17, monkeypatch, defect):
                     database=env['PGDATABASE'],user=env['PGUSER'])
             if defect=='none':
                 result=execute()
-                assert result['status']=='ready' and result['applied_revisions']==['cd4e5f6a7b8c',HEAD]
+                assert result['status']=='ready' and result['applied_revisions']==['cd4e5f6a7b8c','de5f6a7b8c9d',HEAD]
             else:
                 with pytest.raises((ValueError,RuntimeError)): execute()
         with engine.connect() as check:

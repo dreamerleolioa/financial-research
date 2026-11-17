@@ -44,7 +44,19 @@ BEGIN
       AND (relkind <> 'r' OR relrowsecurity OR relforcerowsecurity)) THEN
     RAISE EXCEPTION 'Partitioned tables or RLS require dependency and privilege review';
   END IF;
-  IF NOT $schema_only AND EXISTS (SELECT FROM pg_trigger WHERE tgrelid IN ($relation_sql) AND NOT tgisinternal) THEN
+  -- Only the reviewed, immutable Radar projection dependency is permitted.
+  -- The body digest is from radar_validation_projection_v1.sql (including newlines).
+  IF NOT $schema_only AND EXISTS (SELECT FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid
+      JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang
+      WHERE t.tgrelid IN ($relation_sql) AND NOT t.tgisinternal AND NOT (
+        t.tgrelid=to_regclass('public.daily_radar_candidates')
+        AND t.tgname='radar_validation_projection_v1' AND t.tgtype=23 AND t.tgenabled='O'
+        AND t.tgqual IS NULL AND t.tgconstraint=0 AND t.tgnargs=0 AND t.tgattr::text=''
+        AND n.nspname='public' AND p.proname='radar_validation_projection_v1'
+        AND p.pronargs=0 AND p.prorettype='trigger'::regtype AND l.lanname='plpgsql'
+        AND NOT p.prosecdef AND NOT p.proisstrict AND NOT p.proleakproof
+        AND p.proconfig IS NULL AND p.provolatile='v' AND p.proparallel='u'
+        AND md5(p.prosrc)='a69c626b4f5147b3ab77b335e4836fc3')) THEN
     RAISE EXCEPTION 'User triggers require dependency review before export';
   END IF;
   IF NOT $schema_only AND EXISTS (SELECT FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid
@@ -106,6 +118,15 @@ if [[ "$mode" == export-* ]]; then
   [[ "$schema_only" == false ]] || args=(--schema-only)
   {
     [[ "$schema_only" == true ]] || printf 'CREATE SCHEMA maintenance_backup;\n'
+    if [[ "$schema_only" == false ]]; then
+      # Table-selective pg_dump omits trigger functions. Export the reviewed
+      # dependency from the same snapshot before its table/trigger is restored.
+      psql -XqAt -w -v ON_ERROR_STOP=1 -c "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+        SET TRANSACTION SNAPSHOT '$snapshot'; SET search_path=pg_catalog;
+        SELECT pg_get_functiondef(p.oid) || ';' FROM pg_proc p JOIN pg_trigger t ON t.tgfoid=p.oid
+        WHERE t.tgrelid='public.daily_radar_candidates'::regclass
+          AND t.tgname='radar_validation_projection_v1'; COMMIT;"
+    fi
     pg_dump -w --no-owner --no-acl --no-security-labels --strict-names --snapshot="$snapshot" "${args[@]}"
   } | gzip -c > "$out/database.sql.gz"
 fi

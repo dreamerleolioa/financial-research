@@ -24,6 +24,10 @@ SELECT jsonb_build_object(
   'triggers', (SELECT coalesce(jsonb_agg(jsonb_build_array(t.tgname,pg_get_triggerdef(t.oid),t.tgenabled)
       ORDER BY t.tgname COLLATE "C"),'[]'::jsonb) FROM pg_trigger t
     WHERE t.tgrelid=%1$L::regclass AND NOT t.tgisinternal),
+  'trigger_functions', (SELECT coalesce(jsonb_agg(pg_get_functiondef(p.oid)
+      ORDER BY p.oid::regprocedure::text COLLATE "C"),'[]'::jsonb)
+    FROM pg_proc p WHERE p.oid IN (SELECT t.tgfoid FROM pg_trigger t
+      WHERE t.tgrelid=%1$L::regclass AND NOT t.tgisinternal)),
   'schema_objects', CASE WHEN %4$L::boolean THEN jsonb_build_object(
     'extensions', (SELECT jsonb_agg(jsonb_build_array(e.extname,e.extversion,n.nspname) ORDER BY e.extname COLLATE "C")
       FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace),

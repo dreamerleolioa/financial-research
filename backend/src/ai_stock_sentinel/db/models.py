@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary,
-    Numeric, String, Text, UniqueConstraint, text, Identity,
+    Numeric, String, Text, UniqueConstraint, text, Identity, event,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -1139,6 +1139,10 @@ class DailyRadarPreparedRun(Base):
 
 class DailyRadarCandidate(Base):
     __tablename__ = "daily_radar_candidates"
+    # PostgreSQL owns this projection via a trigger, including bulk SQL writes.
+    # SQLite uses the semantic projection directly in planning_inventory.
+    validation_input_hash: Mapped[str] = mapped_column(String(32), nullable=False, server_default='unrecorded')
+    validation_projection: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     __table_args__ = (
         UniqueConstraint("run_id", "symbol", name="uq_daily_radar_candidates_run_symbol"),
         Index("idx_daily_radar_candidates_symbol", "symbol"),
@@ -1368,3 +1372,8 @@ class RadarWorkAttempt(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+from ai_stock_sentinel.operations.radar_validation_projection import install_projection
+
+event.listen(DailyRadarCandidate.__table__, 'after_create', install_projection)

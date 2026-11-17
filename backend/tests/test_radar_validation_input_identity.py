@@ -10,7 +10,7 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 )
 from ai_stock_sentinel.daily_radar.readiness import validation_candidate_revision, validation_inventory
 from ai_stock_sentinel.daily_radar.validation_read import read_observation_validation
-from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
+from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult, RadarWorkItem
 from test_radar_jobs import db
 from test_radar_window_replanning import setup, active, DAY, NOW
 from test_daily_radar_validation_read import add_result
@@ -37,7 +37,8 @@ def saved(db, *, verified=True):
 
 def test_changed_inputs_do_not_certify_a_new_work_with_an_old_result(db):
     candidate, job, row = saved(db)
-    old = active(db, job)[0].id
+    assert active(db, job) == []
+    old = db.scalar(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'window'))
     candidate.input_snapshot = dict(candidate.input_snapshot) | {'ohlcv': {'close': 110}}
     db.commit()
     jobs.reconcile_job(db, job.id, now=NOW+timedelta(minutes=52), audit=True)
@@ -62,11 +63,13 @@ def test_legacy_return_without_input_proof_is_not_ready_or_public_performance(db
 
 def test_matching_input_proof_is_ready_and_display_changes_keep_identity(db):
     candidate, job, _ = saved(db)
-    old = active(db, job)[0].id
+    old = db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage == 'window'))
+    assert active(db, job) == [] and old.state == 'ready'
     candidate.name = '顯示名稱修正'
     db.commit(); jobs.reconcile_job(db, job.id, now=NOW+timedelta(minutes=52), audit=True)
-    assert active(db, job)[0].id == old
-    assert active(db, job)[0].state == 'ready'
+    assert active(db, job) == []
+    assert db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage == 'window')).all() == [old]
+    assert validation_inventory(db, as_of_date=DAY)['signal_close']['ready'] is True
 
 
 @pytest.mark.parametrize('version', [FORWARD_VALIDATION_VERSION, 'daily-radar-next-open-price-v2'])

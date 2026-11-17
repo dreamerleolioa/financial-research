@@ -63,14 +63,17 @@ def test_candidate_input_change_replaces_old_active_window_without_idle_wait(db)
 def test_periodic_result_audit_is_independent_of_recent_activity(db):
     from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
     candidate, job = setup(db, diagnostic_gap=True)
-    assert active(db, job)[0].state == 'needs_review'
+    work = active(db, job)[0]
+    assert work.state == 'needs_review'
     row = db.scalar(select(DailyRadarForwardValidationResult))
     row.outcome = dict(row.outcome) | {'observation_diagnostic': {
         'version': 'daily-radar-observation-v1', 'status': 'confirmed'}}
     db.commit()
     reconcile_job(db, job.id, now=NOW+timedelta(minutes=30), audit=True)
     reconcile_job(db, job.id, now=NOW+timedelta(minutes=60), audit=True)
-    assert active(db, job)[0].state == 'ready'
+    assert active(db, job) == []
+    assert work.state == 'ready'
+    assert job.scope['intent_complete'] is True
 
 
 def test_display_name_change_does_not_create_a_new_validation_identity(db):

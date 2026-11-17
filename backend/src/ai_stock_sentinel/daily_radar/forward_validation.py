@@ -358,9 +358,9 @@ def _with_observation_diagnostics(candidates, outcomes, *, price_series_by_symbo
     return enriched
 
 
-def forward_validation_snapshot_columns():
+def forward_validation_snapshot_columns(*, compact=False):
     """Shared input projection for snapshots and bounded-planner epochs."""
-    return (
+    columns = (
         DailyRadarCandidate.id.label("candidate_id"), DailyRadarCandidate.run_id,
         DailyRadarRun.run_date, DailyRadarRun.candidate_count.label("daily_selected_pool_count"),
         *[getattr(DailyRadarCandidate, field) for field in (
@@ -379,6 +379,14 @@ def forward_validation_snapshot_columns():
         DailyRadarCandidate.score_breakdown["relative_strength"]["relative_value"].as_json().label("relative_value"),
         DailyRadarCandidate.score_breakdown["market_context"]["details"]["regime"].as_json().label("score_market_regime"),
     )
+    if compact:
+        # Trigger-maintained projection avoids repeated detoasting of replay history.
+        projected = {'close', 'support_level', 'resistance_level', 'ma20', 'ma60',
+                     'versions', 'selection_version', 'market_regime', 'candidate_benchmark',
+                     'relative_freshness', 'relative_value', 'score_market_regime'}
+        return tuple(DailyRadarCandidate.validation_projection[column.key].as_json().label(column.key)
+                     if column.key in projected else column for column in columns)
+    return columns
 
 
 def forward_validation_candidates_from_runs(
@@ -394,7 +402,7 @@ def forward_validation_candidates_from_runs(
     comparable_pool_only: bool = False,
 ) -> list[dict[str, Any]]:
     query = (
-        select(*forward_validation_snapshot_columns())
+        select(*forward_validation_snapshot_columns(compact=session.get_bind().dialect.name == 'postgresql'))
         .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
         .where(or_(DailyRadarRun.id.in_(canonical_radar_run_ids(
             market=market, start_date=start_date, end_date=end_date, statuses=statuses,

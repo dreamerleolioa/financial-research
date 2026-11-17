@@ -34,7 +34,7 @@ def validation_alert(report, known, run_date, lane):
 
 def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=100, max_seconds=900,
         require_lanes=(), read=get, write=post, clock=time.monotonic, known_validation_gaps=None):
-    if (resume == (run_date is not None) or not 1 <= max_work <= 1000 or not 1 <= max_seconds <= 1800):
+    if (resume == (run_date is not None) or not 1 <= max_work <= 2000 or not 1 <= max_seconds <= 1800):
         raise ValueError('invalid_durable_job_scope_or_budget')
     if run_date is not None and date.fromisoformat(run_date).isoformat() != run_date:
         raise ValueError('invalid_run_date')
@@ -59,8 +59,9 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     deadline = clock() + max_seconds
-    def call(fn, path, *args):
-        seconds = min(180, deadline - clock())
+    work_request_seconds = min(180, max_seconds / 2)
+    def call(fn, path, *args, until=None, request_limit=180):
+        seconds = min(request_limit, (deadline if until is None else until) - clock())
         if seconds <= 0:
             raise TimeoutError('radar_driver_budget_exhausted')
         with request_deadline(seconds):
@@ -71,17 +72,39 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
     if resume:
         jobs = call(read, '/jobs/due')['jobs']
     else:
-        registered = call(write, '/jobs', {'run_date': run_date, 'market': 'TW'})
+        intent = {'run_date': run_date, 'market': 'TW'}
+        if require_lanes:
+            intent['lanes'] = list(require_lanes)
+        registered = call(write, '/jobs', intent)
         if registered.get('effective_run_date') != run_date or registered.get('requested_run_date') != run_date:
             raise ValueError('radar_job_date_mismatch')
         jobs = [{'job_id': registered['job_id'], 'run_date': run_date}]
     advanced, summaries, errors = 0, {}, []
     # Round-robin prevents an older provider outage from starving newer dates.
     pending = list(jobs)
-    while pending and advanced < max_work and clock() < deadline - (30 if require_lanes else 0):
+    budget_exhausted = False
+    def checkpoint(*, status='in_progress', deadline_passed=None, alerts=None):
+        result = {'run_date': run_date, 'resume': resume, 'advanced_requests': advanced,
+                  'job_refs': [{'job_id': job['job_id'], 'run_date': job['run_date']} for job in jobs],
+                  'jobs': list(summaries.values()), 'errors': errors,
+                  'validation_alerts': alerts or {}, 'budget_exhausted': budget_exhausted,
+                  'stop_reason': ('time_budget' if budget_exhausted else 'work_limit'
+                                  if pending and advanced >= max_work else 'request_error' if errors else 'idle'),
+                  'readiness_deadline_passed': deadline_passed, 'status': status}
+        temporary = out / 'jobs.json.tmp'
+        temporary.write_text(diagnostic_json(result, token), encoding='utf-8')
+        temporary.replace(out / 'jobs.json')
+        return result
+    checkpoint()
+    while pending and advanced < max_work:
+        # Do not launch a request with only the tail of its normal time allowance.
+        # A real request timeout remains a failure; an unused work budget is resumable.
+        if deadline - clock() < work_request_seconds:
+            budget_exhausted = True
+            break
         job = pending.pop(0)
         try:
-            status = call(write, f"/jobs/{job['job_id']}/advance", {})
+            status = call(write, f"/jobs/{job['job_id']}/advance", {}, request_limit=work_request_seconds)
             if status.get('effective_run_date') != job['run_date'] or status.get('requested_run_date') != job['run_date']:
                 raise ValueError('radar_job_date_mismatch')
             summaries[job['job_id']] = status
@@ -90,6 +113,8 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
                 pending.append(job)
         except Exception as exc:
             errors.append({'job_id': job['job_id'], 'error_type': type(exc).__name__})
+        checkpoint()
+    checkpoint()
     failed = bool(errors)
     deadline_passed = not failed
     validation_alerts = {}
@@ -99,31 +124,36 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         url = '/readiness?market=TW&run_date=' + run_date
         if known is not None and set(require_lanes) - {'publication'}:
             url += '&include_all_validation_gaps=true'
-        report = call(read, url)
-        if report.get('requested_run_date') != run_date or report.get('effective_run_date') != run_date:
-            raise ValueError('radar_readiness_date_mismatch')
-        (out / 'readiness.json').write_text(diagnostic_json(report, token), encoding='utf-8')
-        for lane in require_lanes:
-            if lane == 'publication':
-                p = report.get('publication', {})
-                manifest = p.get('input_manifest') or {}
-                ready = p.get('status') == 'completed' and p.get('output_complete') is True and report.get('scoring', {}).get('ready') is True and manifest.get('matches_current_inputs') is True
-                # Official closed proof explicitly completes a no-publication intent.
-                ready |= any(s.get('publication', {}).get('state') == 'closed' for s in summaries.values())
-            else:
-                validation = report.get('validation', {}).get(lane, {})
-                ready = validation.get('ready') is True
-                validation_alerts[lane] = validation_alert(validation, known, run_date, lane)
-                failed |= validation_alerts[lane]['new'] != 0
-            deadline_passed &= ready
-            failed |= lane == 'publication' and not ready
-        failed |= any(lane.get('states', {}).get('failed_internal', 0)
-                      for summary in summaries.values() for lane in summary.get('lanes', {}).values())
-    result = {'run_date': run_date, 'resume': resume, 'advanced_requests': advanced,
-              'jobs': list(summaries.values()), 'errors': errors, 'validation_alerts': validation_alerts,
-              'readiness_deadline_passed': deadline_passed and not failed if require_lanes else None,
-              'status': 'failed' if failed else 'recorded_or_advanced'}
-    (out / 'jobs.json').write_text(diagnostic_json(result, token), encoding='utf-8')
+        if set(require_lanes) == {'publication'}:
+            url += '&scope=publication'
+        report = None
+        try:
+            # Final verification has its own budget, even after failed work.
+            report = call(read, url, until=clock() + 180)
+            (out / 'readiness.json').write_text(diagnostic_json(report, token), encoding='utf-8')
+            if report.get('requested_run_date') != run_date or report.get('effective_run_date') != run_date:
+                raise ValueError('radar_readiness_date_mismatch')
+            for lane in require_lanes:
+                if lane == 'publication':
+                    p = report.get('publication', {})
+                    manifest = p.get('input_manifest') or {}
+                    ready = p.get('status') == 'completed' and p.get('output_complete') is True and report.get('scoring', {}).get('ready') is True and manifest.get('matches_current_inputs') is True
+                    ready |= any(s.get('publication', {}).get('state') == 'closed' for s in summaries.values())
+                else:
+                    validation = report.get('validation', {}).get(lane, {})
+                    ready = validation.get('ready') is True
+                    validation_alerts[lane] = validation_alert(validation, known, run_date, lane)
+                    failed |= validation_alerts[lane]['new'] != 0
+                deadline_passed &= ready
+                failed |= lane == 'publication' and not ready
+        except Exception as exc:
+            errors.append({'phase': 'readiness', 'error_type': type(exc).__name__})
+            failed, deadline_passed = True, False
+    failed |= any(lane.get('states', {}).get('failed_internal', 0)
+                  for summary in summaries.values() for lane in summary.get('lanes', {}).values())
+    result = checkpoint(status='failed' if failed else 'recorded_or_advanced',
+                        deadline_passed=deadline_passed and not failed if require_lanes else None,
+                        alerts=validation_alerts)
     return result
 
 
@@ -151,6 +181,7 @@ def main():
         return 1
     print(json.dumps({'run_date': result['run_date'], 'status': result['status'],
                       'advanced_requests': result['advanced_requests'],
+                      'stop_reason': result['stop_reason'],
                       'validation_alerts': result['validation_alerts'],
                       'readiness_deadline_passed': result['readiness_deadline_passed']}, ensure_ascii=False))
     return 1 if result['status'] == 'failed' else 0

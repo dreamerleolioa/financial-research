@@ -272,12 +272,14 @@ def get_symbol_candidate_history(
     if lookback_days is not None:
         query = query.where(DailyRadarRun.run_date >= before_date - timedelta(days=lookback_days))
     if summary_only:
+        inputs = (DailyRadarCandidate.validation_projection if session.get_bind().dialect.name == 'postgresql'
+                  else DailyRadarCandidate.input_snapshot)
         summary = query.with_only_columns(
             DailyRadarCandidate.symbol, DailyRadarRun.run_date, DailyRadarCandidate.observation_score,
             DailyRadarCandidate.score_breakdown["scoring_version"].as_string().label("scoring_version"),
-            DailyRadarCandidate.input_snapshot["versions"].as_json().label("versions"),
-            DailyRadarCandidate.input_snapshot["selection_version"].as_string().label("selection_version"),
-        ).order_by(DailyRadarRun.run_date.desc())
+            inputs["versions"].as_json().label("versions"),
+            inputs["selection_version"].as_string().label("selection_version"),
+        ).order_by(DailyRadarRun.run_date.desc(), DailyRadarCandidate.symbol.asc())
         return [{"symbol": row.symbol, "record_date": row.run_date.isoformat(),
                  "observation_score": row.observation_score, "scoring_version": row.scoring_version,
                  "strategy_versions": row.versions, "selection_version": row.selection_version}

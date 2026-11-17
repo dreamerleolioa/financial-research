@@ -21,6 +21,12 @@ SIGNAL = date(2026, 6, 1)
 NOW = datetime(2026, 11, 7, 2, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def small_pages(monkeypatch):
+    # Exercise page boundaries cheaply; the production-size test uses the real limit.
+    monkeypatch.setattr(jobs, 'WINDOW_PLAN_CANDIDATES', 5)
+
+
 def seed(db, count, *, done=False):
     run = add_run(db, SIGNAL, count=count)
     candidates = []
@@ -87,9 +93,8 @@ def test_planning_only_advances_resume_and_keep_every_window(db, count):
     assert result['intent_complete'] is True
     assert result['runnable_now'] is False
     rows = active(db, job)
-    assert len(rows) == count * 10
-    assert {(w.lane, w.scope['window_days']) for w in rows} == {
-        (basis, window) for basis in ('signal_close', 'next_open') for window in (5, 10, 20, 40, 60)}
+    assert rows == []
+    assert job.scope['window_planning']['accounted_windows'] == count * 10
     assert job.scope['window_planning']['processed_candidates'] == count
 
 
@@ -222,9 +227,11 @@ def test_postgres_concurrent_pages_resume_without_skipping_candidates(pg_engine)
     with Session(pg_engine) as db:
         job = db.get(RadarJob, job_id)
         assert job.scope['window_planning']['processed_candidates'] == 15
-        assert len(active(db, job)) == 150
+        assert len(active(db, job)) == 0
+        assert job.scope['window_planning']['accounted_windows'] == 150
         finish_plan(db, job)
-        assert len(active(db, job)) == 200
+        assert len(active(db, job)) == 0
+        assert job.scope['window_planning']['accounted_windows'] == 200
 
 
 def test_postgres_last_page_rechecks_input_epoch_before_completing(pg_engine, monkeypatch):
