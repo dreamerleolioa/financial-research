@@ -238,6 +238,11 @@ def _live_margin_blocker(blocker):
 def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False,
                    scope='all', audit_completed_score=False):
     """Caller holds a read-only/no-autoflush session; never fetches providers."""
+    if scope == 'validation':
+        return {'version': 'radar-readiness-v1', 'scope': scope, 'market': 'TW',
+                'requested_run_date': str(run_date), 'effective_run_date': str(run_date),
+                'validation': validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
+                    sample_limit=None if include_all_validation_gaps else 100), 'data_ready': None}
     if scope not in {'all', 'publication'}:
         raise ValueError('invalid_readiness_scope')
     from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled

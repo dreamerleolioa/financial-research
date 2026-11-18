@@ -545,12 +545,12 @@ React 前端 Daily Radar 頁定位為投資候選池，協助尋找與排序值�
 1. 台股收盤且資料源更新後，GitHub Actions 以 cron 觸發。
 2. Scheduled run 用 Actions run API 的原始 `created_at` 回推 `github.event.schedule` 對應的 UTC cron slot，得到不受啟動延遲或 Re-run 時間影響的 immutable `run_date`。手動執行可指定 `run_date`，未指定時則使用原始 `created_at` 對應的台北日期，保證 Re-run 不改日。
 3. Workflow 一般 step 先呼叫 `/internal/daily-radar/market-session`。週末、國定假日、颱風停市等明確 closed 結果會讓 scheduled pipeline 與一般手動 step skip；provider 異常或無法判斷時 fail closed。手動 `refresh-market-bars`、`backfill-institutional-flows` 與唯讀 `replay-institutional-universe` 是 maintenance exceptions，可在目前 `run_date` 休市時依明確歷史日期執行；replay 的完整 JSON response 以 14 日 GitHub artifact 保存，即使 calibration gate 因資料不足失敗仍可下載診斷。
-4. 開市時 Action 才以分段 schedule 呼叫正式後端 internal endpoints，所有 step 都明確傳入同一個 intended `run_date`。排程為 17:30 `refresh-institutional-flows`、17:45 `refresh-market-bars`、18:00 `prepare-universe`、19:00 `refresh-avwap`、20:00 `refresh-lending`、21:30 `refresh-full-margin`；22:30 的 `refresh-raw-data` 依序執行 `refresh-ohlcv` → `refresh-managed-raw-data`，接著 23:30 `refresh-market-context`、23:50 forward validation，以及隔日 00:30 `run-scoring`。07:00 repair 保留必要資料補修、重評分與兩種 validation，不再執行 AI evidence。
+4. 開市時 Action 才以分段 schedule 呼叫正式後端 internal endpoints，所有 step 都明確傳入同一個 intended `run_date`。排程為 17:30 `refresh-institutional-flows`、17:45 `refresh-market-bars`、18:00 `prepare-universe`、19:00 `refresh-avwap`、20:00 `refresh-lending`、21:30 `refresh-full-margin`；22:30 的 `refresh-raw-data` 依序執行 `refresh-ohlcv` → `refresh-managed-raw-data`，接著 23:30 `refresh-market-context`，以及隔日 00:30 `run-scoring`。07:00 repair 保留必要資料補修與重評分，不再執行 AI evidence。
 5. 核心 refresh step 都讀同一筆 `daily_radar_prepared_runs` 的 selected symbols；不得重選 universe。`refresh-avwap` 另會合併 active holdings 與 watchlist symbols 刷新 shared market snapshot，但只支援 `.TW` / `.TWO`，其他 symbol 以 skipped reason 記錄；不得把使用者 entry date、avg cost 或 holding-specific anchor 寫入 cache。
 6. `run-scoring` 只讀 DB cache/snapshot；若 institutional-flow archive、lending、full-margin、OHLCV、market context 任一步未完成，回 `409` 並拒絕發佈 candidate。AVWAP 是 optional evidence step，失敗時不阻塞 scoring，但 `phase1_avwap_context` 必須保留 `freshness = missing` 與具體 `missing_reason`。
 7. 台灣時間週二至週六 07:00 對前一個 intended trading date 依序補修 `refresh-full-margin`、`refresh-ohlcv`、`refresh-avwap`；full margin 與 OHLCV 完成後才呼叫 `run-scoring`。無論前段 HTTP、payload 或 scoring 是否成功，都繼續執行獨立的 `refresh-managed-raw-data`。任一步仍不完整時 repair monitor 維持失敗，不能以後續成功覆蓋前段錯誤；public read 透過同日期最新完成 run 看到補齊後版本。
 8. 前端 `GET /daily-radar/latest` 顯示最新完成版本。
-9. `.github/workflows/daily-radar.yml` 於 OHLCV 與 market context 後、台灣時間平日 23:50 執行 5 / 10 / 20 交易日 due validation。它不參與 publish transaction；失敗不回滾已發布結果，但 workflow 必須失敗以暴露資料缺口。
+9. `.github/workflows/daily-radar-validation.yml` 在台北時間週二至週六 02:15 執行前一交易日期的 5 / 10 / 20 / 40 / 60 交易日窗口驗證，06:45 補修。durable 續跑保留原工作 ID、來源退避和 cursor，發布與驗證各自領取到期工作。它不參與 publish transaction；失敗不回滾已發布結果，但 workflow 必須失敗以暴露資料缺口。
 10. 同一市場與 `run_date` 有多次公開 run 時，forward validation 與月報只採最新 run，避免 rerun 被誤當獨立樣本。
 11. `.github/workflows/monthly-analysis-calibration.yml` 每月 6 日輸出 AES-256 加密的 Actions artifact；月報只選 5 / 10 / 20 日三個窗口皆已完整評估的最近六個月份，前五個 training、最新一個 holdout，並以 `run_date` 做固定 seed block bootstrap。
 12. 月報 watermark 使用 DB aggregation；cohort 決定後只載入所選六個月份的 candidate / replay / validation detail。Daily Radar 與一般分析透過各自 adapter 共用中立 forward-validation core，並由共用 planning service 統一 benchmark-first refresh 與 evaluation-readiness 排序；不得讓 feature-specific scoring 或 ORM 依賴流入 core。Forward-validation outcome 語意變更時必須升級 `validation_version`；月報預設只讀目前版本，舊版本僅供歷史稽核，不得混合聚合。
@@ -719,14 +719,14 @@ MVP 不做以下事項：
 
 ETF、權證、特別股不納入候選、分析、raw pool 補抓或兩種 forward validation；歷史樣本保留稽核，但退出目前清單與成效統計。Analyze API／CLI 在快取及 provider 前套用相同個股資格，獨立主動式 ETF 持股追蹤保留，TAIEX 仍作比較基準。
 
-市場法人報表完整度不採所有股票資料日期的交集；優先讀通過完整性驗證的官方 archive。個股短歷史保留 coverage／missing dates，後續 refresh 不可洗掉同日 evidence。next_open v2 要求候選 OHLC 日期等於 signal date；續跑舊版 retryable 視窗並回報剩餘 backlog，未清空不得視為 ready。缺行情時依完整保存交易日曆做有界官方 OHLC 補缺，逐日驗證企業行動證據，保留價格口徑檢查。Radar 月度規則治理亦排除歷史 ETF。既有 07:00 repair 保留兩種 validation；本次與累積 skip 計數分開，真正未解的來源缺口仍讓 monitor 失敗。細節見 backend API 規格的「個股研究資格與資料恢復」。
+市場法人報表完整度不採所有股票資料日期的交集；優先讀通過完整性驗證的官方 archive。個股短歷史保留 coverage／missing dates，後續 refresh 不可洗掉同日 evidence。next_open v2 要求候選 OHLC 日期等於 signal date；續跑舊版 retryable 視窗並回報剩餘 backlog，未清空不得視為 ready。缺行情時依完整保存交易日曆做有界官方 OHLC 補缺，逐日驗證企業行動證據，保留價格口徑檢查。Radar 月度規則治理亦排除歷史 ETF。06:45 validation repair 涵蓋兩種口徑；本次與累積 skip 計數分開，真正未解的來源缺口仍讓 monitor 失敗。細節見 backend API 規格的「個股研究資格與資料恢復」。
 
 
 ### Codex 晨間 AI 報告退役（2026-10-20）
 
 晨間 Codex 個人分析需求已移除。`refresh-ai-evidence` API、手動入口、07:00 repair 的 AI 完整度檢查、完整 AI pool 的法人／基本面 materialization、專用匯出 CLI 與研究 skill 一併退役。歷史 raw rows、prepared step 狀態、job 與 Alembic migration 保留，不刪除資料。
 
-22:30 `refresh-raw-data` 沿用 immutable `run_date`，依序執行 `refresh-ohlcv` → `refresh-managed-raw-data`。單段失敗仍收集下一段結果，最後以聚合失敗結束；保留 30 分鐘整體 deadline、單次 300 秒完整 HTTP deadline、同日回應及缺資料檢查與七天診斷 artifact。`prepare-universe` 不再預補 AI 報告用 EPS。07:00 repair 仍補修 full margin、OHLCV、AVWAP、scoring 與近期分析 raw data，並獨立執行 signal_close／next_open validation；第一種失敗仍執行另一種，既有有界重試及失敗診斷保留。
+22:30 `refresh-raw-data` 沿用 immutable `run_date`，依序執行 `refresh-ohlcv` → `refresh-managed-raw-data`。單段失敗仍收集下一段結果，最後以聚合失敗結束；保留 30 分鐘整體 deadline、單次 300 秒完整 HTTP deadline、同日回應及缺資料檢查與七天診斷 artifact。`prepare-universe` 不再預補 AI 報告用 EPS。07:00 repair 仍補修 full margin、OHLCV、AVWAP、scoring 與近期分析 raw data。06:45 獨立補修 signal_close／next_open validation；第一種失敗仍執行另一種，既有有界重試及失敗診斷保留。
 
 07:15 官方基本面更新及有界歷史補查保留。新 managed job 取當日或以前最新 TW prepared selected symbols，加上最近 30 天 general 分析標的，不再查舊 AI raw pool；不納入 position cache、持股或關注列表。每批最多 10 檔、每輪最多六次請求，沿用 MOPS 優先、FinMind 備援、維護的七季 EPS／股利契約與缺資料分類。`raw_pool_date`／`radar_stage` request 參數停止接受（422），新 job 不帶 AI 日期／階段。舊 maintenance job 仍依凍結 symbols 與 server-owned cursor 有界續跑；舊 `radar_ttm_eps` job 保留但不進 maintenance queue，也不可由 maintenance API 續跑。provider I/O 不持有寫入交易，提交前重新鎖定並載入 job／cursor，資料與 cursor 原子提交。
 

@@ -33,7 +33,7 @@ def validation_alert(report, known, run_date, lane):
 
 
 def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=100, max_seconds=900,
-        require_lanes=(), recheck_publication=False, read=get, write=post, clock=time.monotonic, known_validation_gaps=None):
+        require_lanes=(), owner=None, recheck_publication=False, read=get, write=post, clock=time.monotonic, known_validation_gaps=None):
     if (resume == (run_date is not None) or not 1 <= max_work <= 2000 or not 1 <= max_seconds <= 1800):
         raise ValueError('invalid_durable_job_scope_or_budget')
     if recheck_publication and (resume or "publication" not in require_lanes):
@@ -44,6 +44,9 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         raise ValueError('invalid_required_lanes')
     if resume and require_lanes:
         raise ValueError('deadline_check_requires_exact_date')
+    owners = {'radar': ['publication', 'auxiliary'], 'validation': ['signal_close', 'next_open']}
+    if owner is not None and (owner not in owners or set(require_lanes).difference(owners[owner])):
+        raise ValueError('invalid_radar_job_owner')
     known = None
     if known_validation_gaps is not None:
         baseline = json.loads(Path(known_validation_gaps).read_text())
@@ -71,15 +74,19 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
     capability = call(read, '/capabilities')
     if capability.get('enabled') is not True or capability.get('version') != 'radar-durable-v1':
         raise ValueError('radar_durable_execution_not_ready')
+    if owner and capability.get('scoped_resume') is not True:
+        raise ValueError('radar_scoped_resume_unavailable')
     if resume:
-        jobs = call(read, '/jobs/due')['jobs']
+        jobs = (call(write, '/jobs/resume?owner=' + owner, {}) if owner else call(read, '/jobs/due'))['jobs']
     else:
         intent = {'run_date': run_date, 'market': 'TW'}
-        if require_lanes:
-            intent['lanes'] = list(require_lanes)
+        if owner or require_lanes:
+            # A publication deadline must not spend its budget collecting optional
+            # evidence. Ordinary dated Radar intents continue to own auxiliary work.
+            intent['lanes'] = list(require_lanes) if require_lanes else owners[owner]
         if recheck_publication:
             intent['recheck_publication'] = True
-        registered = call(write, '/jobs', intent)
+        registered = call(write, '/jobs' + ('?owner=' + owner if owner else ''), intent)
         if registered.get('effective_run_date') != run_date or registered.get('requested_run_date') != run_date:
             raise ValueError('radar_job_date_mismatch')
         jobs = [{'job_id': registered['job_id'], 'run_date': run_date}]
@@ -90,7 +97,7 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
     checkpoint_path = out / 'jobs.json'
     if resume and checkpoint_path.is_file():
         previous = json.loads(checkpoint_path.read_text(encoding='utf-8'))
-        if previous.get('status') == 'in_progress':
+        if previous.get('status') == 'in_progress' and previous.get('owner') == owner:
             # An interrupted invocation may already have delivered its POSTs.
             # Resume using the server queue and retain its already spent budget.
             advanced = previous.get('advanced_requests', 0)
@@ -104,7 +111,7 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
     pending = list(jobs)
     budget_exhausted = False
     def checkpoint(*, status='in_progress', deadline_passed=None, alerts=None):
-        result = {'run_date': run_date, 'resume': resume, 'advanced_requests': advanced,
+        result = {'run_date': run_date, 'resume': resume, 'owner': owner, 'advanced_requests': advanced,
                   'job_refs': [{'job_id': job['job_id'], 'run_date': job['run_date']} for job in jobs],
                   'jobs': list(summaries.values()), 'errors': errors, 'in_flight': list(in_flight.values()),
                   'interrupted_requests': interrupted, 'internal_failure_seen': internal_failure_seen,
@@ -137,11 +144,11 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         checkpoint()
 
     checkpoint()
-    if capability.get('parallel_window_advance') is True and set(require_lanes) != {'publication'}:
+    if capability.get('parallel_window_advance') is True and owner != 'radar' and set(require_lanes) != {'publication'}:
         from radar_window_driver import advance_windows
         pending, budget_exhausted = advance_windows(pending, endpoint=endpoint, token=token, write=write,
             limit=max(0, max_work - advanced), deadline=deadline, seconds=work_request_seconds, clock=clock,
-            record=record, submitted=submitted)
+            record=record, submitted=submitted, owner=owner)
     else:
         while pending and advanced < max_work:
             if deadline - clock() < work_request_seconds:
@@ -150,14 +157,16 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
             job = pending.pop(0)
             submitted(job, 'normal')
             try:
-                status = call(write, f"/jobs/{job['job_id']}/advance", {}, request_limit=work_request_seconds)
+                path = f"/jobs/{job['job_id']}/advance"
+                status = call(write, path + ('?owner=' + owner if owner else ''), {}, request_limit=work_request_seconds)
                 if status.get('effective_run_date') != job['run_date'] or status.get('requested_run_date') != job['run_date']:
                     raise ValueError('radar_job_date_mismatch')
             except Exception as exc:
                 record(job, 'normal', None, exc)
                 continue
             record(job, 'normal', status, None)
-            if status.get('advanced_count') or (status.get('runnable_now') and not status.get('advance_slot_busy')):
+            if (status.get('advanced_count') or (status.get('handoff_advanced') and status.get('handoff_pending'))
+                    or (status.get('runnable_now') and not status.get('advance_slot_busy'))):
                 pending.append(job)
     checkpoint()
     failed = bool(errors) or internal_failure_seen
@@ -171,6 +180,8 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
             url += '&include_all_validation_gaps=true'
         if set(require_lanes) == {'publication'}:
             url += '&scope=publication'
+        if owner == 'validation':
+            url += '&scope=validation'
         report = None
         try:
             # Final verification has its own budget, even after failed work.
@@ -210,6 +221,7 @@ def main():
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--max-work', type=int, default=100)
     parser.add_argument('--max-seconds', type=int, default=900)
+    parser.add_argument('--owner', choices=('radar', 'validation'))
     parser.add_argument('--require-lanes', default='')
     parser.add_argument('--recheck-publication', action='store_true')
     parser.add_argument('--known-validation-gaps', type=Path)
@@ -217,7 +229,7 @@ def main():
     try:
         result = run(endpoint=os.environ['ZEABUR_BACKEND_URL'], token=os.environ['DAILY_RADAR_INTERNAL_TOKEN'],
             output_dir=args.output_dir, run_date=args.run_date, resume=args.resume, max_work=args.max_work,
-            max_seconds=args.max_seconds, require_lanes=tuple(x for x in args.require_lanes.split(',') if x),
+            max_seconds=args.max_seconds, owner=args.owner, require_lanes=tuple(x for x in args.require_lanes.split(',') if x),
             known_validation_gaps=args.known_validation_gaps, recheck_publication=args.recheck_publication)
     except Exception as exc:
         out = Path(args.output_dir)

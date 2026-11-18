@@ -17,13 +17,14 @@ def _advance(write, url, token, seconds, deadline):
     return write(url, token, {}, timeout=timeout)
 
 
-def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, clock, record, submitted):
+def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, clock, record, submitted, owner=None):
     pool = (ProcessPoolExecutor(max_workers=2, mp_context=get_context('spawn'))
             if write is post else ThreadPoolExecutor(max_workers=2))
     due = deque(jobs)
     unvisited = {job['job_id'] for job in jobs}
     running = {}
     paused = set()
+    transferring = set()
     busy_normal = {}
     latest = {}
     lease_observations = {}
@@ -36,6 +37,8 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
         path = f"/jobs/{job['job_id']}/advance"
         if slot == 'window':
             path += '?window_only=true'
+        if owner:
+            path += ('&' if slot == 'window' else '?') + 'owner=' + owner
         sent += 1
         submitted(job, slot)
         worker_deadline = monotonic() + max(0, deadline - clock())
@@ -61,10 +64,10 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
             delay = None
             if can_start and 'window' not in slots and (normal is not None or busy_normal):
                 # Each date first gets enough budget for a general advance.
-                eligible = [job for job in due if job['job_id'] not in paused]
-                if normal is not None and normal['job_id'] not in paused:
+                eligible = [job for job in due if job['job_id'] not in paused | transferring]
+                if normal is not None and normal['job_id'] not in paused | transferring:
                     eligible.append(normal)
-                eligible.extend(job for key, job in busy_normal.items() if key not in paused)
+                eligible.extend(job for key, job in busy_normal.items() if key not in paused | transferring)
                 if eligible and limit - sent > len(unvisited):
                     delay = max(0, probe_at - clock()) if normal is not None else 0
                     if not delay:
@@ -111,17 +114,29 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
                             due.remove(job)
                     elif not occupied:
                         busy_normal.pop(key, None)
+                if slot == 'normal' and status.get('handoff_advanced'):
+                    if status.get('handoff_pending'):
+                        transferring.add(key)
+                    else:
+                        transferring.discard(key)
                 effective = latest[key]
-                if status.get('advanced_count'):
+                if status.get('advanced_count') or status.get('handoff_advanced'):
                     if job in due:
                         due.remove(job)
                     if slot == 'normal':
                         paused.discard(key)
+                elif slot == 'window' and (status.get('blocked_by_handoff') or status.get('handoff_pending')):
+                    # This empty result only describes the transfer page. A
+                    # general request may have finished the handoff since then.
+                    probe_at = clock() + .25
                 elif slot == 'window':
                     paused.add(key)
                 normal_active = any(other_slot == 'normal' and other == job
                                     for other, other_slot in running.values())
-                if (key not in busy_normal and not normal_active
+                if key in transferring and not normal_active:
+                    # Paging copies queue membership and can run beside a live lease.
+                    enqueue(job)
+                elif (key not in busy_normal and not normal_active
                         and (effective.get('advanced_count') or effective.get('runnable_now'))):
                     enqueue(job)
     finally:

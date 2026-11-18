@@ -812,14 +812,14 @@ TWSE 上市個股與 TAIEX 的 `next_open` 視窗遇到已標記的股票價格�
 一般 `next_open` 驗證也會以 TWSE／TPEx 官方報表查證無償配股與有停復牌資料的現金減資。以官方 TAIEX 的交易日重建視窗，並核對一般行情中的指數 OHLC。只有單一事件能解釋視窗時才終止重試，股票在可交易日須具備完整官方 OHLC，Yahoo 價差須能以官方股數比例解釋。只有公告的停牌期間可缺個股行情，休市或停牌的 Yahoo 零量價格列不當作成交。通過後分別保存 `stock_distribution_in_window` 或 `cash_reduction_halt_in_window`，在 `official_corporate_action` 留存報表、雜湊、公司行動條件與比對日期。兩者均為終止跳過，證據不足的窗口繼續重試。公司行動查證共用既有 request 與時間預算。
 
 定向補跑可透過 `POST /internal/daily-radar/forward-validation/run` 帶入 `conflict_recovery_symbols`，搭配明確的 `as_of_date`、相等的 `start_date` 與 `end_date`，以及單一窗口長度。此次正式補跑範圍是 `{"mode":"due","market":"TW","return_basis":"next_open","as_of_date":"2026-11-03","start_date":"2026-10-01","end_date":"2026-10-01","benchmark_symbol":"TAIEX","windows":[20],"conflict_recovery_symbols":["1727.TW","2890.TW","8021.TW"]}`。只接手這些身分在 canonical run 已保存、到期日等於請求日期的 v2 價格衝突。後續重試時間可以較晚，行情仍裁切到到期日。寫入前複核身分與現有狀態，保護已保存的官方結果。定向補跑以 `report.conflict_recovery.ready` 及 `verified_windows` 確認每個指定標的都有帶官方證據的結果。
-- `report.current_run_skip_reasons`、`current_run_gaps` 與 `source_recovery` 是本輪診斷；`report.skip_reasons` 是持久化 cohort 統計。Skip outcome 保存缺少日期與可判定的目標日，持久化讀取亦保留這些診斷。兩種 return basis 各自執行，來源／資料缺口最多重試一次，再彙整 exit code；排程 validation 與 07:00 repair 共用不取消執行中的 concurrency group，避免不同 run_date 的重疊窗口同時寫入；兩種 basis 以獨立 job 回報，完整 response 與唯讀 readiness 保存為 30 天 workflow artifact。既有 07:00 repair 在 managed raw data 後執行兩種 validation；獨立保留失敗診斷與有界重試，最後彙整失敗。
+- `report.current_run_skip_reasons`、`current_run_gaps` 與 `source_recovery` 是本輪診斷；`report.skip_reasons` 是持久化 cohort 統計。Skip outcome 保存缺少日期與可判定的目標日，持久化讀取亦保留這些診斷。兩種 return basis 各自執行，來源／資料缺口最多重試一次，再彙整 exit code；validation 主排程與 06:45 補修共用不取消執行中的 validation concurrency group，避免不同 run_date 的重疊窗口同時寫入；兩種 basis 以獨立 job 回報，完整 response 與唯讀 readiness 保存為 30 天 workflow artifact。06:45 validation repair 執行兩種口徑；獨立保留失敗診斷與有界重試，最後彙整失敗。
 
 
 ### Codex 晨間 AI 報告退役（2026-10-20）
 
 晨間 Codex 個人分析需求已移除。`refresh-ai-evidence` API、手動入口、07:00 repair 的 AI 完整度檢查、完整 AI pool 的法人／基本面 materialization、專用匯出 CLI 與研究 skill 一併退役。歷史 raw rows、prepared step 狀態、job 與 Alembic migration 保留，不刪除資料。
 
-22:30 `refresh-raw-data` 沿用 immutable `run_date`，依序執行 `refresh-ohlcv` → `refresh-managed-raw-data`。單段失敗仍收集下一段結果，最後以聚合失敗結束；保留 30 分鐘整體 deadline、單次 300 秒完整 HTTP deadline、同日回應及缺資料檢查與七天診斷 artifact。`prepare-universe` 不再預補 AI 報告用 EPS。07:00 repair 仍補修 full margin、OHLCV、AVWAP、scoring 與近期分析 raw data，並獨立執行 signal_close／next_open validation；第一種失敗仍執行另一種，既有有界重試及失敗診斷保留。
+22:30 `refresh-raw-data` 沿用 immutable `run_date`，依序執行 `refresh-ohlcv` → `refresh-managed-raw-data`。單段失敗仍收集下一段結果，最後以聚合失敗結束；保留 30 分鐘整體 deadline、單次 300 秒完整 HTTP deadline、同日回應及缺資料檢查與七天診斷 artifact。`prepare-universe` 不再預補 AI 報告用 EPS。07:00 repair 仍補修 full margin、OHLCV、AVWAP、scoring 與近期分析 raw data。06:45 獨立補修 signal_close／next_open validation；第一種失敗仍執行另一種，既有有界重試及失敗診斷保留。
 
 07:15 官方基本面更新及有界歷史補查保留。新 managed job 取當日或以前最新 TW prepared selected symbols，加上最近 30 天 general 分析標的，不再查舊 AI raw pool；不納入 position cache、持股或關注列表。每批最多 10 檔、每輪最多六次請求，沿用 MOPS 優先、FinMind 備援、維護的七季 EPS／股利契約與缺資料分類。`raw_pool_date`／`radar_stage` request 參數停止接受（422），新 job 不帶 AI 日期／階段。舊 maintenance job 仍依凍結 symbols 與 server-owned cursor 有界續跑；舊 `radar_ttm_eps` job 保留但不進 maintenance queue，也不可由 maintenance API 續跑。provider I/O 不持有寫入交易，提交前重新鎖定並載入 job／cursor，資料與 cursor 原子提交。
 

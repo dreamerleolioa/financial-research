@@ -1105,6 +1105,8 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     workflow = Path(__file__).parents[2].joinpath(".github", "workflows", "daily-radar.yml")
     text = workflow.read_text(encoding="utf-8")
 
+    context = workflow.with_name('daily-radar-context.yml').read_text()
+    validation = workflow.with_name('daily-radar-validation.yml').read_text()
     assert "GitHub cron uses UTC. Taiwan time = UTC+8." in text
     assert 'cron: "0 10 * * 1-5"' in text  # 18:00 TWT prepare universe
     assert 'cron: "45 9 * * 1-5"' in text  # 17:45 TWT market bar archive
@@ -1115,30 +1117,30 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert 'cron: "40 14 * * 1-5"' not in text  # managed raw is part of the ordered chain
     assert 'cron: "0 15 * * 1-5"' not in text  # evidence follows fundamental preparation
     assert 'cron: "30 15 * * 1-5"' in text  # 23:30 TWT market context
-    assert 'cron: "50 15 * * 1-5"' in text  # 23:50 TWT forward validation
+    assert 'cron: "15 18 * * 1-5"' in validation  # 02:15 TWT next day forward validation
     assert 'cron: "30 16 * * 1-5"' in text  # 00:30 TWT next day scoring
     assert 'cron: "0 23 * * 1-5"' in text  # 07:00 TWT next day AVWAP repair
     assert "actions: read" in text
     assert "resolve-run-context:" in text
-    assert "/actions/runs/${GITHUB_RUN_ID}" in text
-    assert 'jq -r ".created_at"' in text
-    assert "resolve_daily_radar_run_date.py" in text
-    assert "/internal/daily-radar/market-session" in text
+    assert "/actions/runs/${GITHUB_RUN_ID}" in context
+    assert 'jq -r ".created_at"' in context
+    assert "resolve_daily_radar_run_date.py" in context
+    assert "/internal/daily-radar/market-session" in context
     assert 'market_open == \'true\'' in text
-    assert text.count("needs: resolve-run-context") == 16
+    assert text.count("needs: resolve-run-context") == 15
     assert "/internal/daily-radar/refresh-institutional-flows" in text
     assert "/internal/daily-radar/refresh-market-bars" in text
     assert "market_bar_start_date" in text
     assert "market_bar_end_date" in text
-    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 13
+    assert text.count("needs.resolve-run-context.outputs.market_open == 'true'") == 12
     assert (
         text.count("DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}")
-        == 18
+        == 16
     )
     assert "intended Taiwan trading date" in text
     assert "run_date:" in text
-    assert "DAILY_RADAR_RUN_DATE: ${{ github.event.inputs.run_date || '' }}" in text
-    assert "DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}" in text
+    assert "DAILY_RADAR_RUN_DATE: ${{ inputs.run_date || '' }}" in context
+    assert "DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}" in context
     assert "scheduled_run_date()" not in text
     assert 'date -u -d "1 day ago" +%F' not in text
     assert "daily_radar_payload=" in text
@@ -1150,7 +1152,7 @@ def test_daily_radar_workflow_splits_data_fetching_steps_by_taipei_schedule() ->
     assert "/internal/daily-radar/refresh-ohlcv" in text
     assert "/internal/daily-radar/refresh-managed-raw-data" in text
     assert "/internal/daily-radar/refresh-market-context" in text
-    assert "run_daily_radar_validation.py" in text
+    assert "run_daily_radar_validation.py" in validation
     assert "/internal/daily-radar/run-scoring" in text
     assert "repair-avwap-and-rescore" in text
     assert "missing_symbol_reasons" in text
@@ -1237,7 +1239,7 @@ def test_daily_radar_workflow_exposes_bounded_archive_maintenance_without_auto_a
     assert "institutional_flow_start_date" in text
     assert "institutional_flow_end_date" in text
 
-    market_session_step = text.split("      - name: Resolve TW market session", 1)[1].split(
+    market_session_step = text.split("      check_market:", 1)[1].split(
         "\n  refresh-institutional-flows:",
         1,
     )[0]

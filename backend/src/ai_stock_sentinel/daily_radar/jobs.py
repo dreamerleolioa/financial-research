@@ -6,10 +6,11 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, select, update, or_, text
 from ai_stock_sentinel.db.models import RadarJob, RadarWorkItem, RadarJobWork, RadarWorkAttempt, DailyRadarPreparedRun
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
-from ai_stock_sentinel.daily_radar.work_queue import ensure_work, insert, database_now, aware, work_insert_values
+from ai_stock_sentinel.daily_radar.work_queue import ensure_work, insert, database_now, aware, work_insert_values, unsplit_job
 
 POLICY = 'radar-durable-v1'
 LANES = ('publication', 'signal_close', 'next_open', 'auxiliary')
+OWNER_LANES = {'radar': ('publication', 'auxiliary'), 'validation': ('signal_close', 'next_open')}
 TIMES = {'market-session': (17, 30), 'institutional': (17, 30), 'market-bars': (17, 45),
  'prepare': (18, 0), 'avwap': (19, 0), 'lending': (20, 0), 'full-margin': (21, 30),
  'ohlcv': (22, 30), 'managed-raw': (22, 30), 'market-context': (23, 30),
@@ -26,14 +27,41 @@ def prepared_generation(prepared):
         'prepare': (prepared.step_statuses or {}).get('prepare-universe')}) if prepared else None
 
 
-def create_job(db, *, run_date, lanes=LANES, now=None, recheck_publication=False):
+def create_job(db, *, run_date, lanes=LANES, now=None, recheck_publication=False, owner=None):
     if not isinstance(run_date, date) or not lanes or set(lanes) - set(LANES):
         raise ValueError('radar_job_scope_invalid')
     now, lanes = database_now(db, now), sorted(set(lanes))
+    if owner and (owner not in OWNER_LANES or set(lanes).difference(OWNER_LANES[owner])):
+        raise ValueError('radar_job_owner_mismatch')
     key = fingerprint({'policy': POLICY, 'market': 'TW', 'run_date': str(run_date), 'lanes': lanes})
+    lock_date(db, run_date)
+    same_day = db.scalars(select(RadarJob).where(RadarJob.market == 'TW', RadarJob.run_date == run_date)
+                          .order_by(RadarJob.id)).all()
+    adopted = [job for job in same_day if job.scope.get('scheduler_owner')]
+    if not owner and any(set(job.lanes).intersection(lanes) for job in adopted):
+        raise ValueError('radar_job_owner_mismatch')
+    if owner:
+        matches = [job for job in adopted if job.lanes == lanes]
+        existing = next((job for job in matches if job.scope.get('dated_registration')), None)
+        if existing is None and matches:
+            existing = matches[0]
+        if existing:
+            key = existing.job_key
+        else:
+            for previous in same_day:
+                if set(previous.lanes).intersection(OWNER_LANES[owner]) == set(lanes) and set(previous.lanes) != set(lanes):
+                    children = _split_due_job(db, previous.id, now=now)
+                    key = db.get(RadarJob, children[owner]).job_key
+                    break
     db.execute(insert(db, RadarJob).values(job_key=key, run_date=run_date, market='TW', lanes=lanes,
-        scope={}, state='pending', next_attempt_at=now).on_conflict_do_nothing(index_elements=['job_key']))
-    job = db.scalar(select(RadarJob).where(RadarJob.job_key == key))
+        scope={'scheduler_owner': owner} if owner else {}, state='pending', next_attempt_at=now)
+        .on_conflict_do_nothing(index_elements=['job_key']))
+    job = db.scalar(select(RadarJob).where(RadarJob.job_key == key).with_for_update().execution_options(populate_existing=True))
+    if not owner and job.scope.get('scheduler_owner'):
+        raise ValueError('radar_job_owner_mismatch')
+    if owner and not job.scope.get('dated_registration'):
+        job.scope = {**job.scope, 'scheduler_owner': owner, 'dated_registration': True}
+        db.flush()
     recheck_publication = recheck_publication and 'publication' in lanes
     reconcile_job(db, job.id, now=now, audit=recheck_publication, recheck_publication=recheck_publication)
     return job
@@ -119,7 +147,7 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
     inputs = inventory_input_revision(db, as_of_date=job.run_date)
     plan = fingerprint({'version': 'radar-window-plan-v3', 'run_date': str(job.run_date),
         'inputs': inputs,
-        'calendar': calendar.payload(), 'lanes': job.lanes})
+        'calendar': calendar.payload(), 'lanes': scope.get('inherited_plan_lanes', job.lanes)})
     progress = deepcopy(scope.get('window_planning') or {})
     if progress.get('revision') == plan and progress.get('complete') and scope.get('window_plan') == plan:
         return
@@ -324,20 +352,51 @@ def dependencies_ready(work, keys, visiting=frozenset()):
         keys[key], keys, visiting | {work.work_key}) for key in work.dependencies)
 
 
-def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=False):
-    now = database_now(db, now)
-    day = db.scalar(select(RadarJob.run_date).where(RadarJob.id == job_id))
-    if day is None:
-        raise ValueError('radar_job_not_found')
+def lock_date(db, day):
     if db.get_bind().dialect.name == 'postgresql':
         # Lanes share publication units. Serialize only reconciliation, before
         # job/work row locks; provider collection/acceptance never takes this key.
         key = int(fingerprint({'kind': 'radar-reconcile', 'market': 'TW', 'run_date': str(day)})[:15], 16)
         db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': key})
+    elif db.get_bind().dialect.name == 'sqlite':
+        db.execute(text('UPDATE radar_jobs SET id = id WHERE 0'))
+
+
+def job_successors(db, job):
+    successors = job.scope.get('successors')
+    if successors or db.get_bind().dialect.name != 'sqlite' or job.scope.get('scheduler_owner'):
+        return successors
+    keys = [fingerprint({'split_job': job.job_key, 'owner': owner}) for owner in OWNER_LANES]
+    children = db.scalars(select(RadarJob).where(RadarJob.job_key.in_(keys))).all()
+    return {child.scope['scheduler_owner']: child.id for child in children}
+
+
+def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=False):
+    now = database_now(db, now)
+    day = db.scalar(select(RadarJob.run_date).where(RadarJob.id == job_id))
+    if day is None:
+        raise ValueError('radar_job_not_found')
+    lock_date(db, day)
     job = db.scalar(select(RadarJob).where(RadarJob.id == job_id).with_for_update().execution_options(populate_existing=True))
     if job is None:
         raise ValueError('radar_job_not_found')
+    successors = job_successors(db, job)
+    if successors:
+        job.scope = {**job.scope, 'successors': successors}
+        job.state, job.next_attempt_at = 'split', None
+        db.commit()
+        return job
     scope = deepcopy(job.scope or {})
+    if scope.get('inherit_cursor') is not None:
+        if recheck_publication:
+            job.scope = {**scope, 'recheck_after_inherit': True}
+        _inherit_page(db, job)
+        if job.scope['inherit_cursor'] is not None:
+            db.commit()
+            return job
+        scope = deepcopy(job.scope)
+        if scope.pop('recheck_after_inherit', False):
+            audit = recheck_publication = True
     audited = scope.get('window_inventory_audited_at')
     audited = datetime.fromisoformat(audited) if audited else None
     superseded = db.scalar(select(RadarWorkItem.id).join(RadarJobWork).where(
@@ -348,15 +407,21 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
             or superseded is not None):
         scope.pop('window_plan', None)
         scope.pop('window_planning', None)
-    session = unit(db, job, 'market-session', now=now)
-    closed = session.state == 'terminal' and (session.result or {}).get('status') == 'closed'
+    radar = bool(set(job.lanes).intersection(OWNER_LANES['radar']))
+    session = unit(db, job, 'market-session', now=now) if radar else None
+    if not radar:
+        # Pre-split validation intents could still own the publication session probe.
+        db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True),
+            RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'market-session')))
+            .values(active=False))
+    closed = bool(session and session.state == 'terminal' and (session.result or {}).get('status') == 'closed')
     if closed:
         db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
             RadarJobWork.active.is_(True),
             RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(
                 RadarWorkItem.lane.in_(('publication', 'auxiliary')), RadarWorkItem.stage != 'market-session')))
             .values(active=False))
-    if not closed and set(job.lanes) & {'publication', 'auxiliary'}:
+    if not closed and radar:
         archives = _units(db, job, ((stage, {'market': market})
             for stage in ('institutional', 'market-bars') for market in ('TW', 'TWO')), deps=[session], now=now)
         prep = unit(db, job, 'prepare', deps=archives, now=now)
@@ -440,7 +505,15 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
     required_done = bool(plan_complete and all(w.state in {'ready', 'terminal'} for w, required in members if required))
     audit_completed_score = not recheck_publication and any(
         w.stage == 'scoring' and w.state == 'ready' for w, _ in members)
-    if audit and required_done:
+    if audit and required_done and not radar:
+        from ai_stock_sentinel.daily_radar.readiness import read_readiness
+        report = read_readiness(db, run_date=job.run_date, scope='validation')
+        ready = all(report['validation'][lane]['ready'] for lane in job.lanes)
+        scope.update(audit={'observed_at': now.isoformat(), 'data_ready': None, 'validation': report['validation']},
+                     intent_complete=ready, audit_ready=None)
+        if not ready:
+            scope.pop('window_plan', None)
+    elif audit and required_done:
         from ai_stock_sentinel.daily_radar.readiness import read_readiness
         report = read_readiness(db, run_date=job.run_date,
             audit_completed_score=audit_completed_score, **(
@@ -516,10 +589,14 @@ def job_status(db, job_id, *, include_observation=False):
     runnable = any((w.state in {'pending', 'waiting_provider'} and w.retry_at is not None
         and aware(w.retry_at) <= now and aware(w.not_before) <= now)
         or (w.state == 'running' and aware(w.lease_expires_at) <= now) for w in members)
-    runnable = runnable or planning_remaining(job, scope)
+    successors = job_successors(db, job)
+    retired = bool(successors)
+    runnable = not retired and (runnable or planning_remaining(job, scope) or scope.get('inherit_cursor') is not None)
     return {'job_id': job.id, 'requested_run_date': str(job.run_date), 'effective_run_date': str(job.run_date),
-        'run_date': str(job.run_date), 'state': job.state, 'data_ready': bool(scope.get('audit_ready')),
-        'intent_complete': bool(scope.get('intent_complete')),
+        'run_date': str(job.run_date), 'state': 'split' if retired else job.state, 'data_ready': not retired and bool(scope.get('audit_ready')),
+        'intent_complete': not retired and bool(scope.get('intent_complete')),
+        **({'successors': successors} if retired else {}),
+        'handoff_pending': scope.get('inherit_cursor') is not None,
         'planning': {k: (scope.get('window_planning') or {}).get(k)
             for k in ('state', 'complete', 'processed_candidates')},
         'runnable_now': runnable,
@@ -529,9 +606,99 @@ def job_status(db, job_id, *, include_observation=False):
         'lanes': lanes, 'last_audit': scope.get('audit'), 'work_count': len(members)}
 
 
-def due_jobs(db, *, now=None, limit=20):
-    now = database_now(db, now)
-    rows = db.scalars(select(RadarJob).where(RadarJob.next_attempt_at <= now,
+def _due_query(db, now):
+    return select(RadarJob).where(RadarJob.next_attempt_at <= now, unsplit_job(db),
         or_(RadarJob.state.not_in(('ready', 'closed')), RadarJob.run_date >= now.date() - timedelta(days=7)))
-        .order_by(RadarJob.next_attempt_at, RadarJob.id).limit(limit))
+
+
+def due_jobs(db, *, now=None, limit=20):
+    rows = db.scalars(_due_query(db, database_now(db, now)).where(RadarJob.scope['scheduler_owner'].as_string().is_(None)).order_by(RadarJob.next_attempt_at, RadarJob.id).limit(limit))
     return [{'job_id': row.id, 'run_date': str(row.run_date)} for row in rows]
+
+
+INHERIT_PAGE_SIZE = 1000
+
+
+def _inherit_page(db, child):
+    scope = dict(child.scope)
+    lanes = (*child.lanes, 'validation') if scope['scheduler_owner'] == 'validation' else OWNER_LANES['radar']
+    rows = db.execute(select(RadarJobWork.work_id, RadarJobWork.required, RadarJobWork.active)
+        .where(RadarJobWork.job_id == scope['inherited_from'], RadarJobWork.work_id > scope['inherit_cursor'])
+        .order_by(RadarJobWork.work_id).limit(INHERIT_PAGE_SIZE + 1)).all()
+    page = rows[:INHERIT_PAGE_SIZE]
+    active = {item.work_id: item.required for item in page if item.active}
+    if active:
+        owned = db.scalars(select(RadarWorkItem.id).where(
+            RadarWorkItem.id.in_(active), RadarWorkItem.lane.in_(lanes))).all()
+        for required in (True, False):
+            ids = [work_id for work_id in owned if active[work_id] == required]
+            if ids:
+                _upsert_members(db, child.id, ids, required)
+    scope['inherit_cursor'] = page[-1].work_id if len(rows) > len(page) else None
+    child.scope = scope
+
+
+def _split_due_job(db, job_id, *, now):
+    # Lock the same parent row as the planner and slot claim. A previous claim
+    # can finish under its original lease because the work row never moves.
+    parent = db.scalar(update(RadarJob).where(RadarJob.id == job_id, unsplit_job(db))
+                       .values(state='splitting').returning(RadarJob).execution_options(populate_existing=True))
+    if parent is None:
+        return job_successors(db, db.get(RadarJob, job_id, populate_existing=True))
+    successors = {}
+    for owner, allowed in OWNER_LANES.items():
+        lanes = sorted(set(parent.lanes).intersection(allowed))
+        fields = (('generation', 'managed_symbols', 'managed_deferred') if owner == 'radar' else
+                  ('window_plan', 'window_planning', 'window_inventory_audited_at'))
+        scope = {key: parent.scope[key] for key in fields if key in parent.scope}
+        scope.update(scheduler_owner=owner, inherited_from=parent.id, inherit_cursor=0)
+        if owner == 'validation':
+            scope['inherited_plan_lanes'] = parent.lanes
+        child = RadarJob(job_key=fingerprint({'split_job': parent.job_key, 'owner': owner}),
+                         market=parent.market, run_date=parent.run_date, lanes=lanes, scope=scope,
+                         state='pending', next_attempt_at=parent.next_attempt_at)
+        db.add(child)
+        db.flush()
+        _inherit_page(db, child)
+        if child.scope['inherit_cursor'] is not None:
+            child.next_attempt_at = now
+        successors[owner] = child.id
+    # Preserve who issued each attempt while transferring its occupied slot.
+    # The original lease token continues to fence collection and acceptance.
+    running = db.execute(select(RadarWorkAttempt, RadarWorkItem.lane).select_from(RadarWorkItem)
+        .join(RadarWorkAttempt, RadarWorkAttempt.lease_token == RadarWorkItem.lease_token)
+        .where(RadarWorkItem.state == 'running', RadarWorkAttempt.state == 'running',
+               RadarWorkAttempt.scope['advance_job_id'].as_integer() == parent.id)
+        .with_for_update(of=RadarWorkAttempt))
+    for attempt, lane in running:
+        owner = 'radar' if lane in OWNER_LANES['radar'] else 'validation'
+        attempt.scope = {**attempt.scope, 'slot_job_id': successors[owner]}
+    parent.state, parent.next_attempt_at = 'split', None
+    parent.scope = {**parent.scope, 'successors': successors, 'intent_complete': False, 'audit_ready': None}
+    db.flush()
+    return successors
+
+
+def resume_jobs(db, *, owner, now=None, limit=20):
+    allowed = OWNER_LANES[owner]
+    now = database_now(db, now)
+    # Job intents have at most four lanes. Filter before the limit on both
+    # PostgreSQL and SQLite so an older backlog cannot hide the other owner's dates.
+    query = _due_query(db, now).where(or_(*(RadarJob.lanes[i].as_string().in_(allowed)
+                                       for i in range(len(LANES)))))
+    rows = db.execute(query.with_only_columns(RadarJob.id, RadarJob.lanes, RadarJob.run_date)
+                      .order_by(RadarJob.next_attempt_at, RadarJob.id).limit(limit)).all()
+    result = []
+    for job_id, lanes, run_date in rows:
+        lock_date(db, run_date)
+        if set(lanes).difference(allowed):
+            job_id = _split_due_job(db, job_id, now=now)[owner]
+            db.commit()
+        else:
+            row = db.scalar(select(RadarJob).where(RadarJob.id == job_id).with_for_update()
+                            .execution_options(populate_existing=True))
+            if not row.scope.get('scheduler_owner'):
+                row.scope = {**row.scope, 'scheduler_owner': owner}
+            db.commit()
+        result.append({'job_id': job_id, 'run_date': str(run_date)})
+    return result

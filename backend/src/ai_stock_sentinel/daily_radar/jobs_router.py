@@ -1,4 +1,5 @@
 """Internal durable execution API. Callers submit intent, never arbitrary work."""
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
@@ -6,7 +7,7 @@ from ai_stock_sentinel.db.session import get_db
 from ai_stock_sentinel.daily_radar.auth import require_daily_radar_internal_auth
 from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
 from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
-from ai_stock_sentinel.daily_radar.jobs import create_job, job_status, due_jobs
+from ai_stock_sentinel.daily_radar.jobs import create_job, job_status, due_jobs, resume_jobs
 from ai_stock_sentinel.daily_radar.schemas import JobRequest
 from ai_stock_sentinel.daily_radar.work_executor import advance_job
 
@@ -20,7 +21,7 @@ def capabilities(db):
     migrated = {'radar_jobs', 'radar_work_items', 'radar_job_work', 'radar_work_attempts',
                 'radar_source_snapshots', 'radar_input_manifests', 'radar_run_inputs'} <= tables
     return {'version': 'radar-durable-v1', 'enabled': durable_enabled() and snapshots_enabled() and migrated,
-            'parallel_window_advance': True, 'durable_execution': durable_enabled(), 'source_snapshots': snapshots_enabled(), 'migrated': migrated}
+            'scoped_resume': True, 'parallel_window_advance': True, 'durable_execution': durable_enabled(), 'source_snapshots': snapshots_enabled(), 'migrated': migrated}
 
 
 def require_enabled(db):
@@ -34,9 +35,17 @@ def read_capabilities(db: Session = Depends(get_db)):
 
 
 @router.post('/jobs', status_code=202)
-def register_job(request: JobRequest, db: Session = Depends(get_db)):
+def register_job(request: JobRequest, db: Session = Depends(get_db), owner: Literal['radar', 'validation'] | None = None):
     require_enabled(db)
-    job = create_job(db, run_date=request.run_date, lanes=request.lanes, recheck_publication=request.recheck_publication)
+    try:
+        job = create_job(db, run_date=request.run_date, lanes=request.lanes,
+                         recheck_publication=request.recheck_publication, owner=owner)
+    except ValueError as exc:
+        if str(exc) != 'radar_job_owner_mismatch':
+            raise
+        raise HTTPException(status_code=409, detail={'code': str(exc)}) from exc
+    if job.state == 'split':
+        raise HTTPException(status_code=409, detail={'code': 'radar_job_split', 'successors': job.scope['successors']})
     return job_status(db, job.id) | {'accepted': True}
 
 
@@ -44,6 +53,13 @@ def register_job(request: JobRequest, db: Session = Depends(get_db)):
 def read_due_jobs(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)):
     require_enabled(db)
     return {'jobs': due_jobs(db, limit=limit)}
+
+
+@router.post('/jobs/resume')
+def resume(owner: Literal['radar', 'validation'], limit: int = Query(20, ge=1, le=100),
+           db: Session = Depends(get_db)):
+    require_enabled(db)
+    return {'jobs': resume_jobs(db, owner=owner, limit=limit)}
 
 
 @router.get('/jobs/{job_id}')
@@ -56,11 +72,16 @@ def read_job(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.post('/jobs/{job_id}/advance')
-def advance(job_id: int, db: Session = Depends(get_db), window_only: bool = False):
+def advance(job_id: int, db: Session = Depends(get_db), window_only: bool = False,
+            owner: Literal['radar', 'validation'] | None = None):
     require_enabled(db)
     try:
+        if owner:
+            return advance_job(db, job_id, window_only=window_only, owner=owner)
         return advance_job(db, job_id, window_only=window_only) if window_only else advance_job(db, job_id)
     except ValueError as exc:
+        if str(exc) == 'radar_job_owner_mismatch':
+            raise HTTPException(status_code=409, detail={'code': str(exc)}) from exc
         if str(exc) != 'radar_job_not_found':
             raise
         raise HTTPException(status_code=404, detail={'code': str(exc)}) from exc

@@ -5,9 +5,9 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar.collection_transactions import read_only_collection, CollectionMutationError
-from ai_stock_sentinel.db.models import RadarWorkItem, RadarSourceSnapshot
+from ai_stock_sentinel.db.models import RadarJob, RadarWorkItem, RadarSourceSnapshot
 from ai_stock_sentinel.daily_radar.work_queue import aware, claim_work, fence, finish_work, LostLease, database_now, retry_delay, ensure_work, occupied_slot, observe_normal_slot
-from ai_stock_sentinel.daily_radar.jobs import reconcile_job, prepared_generation, job_status
+from ai_stock_sentinel.daily_radar.jobs import reconcile_job, prepared_generation, job_status, OWNER_LANES, job_successors
 from ai_stock_sentinel.daily_radar.validation_preparation import reserve_validation_commit
 from ai_stock_sentinel.daily_radar.readiness import recovery_action
 from ai_stock_sentinel.daily_radar.work_handlers import WorkHandlers, prepared
@@ -69,11 +69,24 @@ def _reason(exc):
     return 'radar_provider_unavailable'
 
 
-def advance_job(db, job_id, *, handlers=None, now=None, window_only=False):
+def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner=None):
+    job = db.get(RadarJob, job_id)
+    if job is None:
+        raise ValueError('radar_job_not_found')
+    if (job_successors(db, job) or job.scope.get('scheduler_owner') != owner
+            or (owner and set(job.lanes).difference(OWNER_LANES[owner])) or (owner == 'radar' and window_only)):
+        raise ValueError('radar_job_owner_mismatch')
+    if job.scope.get('inherit_cursor') is not None:
+        if not window_only:
+            reconcile_job(db, job_id, now=now)
+        observation = observe_normal_slot(db, job_id, now)
+        return job_status(db, job_id, include_observation=True) | observation | {
+            'advanced_count': 0, 'handoff_advanced': not window_only, 'blocked_by_handoff': window_only,
+            'advance_slot_busy': not window_only and observation['normal_slot_busy']}
     if not window_only:
         reconcile_job(db, job_id, now=now)
     slot = 'window' if window_only else 'normal'
-    claim = claim_work(db, job_id=job_id, now=now, slot=slot)
+    claim = claim_work(db, job_id=job_id, now=now, slot=slot, owner=owner)
     db.commit()
     if claim is None:
         busy = occupied_slot(db, job_id, slot, database_now(db, now)) is not None
@@ -158,6 +171,11 @@ def advance_job(db, job_id, *, handlers=None, now=None, window_only=False):
             db.commit()
         except LostLease:
             db.rollback()
+    if not window_only and job.scope.get('inherit_cursor') is not None:
+        reconcile_job(db, job_id, now=now)
+        observation = observe_normal_slot(db, job_id, now)
+        return job_status(db, job_id, include_observation=True) | observation | {
+            'advanced_count': 0, 'handoff_advanced': True, 'advance_slot_busy': observation['normal_slot_busy']}
     if not window_only:
         reconcile_job(db, job_id, now=now, audit=True)
     status = job_status(db, job_id, include_observation=True) | {'advanced_count': 1}

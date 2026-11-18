@@ -38,7 +38,7 @@ def local(pg_engine, monkeypatch):
         db.add(row); db.commit()
         job = create_job(db, run_date=DAY, lanes=['signal_close', 'next_open'], now=NOW)
         market = db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage == 'market-session'))
-        market.state = 'ready'; db.commit()
+        assert market is None  # validation owns its calendar proof
         yield db, job, row, calls
 
 

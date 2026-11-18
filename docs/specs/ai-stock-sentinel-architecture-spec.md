@@ -1186,4 +1186,4 @@ def calculate_technical_indicators(symbol: str, period: str = "3mo") -> dict:
 
 ### Codex 晨間 AI 報告退役（2026-10-20）
 
-晨間 Codex 個人分析需求已移除，專用 AI evidence API、資料補查、完整度 gate、匯出 CLI 與 skill 已退役。22:30 保留 OHLCV → 近期 general 分析 raw data；07:00 repair 保留評分與兩種 validation。07:15 基本面維護改由最新 TW 雷達及近期 general 分析標的建立工作，不再依賴舊 AI pool。歷史資料、job 與 migration 保留；舊 report job 不進 maintenance queue。完整介面與交易契約見 [後端 API 規格](backend-api-technical-spec.md#codex-晨間-ai-報告退役2026-10-20)。
+晨間 Codex 個人分析需求已移除，專用 AI evidence API、資料補查、完整度 gate、匯出 CLI 與 skill 已退役。22:30 保留 OHLCV → 近期 general 分析 raw data；07:00 repair 保留評分，06:45 獨立補修兩種 validation。07:15 基本面維護改由最新 TW 雷達及近期 general 分析標的建立工作，不再依賴舊 AI pool。歷史資料、job 與 migration 保留；舊 report job 不進 maintenance queue。完整介面與交易契約見 [後端 API 規格](backend-api-technical-spec.md#codex-晨間-ai-報告退役2026-10-20)。

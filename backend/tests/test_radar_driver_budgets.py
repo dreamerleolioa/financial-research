@@ -112,13 +112,14 @@ def test_registration_is_checkpointed_when_no_work_request_fits(tmp_path):
 @pytest.mark.parametrize('schedule,step,lanes,limit', [
     ('*/30 * * * *', '', None, 150),
     ('30 9 * * 1-5', '', None, 150),
-    ('50 15 * * 1-5', '', 'signal_close,next_open', 2000),
+    ('15 18 * * 1-5', '', 'signal_close,next_open', 2000),
     ('30 16 * * 1-5', '', 'publication', 2000),
-    ('0 23 * * 1-5', '', 'publication,signal_close,next_open', 2000),
+    ('0 23 * * 1-5', '', 'publication', 2000),
     ('', 'run-forward-validation', 'signal_close,next_open', 2000),
 ])
 def test_actual_workflow_assigns_capacity_without_extending_time(tmp_path, schedule, step, lanes, limit):
-    workflow = (Path(__file__).parents[2]/'.github/workflows/daily-radar.yml').read_text()
+    filename = 'daily-radar-validation.yml' if lanes == 'signal_close,next_open' else 'daily-radar.yml'
+    workflow = (Path(__file__).parents[2]/'.github/workflows'/filename).read_text()
     section = workflow.split('      - name: Register intent or resume stored dates', 1)[1]
     script = textwrap.dedent(section.split('        run: |\n', 1)[1].split('\n      - name:', 1)[0])
     stub = tmp_path/'python'
@@ -139,3 +140,19 @@ def test_actual_workflow_assigns_capacity_without_extending_time(tmp_path, sched
     assert args.max_seconds == 1200
     assert args.require_lanes == lanes
     assert args.resume == (schedule == '*/30 * * * *')
+
+
+def test_radar_can_finish_copying_memberships_with_occupied_general_lease(tmp_path):
+    calls=[]
+    def read(url,*args,**kwargs):
+        return {'enabled':True,'version':'radar-durable-v1','scoped_resume':True,'parallel_window_advance':True}
+    def write(url,*args,**kwargs):
+        if '/resume?' in url:
+            return {'jobs':[{'job_id':7,'run_date':DAY}]}
+        calls.append(url)
+        return {'requested_run_date':DAY,'effective_run_date':DAY,'advanced_count':0,
+                'handoff_advanced':True,'handoff_pending':len(calls)<3,'runnable_now':True,
+                'advance_slot_busy':True}
+    result=run(endpoint='https://local.invalid',token='',output_dir=tmp_path,owner='radar',
+               resume=True,max_work=6,read=read,write=write)
+    assert len(calls)==3 and result['errors']==[] and result['stop_reason']=='idle'

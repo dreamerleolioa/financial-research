@@ -1268,10 +1268,11 @@ def test_forward_validation_and_monthly_workflows_fail_on_gaps_and_encrypt_artif
         encoding="utf-8"
     )
 
-    assert 'cron: "50 15 * * 1-5"' in daily_radar
+    validation = (root / '.github/workflows/daily-radar-validation.yml').read_text()
+    assert 'cron: "15 18 * * 1-5"' in validation
     assert "run-forward-validation" in daily_radar
     runner = (root / ".github/scripts/run_daily_radar_validation.py").read_text()
-    assert "run_daily_radar_validation.py" in daily_radar
+    assert "run_daily_radar_validation.py" in validation
     assert "/internal/daily-radar/forward-validation/run" in runner
     assert "/internal/analysis-calibration/forward-validation/run" in daily
     assert 'response["retryable_skipped_count"] == 0' in runner

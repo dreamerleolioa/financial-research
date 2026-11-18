@@ -1,0 +1,98 @@
+name: Resolve Daily Radar trading date
+on:
+  workflow_call:
+    inputs:
+      run_date:
+        type: string
+      check_market:
+        type: boolean
+    secrets:
+      ZEABUR_BACKEND_URL:
+        required: false
+      DAILY_RADAR_INTERNAL_TOKEN:
+        required: false
+    outputs:
+      run_date:
+        value: ${{ jobs.resolve-run-context.outputs.run_date }}
+      market_open:
+        value: ${{ jobs.resolve-run-context.outputs.market_open }}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  resolve-run-context:
+    name: Resolve Daily Radar run context
+    runs-on: ubuntu-latest
+    outputs:
+      run_date: ${{ steps.resolve-date.outputs.run_date }}
+      market_open: ${{ steps.market-session.outputs.market_open }}
+    steps:
+      - name: Check out run-date resolver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve immutable run_date
+        id: resolve-date
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DAILY_RADAR_RUN_DATE: ${{ inputs.run_date || '' }}
+          DAILY_RADAR_SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          set -euo pipefail
+          run_created_at="$(curl --fail-with-body -sS -L \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            | jq -r ".created_at")"
+          run_date="$(python .github/scripts/resolve_daily_radar_run_date.py \
+            --event-name "${GITHUB_EVENT_NAME}" \
+            --schedule "${DAILY_RADAR_SCHEDULE}" \
+            --run-created-at "${run_created_at}" \
+            --input-run-date "${DAILY_RADAR_RUN_DATE}")"
+          echo "Daily Radar resolved run_date: ${run_date}"
+          echo "run_date=${run_date}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve TW market session
+        id: market-session
+        if: inputs.check_market
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ steps.resolve-date.outputs.run_date }}
+        run: |
+          set -euo pipefail
+          endpoint="${ZEABUR_BACKEND_URL%/}/internal/daily-radar/market-session"
+          response_file="$(mktemp)"
+          payload="{\"market\":\"TW\",\"run_date\":\"${DAILY_RADAR_RUN_DATE}\"}"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST "$endpoint" \
+            -H "Authorization: Bearer ${DAILY_RADAR_INTERNAL_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${payload}")"
+          echo "Market-session HTTP status: ${http_status}"
+          if [[ ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            cat "$response_file"
+            exit 1
+          fi
+          jq -r '
+            "status: \(.status // "n/a")",
+            "run_date: \(.run_date // "n/a")",
+            "market: \(.market // "n/a")",
+            "provider: \(.provider // "n/a")",
+            "dataset: \(.dataset // "n/a")",
+            "detail: \(.detail // "n/a")"
+          ' "$response_file"
+          market_status="$(jq -r '.status // "unknown"' "$response_file")"
+          case "$market_status" in
+            open)
+              echo "market_open=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            closed)
+              echo "Daily Radar skipped: TW market is closed on ${DAILY_RADAR_RUN_DATE}."
+              echo "market_open=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "Unknown market-session status: ${market_status}"
+              exit 1
+              ;;
+          esac

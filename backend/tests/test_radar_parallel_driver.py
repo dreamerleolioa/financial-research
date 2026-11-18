@@ -143,3 +143,63 @@ def test_delayed_busy_read_does_not_override_release_at_same_sqlite_timestamp(tm
         return status(url, normal_observed_at='2026-11-18T09:04:14.502000+00:00', normal_slot_busy=False)
     exercise(tmp_path, write, limit=6)
     assert len(attempts) == 2
+
+
+def test_empty_probe_during_handoff_can_commit_during_next_general_timeout(tmp_path):
+    empty, committed = Event(), Event()
+    general = 0
+    def write(url, token, payload, **kwargs):
+        nonlocal general
+        if '?' in url:
+            if general == 1:
+                empty.set()
+                return status(url, handoff_pending=True, runnable_now=True)
+            committed.set()
+            return status(url, advanced_count=1)
+        general += 1
+        if general == 1:
+            assert empty.wait(1.5)
+            sleep(.08)
+            return status(url, handoff_advanced=True, runnable_now=True)
+        assert committed.wait(1.5)
+        return status(url)
+    result = exercise(tmp_path, write, limit=4)
+    assert committed.is_set() and result['errors'] == []
+
+
+def test_busy_inherited_lease_allows_pages_and_then_independent_window(tmp_path):
+    calls=[]
+    def write(url,*args,**kwargs):
+        if '?' in url:
+            calls.append('window')
+            return status(url,advanced_count=int(calls.count('window')==1),normal_slot_busy=True)
+        calls.append('page')
+        more = calls.count('page') < 3
+        return status(url,handoff_advanced=True,handoff_pending=more,runnable_now=True,
+                      normal_slot_busy=True,advance_slot_busy=True)
+    exercise(tmp_path,write,limit=6)
+    assert calls[:4]==['page','page','page','window']
+
+
+def test_stale_empty_probe_after_final_page_cannot_pause_ready_windows(tmp_path):
+    first_probe, second_normal, committed=Event(),Event(),Event()
+    pages,probes=0,0
+    def write(url,*args,**kwargs):
+        nonlocal pages,probes
+        if '?' in url:
+            probes+=1
+            if probes==1:
+                first_probe.set()
+                assert second_normal.wait(1.5)
+                return status(url,blocked_by_handoff=True,handoff_pending=False,runnable_now=True)
+            committed.set()
+            return status(url,advanced_count=1)
+        pages+=1
+        if pages==1:
+            assert first_probe.wait(1.5)
+            return status(url,handoff_advanced=True,handoff_pending=False,runnable_now=True)
+        second_normal.set()
+        assert committed.wait(1.5)
+        return status(url)
+    result=exercise(tmp_path,write,limit=4)
+    assert committed.is_set() and result['errors']==[]

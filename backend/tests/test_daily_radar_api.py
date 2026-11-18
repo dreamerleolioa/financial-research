@@ -2727,9 +2727,9 @@ curl() {
     expected = ['refresh-full-margin', 'refresh-ohlcv', 'refresh-avwap']
     if failed_step not in {'refresh-full-margin', 'refresh-ohlcv'}:
         expected.append('run-scoring')
-    expected.extend(['refresh-managed-raw-data', 'validation'])
+    expected.append('refresh-managed-raw-data')
     assert calls == expected, result.stdout + result.stderr
-    assert result.returncode == (1 if failed_step else 0), result.stdout + result.stderr
+    assert result.returncode == int(bool(failed_step) and failed_step != 'validation'), result.stdout + result.stderr
 
 
 def test_daily_radar_refresh_managed_raw_data_covers_recent_analysis_without_exposing_symbols(
