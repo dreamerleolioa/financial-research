@@ -1,16 +1,18 @@
 from datetime import date
 from sqlalchemy import select
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun,RadarWorkItem
-from ai_stock_sentinel.daily_radar.integrity import background_gaps
+from ai_stock_sentinel.daily_radar.integrity import background_blockers
 from ai_stock_sentinel.daily_radar.jobs import create_job,reconcile_job
 from test_radar_jobs import db,NOW
 
 
-def test_missing_live_contexts_are_not_proven_by_completed_step_flags(db):
+def test_missing_live_contexts_are_not_proven_by_completed_step_flags(db, monkeypatch):
+    monkeypatch.setenv("DAILY_RADAR_DURABLE_EXECUTION_ENABLED", "true")
     row=DailyRadarPreparedRun(run_date=date(2026,11,6),market='TW',status='prepared',selected_symbols=['2330.TW'],
         symbol_count=1,universe=[],errors=[],step_statuses={'refresh-lending':{'status':'completed'},'refresh-full-margin':{'status':'completed'}})
     db.add(row);db.commit()
-    assert background_gaps(db,row)=={'refresh-lending':['2330.TW'],'refresh-full-margin':['2330.TW']}
+    assert {b['step']: b['missing_symbols'] for b in background_blockers(row, {})} == {
+        'refresh-lending': ['2330.TW'], 'refresh-full-margin': ['2330.TW']}
 
 
 def test_readiness_audit_requeues_deleted_raw_data_even_with_completed_status(db,monkeypatch):

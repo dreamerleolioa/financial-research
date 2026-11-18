@@ -26,7 +26,7 @@ def prepared_generation(prepared):
         'prepare': (prepared.step_statuses or {}).get('prepare-universe')}) if prepared else None
 
 
-def create_job(db, *, run_date, lanes=LANES, now=None):
+def create_job(db, *, run_date, lanes=LANES, now=None, recheck_publication=False):
     if not isinstance(run_date, date) or not lanes or set(lanes) - set(LANES):
         raise ValueError('radar_job_scope_invalid')
     now, lanes = database_now(db, now), sorted(set(lanes))
@@ -34,7 +34,8 @@ def create_job(db, *, run_date, lanes=LANES, now=None):
     db.execute(insert(db, RadarJob).values(job_key=key, run_date=run_date, market='TW', lanes=lanes,
         scope={}, state='pending', next_attempt_at=now).on_conflict_do_nothing(index_elements=['job_key']))
     job = db.scalar(select(RadarJob).where(RadarJob.job_key == key))
-    reconcile_job(db, job.id, now=now)
+    recheck_publication = recheck_publication and 'publication' in lanes
+    reconcile_job(db, job.id, now=now, audit=recheck_publication, recheck_publication=recheck_publication)
     return job
 
 
@@ -304,7 +305,7 @@ def dependencies_ready(work, keys, visiting=frozenset()):
         keys[key], keys, visiting | {work.work_key}) for key in work.dependencies)
 
 
-def reconcile_job(db, job_id, *, now=None, audit=False):
+def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=False):
     now = database_now(db, now)
     day = db.scalar(select(RadarJob.run_date).where(RadarJob.id == job_id))
     if day is None:
@@ -418,9 +419,12 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
     plan_complete = (not set(job.lanes) & {'signal_close', 'next_open'} or (
         progress.get('complete') and scope.get('window_plan') == progress.get('revision')))
     required_done = bool(plan_complete and all(w.state in {'ready', 'terminal'} for w, required in members if required))
+    audit_completed_score = not recheck_publication and any(
+        w.stage == 'scoring' and w.state == 'ready' for w, _ in members)
     if audit and required_done:
         from ai_stock_sentinel.daily_radar.readiness import read_readiness
-        report = read_readiness(db, run_date=job.run_date, **(
+        report = read_readiness(db, run_date=job.run_date,
+            audit_completed_score=audit_completed_score, **(
             {'scope': 'publication'} if not set(job.lanes) & {'signal_close', 'next_open'} else {}))
         scope['audit'] = {'observed_at': now.isoformat(), 'data_ready': report['data_ready'],
             'publication': report['publication'], 'validation': report['validation']}
@@ -449,7 +453,11 @@ def reconcile_job(db, job_id, *, now=None, audit=False):
             and w.state in {'ready', 'pending', 'waiting_dependency', 'waiting_provider', 'needs_review', 'failed_internal'}
             for w, _ in members):
         from ai_stock_sentinel.daily_radar.readiness import scoring_prerequisite_inputs
-        _, steps, blockers, _ = scoring_prerequisite_inputs(db, run_date=job.run_date)
+        _, steps, blockers, _, _ = scoring_prerequisite_inputs(db, run_date=job.run_date)
+        if audit_completed_score and any(b.get('step') == 'refresh-full-margin' for b in blockers):
+            from ai_stock_sentinel.daily_radar.readiness import read_readiness
+            report = read_readiness(db, run_date=job.run_date, scope='publication', audit_completed_score=True)
+            steps, blockers = report['scoring']['steps'], report['scoring']['blockers']
         invalidate_prerequisites(db, members, steps=steps, blockers=blockers, now=now)
     sync_dependencies(db, members)
     job.scope = scope

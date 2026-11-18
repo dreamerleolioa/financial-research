@@ -99,13 +99,6 @@ def execute_prepared_scoring(db, *, payload, commit=True):
         db.refresh(prepared, with_for_update=True)
     _raise_if_required_refresh_steps_missing(prepared)
     require_prepared_open_session(prepared)
-    from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
-    if durable_enabled():
-        from ai_stock_sentinel.daily_radar.integrity import background_gaps
-        missing = {step: symbols for step, symbols in background_gaps(db, prepared).items() if symbols}
-        if missing:
-            raise HTTPException(status_code=409, detail={'code': 'daily_radar_live_background_context_incomplete',
-                'missing_symbols_by_step': missing})
     if not prepared.market_context:
         raise HTTPException(
             status_code=409,
@@ -125,11 +118,19 @@ def execute_prepared_scoring(db, *, payload, commit=True):
         reference_date=run_date,
         point_in_time=True,
     )
+    from ai_stock_sentinel.daily_radar.integrity import background_blockers, prepared_scoring_records
+    blockers = background_blockers(prepared, background_contexts_by_symbol)
+    if blockers:
+        raise HTTPException(status_code=409, detail={
+            "code": "daily_radar_live_background_context_incomplete", "run_date": str(run_date),
+            "missing_symbols_by_step": {item["step"]: item["missing_symbols"] for item in blockers},
+            "missing_symbol_reasons": {item["step"]: item["missing_symbol_reasons"] for item in blockers},
+        })
     run = run_daily_radar(
         run_date,
         request.market,
         session=db,
-        cache_rows=cache_rows,
+        records=prepared_scoring_records(cache_rows, background_contexts_by_symbol),
         market_context=dict(prepared.market_context),
         background_contexts_by_symbol=background_contexts_by_symbol,
         allow_fixture_fallback=False,

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from functools import cache
 import math
 import logging
 import re
 from typing import Any
 
 from ai_stock_sentinel.data_sources.official_http import official_request_get
+from ai_stock_sentinel.daily_radar import twse_margin_roster
 from ai_stock_sentinel.daily_radar.margin_applicability import (
     TWSE_NEW_LISTING_URL, TWSE_PUBLIC_OFFERING_URL, TWSE_CREDIT_STATUS_URL,
     TPEX_CREDIT_STATUS_URL, initial_listing_inapplicability,
@@ -20,7 +22,8 @@ from ai_stock_sentinel.daily_radar.background_context import (
 )
 
 
-TWSE_MARGIN_URL = "https://www.twse.com.tw/exchangeReport/MI_MARGN"
+from ai_stock_sentinel.daily_radar.twse_margin_roster import TWSE_MARGIN_ROSTER_URL, TWSE_MARGIN_URL
+
 TWSE_MARGIN_FALLBACK_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 TPEX_MARGIN_URL = "https://www.tpex.org.tw/www/zh-tw/margin/balance"
 TWSE_LENDING_URL = "https://www.twse.com.tw/rwd/zh/lending/t13sa710"
@@ -115,9 +118,12 @@ class OfficialBackgroundChipContextProvider:
 
     def fetch_margin_inapplicability(
         self, *, symbols: list[str], run_date: date, market: str,
+        twse_balance_report: Mapping[str, Any] | None = None,
+        checked_at: datetime | None = None,
     ) -> dict[str, BackgroundContextPayload]:
         """Resolve only explicit official eligibility, independently of balance fetching."""
         request_get = self._request_get or _import_requests_get()
+        checked_at = checked_at or twse_margin_roster.current_time()
         by_market = {
             code: [symbol for symbol in symbols if symbol.endswith(f".{code}")]
             for code in ("TW", "TWO")
@@ -126,6 +132,9 @@ class OfficialBackgroundChipContextProvider:
 
         def report(url: str, params: dict[str, str], dataset: str) -> Mapping[str, Any]:
             try:
+                if url == TWSE_MARGIN_URL:
+                    return _request_margin_json(request_get, market_code="TW", query_date=run_date,
+                                                timeout=min(self._timeout, 15))
                 return _request_json(request_get, url, params=params,
                     timeout=min(self._timeout, 15), dataset=dataset)
             except OfficialBackgroundContextError as exc:
@@ -133,11 +142,19 @@ class OfficialBackgroundChipContextProvider:
                                dataset, exc.code, run_date)
                 return {}
 
+        @cache
+        def get_balance_codes() -> set[str] | None:
+            balances = twse_balance_report
+            if balances is None:
+                balances = report(TWSE_MARGIN_URL, _margin_params("TW", run_date), "TWSE_MI_MARGN")
+            return twse_margin_roster.verified_balance_codes(balances, run_date)
+
         # Dated credit status takes precedence over listing-age evidence.
+        credit: Mapping[str, Any] = {}
         if by_market["TW"]:
-            evidence.update(credit_trading_inapplicability(report(
-                TWSE_CREDIT_STATUS_URL, {"response": "json", "date": run_date.strftime("%Y%m%d")},
-                "TWSE_TWT93U"), symbols=by_market["TW"], run_date=run_date))
+            credit = report(TWSE_CREDIT_STATUS_URL, {"response": "json", "date": run_date.strftime("%Y%m%d")},
+                            "TWSE_TWT93U")
+            evidence.update(credit_trading_inapplicability(credit, symbols=by_market["TW"], run_date=run_date))
         if by_market["TWO"]:
             evidence.update(tpex_credit_trading_inapplicability(report(
                 TPEX_CREDIT_STATUS_URL, {"response": "json", "date": run_date.strftime("%Y/%m/%d")},
@@ -160,7 +177,22 @@ class OfficialBackgroundChipContextProvider:
                     offering, symbols=selected, run_date=run_date, market_code=code,
                     source_url=TWSE_PUBLIC_OFFERING_URL))
                 unresolved[code] = [symbol for symbol in selected if symbol not in evidence]
-        datasets = {TWSE_PUBLIC_OFFERING_URL: "TWSE_publicForm", TWSE_NEW_LISTING_URL: "TWSE_newlisting",
+        explicit_tw = [s for s in by_market["TW"] if s in evidence]
+        if explicit_tw:
+            balance_codes = get_balance_codes()
+            for symbol in explicit_tw:
+                if balance_codes is None or _stock_id(symbol) in balance_codes:
+                    evidence.pop(symbol)
+                else:
+                    evidence[symbol]["eligibility"].update(
+                        checked_at=checked_at.isoformat(), checks={TWSE_MARGIN_URL: "no_balance_row"},
+                    )
+        if unresolved["TW"]:
+            evidence.update(twse_margin_roster.roster_inapplicability(
+                symbols=unresolved["TW"], run_date=run_date, credit_report=credit,
+                read=report, get_balance_codes=get_balance_codes, checked_at=checked_at))
+        datasets = {TWSE_MARGIN_ROSTER_URL: "TWSE_TWT92U",
+                    TWSE_PUBLIC_OFFERING_URL: "TWSE_publicForm", TWSE_NEW_LISTING_URL: "TWSE_newlisting",
                     TWSE_CREDIT_STATUS_URL: "TWSE_TWT93U", TPEX_CREDIT_STATUS_URL: "TPEX_margin_sbl"}
         return {symbol: BackgroundContextPayload(
             symbol=symbol, context_type="full_margin",
@@ -185,6 +217,9 @@ class OfficialBackgroundChipContextProvider:
         observations: dict[str, list[tuple[date, Mapping[str, Any]]]] = defaultdict(list)
         market_dates: dict[str, set[date]] = defaultdict(set)
         market_request_failures: dict[str, int] = defaultdict(int)
+        checked_at = twse_margin_roster.current_time()
+        twse_current_symbols: set[str] = set()
+        twse_balance_report = None
         request_get = self._request_get or _import_requests_get()
 
         for market_code, market_symbols in by_market.items():
@@ -226,10 +261,14 @@ class OfficialBackgroundChipContextProvider:
                 if payload_date > run_date or not rows or payload_date in market_dates[market_code]:
                     continue
                 market_dates[market_code].add(payload_date)
+                if market_code == "TW" and payload_date == run_date:
+                    twse_balance_report = payload
                 for stock_id, row in rows.items():
                     symbol = requested_ids.get(stock_id)
                     if symbol is not None:
                         observations[symbol].append((payload_date, row))
+                        if market_code == "TW" and payload_date == run_date:
+                            twse_current_symbols.add(symbol)
 
             if market_request_failures[market_code] and (
                 len(market_dates[market_code]) < self._lookback_trading_days
@@ -246,11 +285,14 @@ class OfficialBackgroundChipContextProvider:
 
         # Balance-report success is still required before qualifying missing rows
         # on this path. The FinMind empty-response path uses the same resolver.
-        missing_symbols = [symbol for code, selected in by_market.items()
-                           if run_date in market_dates[code]
-                           for symbol in selected if not observations.get(symbol)]
+        missing_symbols = []
+        for code, selected in by_market.items():
+            if run_date in market_dates[code]:
+                observed = twse_current_symbols if code == "TW" else observations
+                missing_symbols.extend(symbol for symbol in selected if symbol not in observed)
         inapplicable = self.fetch_margin_inapplicability(
             symbols=missing_symbols, run_date=run_date, market=market,
+            twse_balance_report=twse_balance_report, checked_at=checked_at,
         )
         for symbol in symbols:
             if symbol in inapplicable:

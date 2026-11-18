@@ -103,6 +103,8 @@ def test_registered_history_stays_in_readiness_without_repeating_alert(tmp_path)
     ('30 16 * * 1-5', '', 'publication', False),
     ('*/30 * * * *', '', None, False),
     ('', 'run-forward-validation', 'signal_close,next_open', True),
+    ('', 'run-scoring', 'publication', False),
+    ('', 'repair-avwap-and-rescore', 'publication,signal_close,next_open', True),
 ])
 def test_durable_workflow_passes_reviewed_baseline_at_validation_deadlines(
         tmp_path, schedule, step, expected_lanes, use_baseline):
@@ -128,6 +130,7 @@ def test_durable_workflow_passes_reviewed_baseline_at_validation_deadlines(
     output = subprocess.run(['bash', '-c', commands], check=True, cwd=root, env=env,
                             text=True, capture_output=True).stdout.splitlines()
     assert output[0] == '.github/scripts/run_daily_radar_jobs.py'
+    assert ('--recheck-publication' in output) == (step in ('run-scoring', 'repair-avwap-and-rescore'))
     if expected_lanes:
         assert output[output.index('--require-lanes') + 1] == expected_lanes
     else:

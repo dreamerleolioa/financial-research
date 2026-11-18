@@ -4,7 +4,7 @@ A captured response is not coverage proof. Every consumer still runs its exact
 schema/date/symbol/completeness checks before using prices or declaring no event.
 """
 from copy import deepcopy
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
 import os
@@ -15,6 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.db.models import RadarSourceSnapshot
+from ai_stock_sentinel.daily_radar.constants import SOURCE_SNAPSHOT_TTL
+from ai_stock_sentinel.daily_radar.twse_margin_roster import roster_confirmation_boundary
 
 PARSER_VERSION = "radar-source-capture-v1"
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
@@ -43,7 +45,7 @@ def _utc(value):
 
 
 class SourceSnapshotStore:
-    def __init__(self, bind, *, clock=None, ttl=timedelta(minutes=10)):
+    def __init__(self, bind, *, clock=None, ttl=SOURCE_SNAPSHOT_TTL):
         self.bind, self.clock, self.ttl = bind, clock or (lambda: datetime.now(timezone.utc)), ttl
         self.seen = {}
         self.captured_count = 0
@@ -105,6 +107,11 @@ class SourceSnapshotStore:
             raise ValueError('radar_provider_operation_invalid')
         policy = {key: os.getenv(key, '') for key in ('DAILY_RADAR_TW_OHLCV_PROVIDER_MODE',
             'DAILY_RADAR_BACKGROUND_PROVIDER_MODE', 'DAILY_RADAR_LENDING_PROVIDER_MODE', 'DAILY_RADAR_AVWAP_PROVIDER_MODE')}
+        if (operation == 'background-chip-context' and params.get('context_type') == 'full_margin'
+                and params['symbol'].endswith('.TW')):
+            policy['twse_margin_eligibility'] = 'reconciled-twse-margin-v2'
+            if _utc(self.clock()) < roster_confirmation_boundary(date.fromisoformat(params['run_date'])):
+                policy['twse_margin_report_phase'] = 'intraday'
         request = {'provider': 'radar-provider-chain', 'operation': operation, 'params': params,
             'policy': policy, 'parser_version': PARSER_VERSION,
             'sdk_version': version('yfinance') if operation in {'technical-refresh-payload', 'market-index-context'} else None}

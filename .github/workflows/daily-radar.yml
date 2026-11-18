@@ -700,6 +700,12 @@ jobs:
     if: vars.DAILY_RADAR_RELIABILITY_ENABLED != 'true' && (needs.resolve-run-context.outputs.market_open == 'true' && (github.event.schedule == '30 16 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.step == 'run-scoring')))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify current margin evidence
+        env:
+          ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
+          DAILY_RADAR_INTERNAL_TOKEN: ${{ secrets.DAILY_RADAR_INTERNAL_TOKEN }}
+          DAILY_RADAR_RUN_DATE: ${{ needs.resolve-run-context.outputs.run_date }}
+        run: python .github/scripts/ensure_daily_radar_margin.py --run-date "$DAILY_RADAR_RUN_DATE"
       - name: Trigger run-scoring
         env:
           ZEABUR_BACKEND_URL: ${{ secrets.ZEABUR_BACKEND_URL }}
@@ -1020,6 +1026,9 @@ jobs:
               args+=(--require-lanes publication)
             elif [[ "$DAILY_RADAR_SCHEDULE" == '0 23 * * 1-5' || "$DAILY_RADAR_STEP" == 'repair-avwap-and-rescore' ]]; then
               args+=(--require-lanes publication,signal_close,next_open "${baseline[@]}")
+            fi
+            if [[ "$DAILY_RADAR_STEP" == 'run-scoring' || "$DAILY_RADAR_STEP" == 'repair-avwap-and-rescore' ]]; then
+              args+=(--recheck-publication)
             fi
           fi
           # Mature windows cannot start before 23:50. Let deadline invocations

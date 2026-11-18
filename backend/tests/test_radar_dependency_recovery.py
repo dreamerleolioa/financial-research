@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from ai_stock_sentinel.db.models import DailyRadarPreparedRun, RadarWorkItem, TaiwanInstitutionalReportSnapshot
+from ai_stock_sentinel.daily_radar.repository import upsert_shared_background_context
 from ai_stock_sentinel.daily_radar.jobs import create_job, reconcile_job
 from test_radar_jobs import db, NOW
 from test_radar_job_postgres import pg_engine
@@ -18,6 +19,11 @@ def blocked_scoring(db, state='waiting_provider'):
             'market-session': {'status': 'open', 'run_date': '2026-11-06', 'market': 'TW',
                                'provider': 'twse', 'dataset': 'MI_INDEX'}})
     db.add(row); db.commit()
+    for symbol in row.selected_symbols:
+        upsert_shared_background_context(db, symbol=symbol, context_type="full_margin",
+            applicable_consumers=("daily_radar",), source={"provider": "fixture"},
+            as_of_date=row.run_date, freshness="fresh", payload={"margin_balance_delta_pct": 0},
+            replay_key=f"margin:{symbol}:{row.run_date}")
     for market in ('TW', 'TWO'):
         db.add(TaiwanInstitutionalReportSnapshot(market=market, trade_date=row.run_date,
             dataset='taiwan_institutional_flow', source_provider='fixture', source_dataset='fixture',
@@ -51,7 +57,8 @@ def test_recovery_requeues_only_the_missing_symbol_and_parks_scoring(db, monkeyp
         'status': 'partial', 'missing_symbols': ['2330.TW']}}
     db.commit()
     monkeypatch.setattr(readiness, '_require_complete_daily_radar_raw_rows', lambda *a, **k: [])
-    monkeypatch.setattr(integrity, 'background_gaps', lambda *a: {'refresh-lending': ['2330.TW']})
+    monkeypatch.setattr(integrity, 'background_blockers', lambda *a: [{'step': 'refresh-lending',
+        'reason': 'same_day_context_incomplete', 'missing_symbols': ['2330.TW'], 'next_action': 'resume'}])
     reconcile_job(db, job.id, now=NOW, audit=True)
     for w in db.scalars(select(RadarWorkItem)):
         if w.stage == 'scoring': assert w.state == 'waiting_dependency'
@@ -256,7 +263,7 @@ def test_missing_institutional_market_requeues_archive_and_prepare(db, monkeypat
     if without_prepared: db.delete(db.scalar(select(DailyRadarPreparedRun)))
     db.commit()
     monkeypatch.setattr(readiness, '_require_complete_daily_radar_raw_rows', lambda *a, **k: [])
-    monkeypatch.setattr(integrity, 'background_gaps', lambda *a: {})
+    monkeypatch.setattr(integrity, 'background_blockers', lambda *a: [])
     reconcile_job(db, job.id, now=NOW, audit=True)
     for work in db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage == 'institutional')):
         assert work.state == ('pending' if work.scope['market'] == 'TWO' else 'ready')
@@ -344,3 +351,102 @@ def test_healthy_institutional_snapshot_reuses_without_fetch(db, monkeypatch):
     monkeypatch.setattr(OfficialTaiwanInstitutionalReportProvider, 'fetch_market', unexpected)
     result = WorkHandlers(db).collect_institutional(SimpleNamespace(scope={'market': 'TWO'}, run_date=job.run_date)).apply(db)
     assert result == {'state': 'ready', 'result': {'reused': True}}
+
+
+@pytest.mark.parametrize('durable', [False, True])
+def test_pending_run_rechecks_only_the_expired_tw_exemption(db, monkeypatch, durable):
+    from ai_stock_sentinel.daily_radar.readiness import read_readiness
+    from ai_stock_sentinel.db.models import SharedBackgroundContext
+    from ai_stock_sentinel.daily_radar.twse_margin_roster import TWSE_CREDIT_STATUS_URL, TWSE_MARGIN_URL
+
+    monkeypatch.setenv('DAILY_RADAR_DURABLE_EXECUTION_ENABLED', str(durable).lower())
+    job = blocked_scoring(db)
+    margin = db.scalar(select(SharedBackgroundContext).where(SharedBackgroundContext.symbol == '2330.TW'))
+    proof = {"evaluated_for": str(job.run_date), "report_date": str(job.run_date),
+             "source_url": TWSE_CREDIT_STATUS_URL, "credit_status": "Y",
+             "symbol": margin.symbol, "reason": "official_credit_trading_ineligible",
+             "checked_at": f"{job.run_date}T21:30:00+08:00", "checks": {TWSE_MARGIN_URL: "no_balance_row"}}
+    margin.payload = {"applicability": "not_applicable", "eligibility": proof}
+    db.commit()
+    scoring = read_readiness(db, run_date=job.run_date, scope='publication')['scoring']
+    assert scoring['full_margin_ready'] is False
+    [gap] = [b for b in scoring['blockers'] if b.get('step') == 'refresh-full-margin']
+    assert gap['missing_symbol_reasons'] == {'2330.TW': 'twse_margin_eligibility_requires_recheck'}
+    if durable:
+        reconcile_job(db, job.id, now=NOW, audit=True)
+        items = db.scalars(select(RadarWorkItem).where(RadarWorkItem.stage == 'full-margin')).all()
+        assert {w.scope['symbol']: w.state for w in items} == {'2330.TW': 'pending', '2317.TW': 'ready'}
+    # Rechecking can produce real zero balances, which must replace the old exemption.
+    margin.payload = {"latest_margin_balance": 0, "margin_balance_delta_pct_unavailable_reason": "baseline_zero"}
+    db.commit()
+    assert read_readiness(db, run_date=job.run_date, scope='publication')['scoring']['full_margin_ready'] is True
+
+
+@pytest.mark.parametrize('other_work_pending', [False, True])
+def test_automatic_audit_preserves_an_unchanged_frozen_margin_proof(db, monkeypatch, other_work_pending):
+    from decimal import Decimal
+    from fastapi import HTTPException
+    from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_cache_records
+    from ai_stock_sentinel.daily_radar.input_manifests import freeze_execution_inputs, link_run_input, prepared_input_context
+    from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
+    from ai_stock_sentinel.daily_radar.market_bar_repository import upsert_taiwan_daily_bars
+    from ai_stock_sentinel.daily_radar.repository import get_shared_background_context_trace_by_symbol
+    from ai_stock_sentinel.daily_radar.readiness import read_readiness
+    from ai_stock_sentinel.daily_radar.run_router import execute_prepared_scoring
+    from ai_stock_sentinel.daily_radar.schemas import DailyRadarRefreshStepRequest
+    from ai_stock_sentinel.db.models import DailyRadarRun, StockRawData
+    from test_daily_radar_api import _completed_segmented_step_statuses, _market_context, _technical_payload
+    from test_daily_radar_validation_read import add_run, add_candidate
+
+    monkeypatch.setenv('DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED', 'true')
+    day, symbol = date(2026, 11, 6), '2330.TW'
+    raw = StockRawData(symbol=symbol, record_date=day, raw_data_is_final=True,
+        technical=_technical_payload(symbol, day), institutional={}, fundamental={})
+    prepared = DailyRadarPreparedRun(run_date=day, market='TW', selected_symbols=[symbol], symbol_count=1,
+        universe=[], market_context=_market_context(), step_statuses=_completed_segmented_step_statuses(day))
+    db.add_all([raw, prepared])
+    upsert_taiwan_daily_bars(db, [MarketDailyBar(symbol=symbol, market='TW', name='fixture', trade_date=day,
+        **{k: Decimal(str(raw.technical['ohlcv'][k])) for k in ('open','high','low','close')}, volume=1, amount=1,
+        source_provider='twse', source_dataset='fixture')])
+    proof = {"applicability": "not_applicable", "eligibility": {"evaluated_for": str(day), "report_date": str(day),
+        "source_url": "https://www.twse.com.tw/exchangeReport/TWT93U", "credit_status": "Y",
+        "symbol": symbol, "reason": "official_credit_trading_ineligible"}}
+    row = upsert_shared_background_context(db, symbol=symbol, context_type="full_margin", source={"provider":"fixture"},
+        as_of_date=day, freshness="fresh", payload=proof, applicable_consumers=["daily_radar"])
+    # Previously published records came from raw OHLCV; this can predate the margin update.
+    contexts = get_shared_background_context_trace_by_symbol(db, symbols=[symbol], reference_date=day, point_in_time=True)
+    manifest, _ = freeze_execution_inputs(db, run_date=day, market="TW", records=load_daily_radar_cache_records([raw]),
+        market_context=prepared.market_context, background_contexts=contexts, input_context=prepared_input_context(prepared, [raw]))
+    published = add_run(db, day)
+    add_candidate(db, published)
+    link_run_input(db, run_id=published.id, manifest=manifest)
+    job = create_job(db, run_date=day, lanes=['publication', 'next_open'] if other_work_pending else ['publication'], now=NOW)
+    for work in db.scalars(select(RadarWorkItem)):
+        if work.lane == 'publication':
+            work.state = 'ready'
+    db.commit()
+
+    def work_states():
+        return {w.stage:w.state for w in db.scalars(select(RadarWorkItem).where(RadarWorkItem.lane=='publication'))}
+    audit = read_readiness(db, run_date=day, scope='publication', audit_completed_score=True)
+    assert audit['scoring']['ready'], (audit['publication'], audit['scoring']['blockers'])
+    reconcile_job(db, job.id, now=NOW, audit=True)
+    assert work_states()['scoring'] == work_states()['full-margin'] == 'ready'
+    assert db.scalars(select(DailyRadarRun.id)).all() == [published.id]
+    assert read_readiness(db, run_date=day, scope='publication')['scoring']['full_margin_ready'] is False
+    with pytest.raises(HTTPException) as rejected:
+        execute_prepared_scoring(db, payload=DailyRadarRefreshStepRequest(run_date=day))
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail['missing_symbols_by_step'] == {'refresh-full-margin':[symbol]}
+
+    if not other_work_pending:
+        create_job(db, run_date=day, lanes=['publication'], now=NOW, recheck_publication=True)
+        assert work_states()['full-margin'] == 'pending'
+        assert work_states()['scoring'] == 'waiting_dependency'
+        return
+
+    row.source = {'provider':'changed-since-publication'}
+    db.commit()
+    reconcile_job(db, job.id, now=NOW, audit=True)
+    assert work_states()['full-margin'] == 'pending'
+    assert work_states()['scoring'] == 'waiting_dependency'

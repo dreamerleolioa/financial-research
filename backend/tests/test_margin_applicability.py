@@ -20,7 +20,7 @@ from ai_stock_sentinel.daily_radar.official_background_context import OfficialBa
 from ai_stock_sentinel.daily_radar.raw_data import _project_margin_context
 from ai_stock_sentinel.daily_radar.data_quality import margin_evidence_is_complete, missing_scoring_fields
 from ai_stock_sentinel.db.models import SharedBackgroundContext
-from tests.test_official_background_context import _FakeResponse, _twse_margin_payload
+from tests.test_official_background_context import _FakeResponse, _complete_twse_margin_payload
 
 RUN_DATE = date(2026, 9, 9)
 LISTING_URL = 'https://www.twse.com.tw/rwd/zh/company/newlisting'
@@ -40,7 +40,7 @@ def _provider(listing=None, *, include_margin=False, calls=None):
                 raise listing
             return _FakeResponse(listing if listing is not None else _listing())
         stock_id = '7827' if include_margin else '2330'
-        return _FakeResponse(_twse_margin_payload(params['date'], [
+        return _FakeResponse(_complete_twse_margin_payload(params['date'], [
             [stock_id, '測試', '0', '0', '0', '900', '1000', '0', '0', '0', '0', '40', '50', '0', '0', '']
         ]))
     return OfficialBackgroundChipContextProvider(request_get=get, lookback_trading_days=1,
@@ -259,7 +259,7 @@ def _tw_public_offering_provider(*, listing_type='初上市', listed='115/03/30'
             return _FakeResponse({'stat': 'OK', 'date': report_year,
                 'fields': ['證券代號', '發行市場', '撥券日期(上市、上櫃日期)', '取消公開抽籤 '],
                 'data': [['7822', listing_type, listed, cancelled]]})
-        return _FakeResponse(_twse_margin_payload(params['date'], [[
+        return _FakeResponse(_complete_twse_margin_payload(params['date'], [[
             '7822' if include_margin else '2330', '測試',
             '0', '0', '0', '900', '1000', '0', '0', '0', '0', '40', '50', '0', '0', '',
         ]]))
@@ -418,7 +418,7 @@ def _credit_status_provider(report=None, *, include_margin=False, calls=None,
             return _FakeResponse(_credit_status_report() if report is None else report)
         response = base._request_get(url, params=params, **kwargs)
         if margin_date and url not in {LISTING_URL, OTC_LISTING_URL}:
-            response = _FakeResponse(_twse_margin_payload(margin_date, [[
+            response = _FakeResponse(_complete_twse_margin_payload(margin_date, [[
                 '2330', '測試', '0', '0', '0', '900', '1000', '0',
                 '0', '0', '0', '40', '50', '0', '0', '',
             ]]))

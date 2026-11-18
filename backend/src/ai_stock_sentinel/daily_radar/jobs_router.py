@@ -36,7 +36,7 @@ def read_capabilities(db: Session = Depends(get_db)):
 @router.post('/jobs', status_code=202)
 def register_job(request: JobRequest, db: Session = Depends(get_db)):
     require_enabled(db)
-    job = create_job(db, run_date=request.run_date, lanes=request.lanes)
+    job = create_job(db, run_date=request.run_date, lanes=request.lanes, recheck_publication=request.recheck_publication)
     return job_status(db, job.id) | {'accepted': True}
 
 

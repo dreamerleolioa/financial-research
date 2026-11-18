@@ -268,6 +268,19 @@ def _twse_margin_payload(
     }
 
 
+def _complete_twse_margin_payload(payload_date: str, rows: list[list[str]]) -> dict:
+    report = _twse_margin_payload(payload_date, rows)
+    day = date.fromisoformat(payload_date)
+    title = f'{day.year - 1911}年{day.month:02}月{day.day:02}日'
+    report['tables'][1]['title'] = f'{title} 融資融券彙總 (全部)'
+    report['tables'][0] = {
+        'title': f'{title} 信用交易統計', 'fields': ['項目', '買進', '賣出', '現金(券)償還', '前日餘額', '今日餘額'],
+        'data': [[label, *(str(sum(int(row[i].replace(',', '')) for row in rows)) for i in range(start, start + 5))]
+                 for label, start in [('融資(交易單位)', 2), ('融券(交易單位)', 8)]],
+    }
+    return report
+
+
 def _tpex_margin_payload(payload_date: str, rows: list[list[str]]) -> dict:
     return {
         "stat": "ok",

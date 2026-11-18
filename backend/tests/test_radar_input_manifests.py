@@ -73,7 +73,7 @@ def test_readiness_detects_current_inputs_changed_after_publication(monkeypatch)
     from ai_stock_sentinel.daily_radar.input_manifests import freeze_execution_inputs, prepared_input_context
     from ai_stock_sentinel.daily_radar.readiness import read_readiness
     from ai_stock_sentinel.daily_radar.repository import get_shared_background_context_trace_by_symbol
-    from test_daily_radar_api import _technical_payload, _market_context, _completed_segmented_step_statuses
+    from test_daily_radar_api import _seed_current_margin, _technical_payload, _market_context, _completed_segmented_step_statuses
     engine = create_engine('sqlite+pysqlite:///:memory:')
     Base.metadata.create_all(engine, tables=[m.__table__ for m in (DailyRadarRun, DailyRadarPreparedRun,
         StockRawData, DailyRadarCandidate, DailyRadarForwardValidationResult, SharedBackgroundContext,
@@ -89,6 +89,9 @@ def test_readiness_detects_current_inputs_changed_after_publication(monkeypatch)
             source_provider='twse', source_dataset='fixture')])
         prepared = DailyRadarPreparedRun(run_date=day, market='TW', status='prepared', selected_symbols=['2330.TW'],
             symbol_count=1, universe=[], market_context=_market_context(), step_statuses=_completed_segmented_step_statuses(day))
+        _seed_current_margin(db, day, {"latest_margin_balance": 400, "margin_balance_delta_pct": 1.0})
+        raw.fundamental = {"margin": {"margin_balance": 400.0, "margin_delta_pct": 1.0,
+            "margin_to_volume": 0.1, "risk_flags": []}, "data_dates": {"margin": str(day)}}
         db.add_all([raw, prepared]); db.flush()
         manifest, _ = freeze_execution_inputs(db, run_date=day, market='TW', records=load_daily_radar_cache_records([raw]),
             market_context=prepared.market_context, background_contexts=get_shared_background_context_trace_by_symbol(

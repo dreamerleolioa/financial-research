@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Final
 
 from ai_stock_sentinel.daily_radar.types import (
@@ -8,6 +9,7 @@ from ai_stock_sentinel.daily_radar.types import (
     DailyRadarRiskLabel,
 )
 
+SOURCE_SNAPSHOT_TTL: Final = timedelta(minutes=10)
 DAILY_RADAR_VALIDATION_WINDOWS: Final = (5, 10, 20, 40, 60)
 
 DAILY_RADAR_BUCKETS: Final[tuple[DailyRadarBucket, ...]] = (

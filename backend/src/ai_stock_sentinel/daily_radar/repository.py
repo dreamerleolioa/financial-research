@@ -450,6 +450,8 @@ def get_shared_background_context_trace_by_symbol(
     ordered_symbols = _ordered_unique_symbols(symbols)
     active_context_types = _ordered_unique_strings(context_types or BACKGROUND_CONTEXT_TYPES)
     traces = {symbol: [] for symbol in ordered_symbols}
+    if not ordered_symbols:
+        return traces
     rows = get_shared_background_context_rows(
         session,
         symbols=ordered_symbols,

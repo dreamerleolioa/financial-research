@@ -33,9 +33,11 @@ def validation_alert(report, known, run_date, lane):
 
 
 def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=100, max_seconds=900,
-        require_lanes=(), read=get, write=post, clock=time.monotonic, known_validation_gaps=None):
+        require_lanes=(), recheck_publication=False, read=get, write=post, clock=time.monotonic, known_validation_gaps=None):
     if (resume == (run_date is not None) or not 1 <= max_work <= 2000 or not 1 <= max_seconds <= 1800):
         raise ValueError('invalid_durable_job_scope_or_budget')
+    if recheck_publication and (resume or "publication" not in require_lanes):
+        raise ValueError('publication_recheck_requires_dated_publication_lane')
     if run_date is not None and date.fromisoformat(run_date).isoformat() != run_date:
         raise ValueError('invalid_run_date')
     if set(require_lanes) - {'publication', 'signal_close', 'next_open'}:
@@ -75,6 +77,8 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         intent = {'run_date': run_date, 'market': 'TW'}
         if require_lanes:
             intent['lanes'] = list(require_lanes)
+        if recheck_publication:
+            intent['recheck_publication'] = True
         registered = call(write, '/jobs', intent)
         if registered.get('effective_run_date') != run_date or registered.get('requested_run_date') != run_date:
             raise ValueError('radar_job_date_mismatch')
@@ -166,13 +170,14 @@ def main():
     parser.add_argument('--max-work', type=int, default=100)
     parser.add_argument('--max-seconds', type=int, default=900)
     parser.add_argument('--require-lanes', default='')
+    parser.add_argument('--recheck-publication', action='store_true')
     parser.add_argument('--known-validation-gaps', type=Path)
     args = parser.parse_args()
     try:
         result = run(endpoint=os.environ['ZEABUR_BACKEND_URL'], token=os.environ['DAILY_RADAR_INTERNAL_TOKEN'],
             output_dir=args.output_dir, run_date=args.run_date, resume=args.resume, max_work=args.max_work,
             max_seconds=args.max_seconds, require_lanes=tuple(x for x in args.require_lanes.split(',') if x),
-            known_validation_gaps=args.known_validation_gaps)
+            known_validation_gaps=args.known_validation_gaps, recheck_publication=args.recheck_publication)
     except Exception as exc:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
