@@ -15,12 +15,20 @@ class CachedForwardPrices:
         self.provider = provider or YFinanceForwardPriceProvider()
 
     def fetch(self, symbols, *, start_date, end_date):
+        return self._fetch(symbols, start_date=start_date, end_date=end_date, allow_source=True)
+
+    def fetch_cached(self, symbols, *, start_date, end_date):
+        return self._fetch(symbols, start_date=start_date, end_date=end_date, allow_source=False)
+
+    def _fetch(self, symbols, *, start_date, end_date, allow_source):
         result = {}
         for symbol in sorted(set(symbols)):
             params = {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
                       "auto_adjust": True, "actions": False}
             captured = self.source_store.lookup_sdk(operation="forward-adjusted-history", params=params)
             if captured is None:
+                if not allow_source:
+                    continue
                 def fetch(symbol=symbol):
                     rows = self.provider.fetch([symbol], start_date=start_date, end_date=end_date).get(symbol)
                     if not rows:

@@ -79,3 +79,30 @@ def test_postgres_old_cutoff_and_same_cutoff_cas_preserve_new_result(pg_engine):
         from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
         db.query(DailyRadarForwardValidationResult).delete();db.commit()
         test_result_changed_at_same_cutoff_is_not_overwritten_by_stale_collection(db)
+
+
+def test_shared_window_occupies_the_claiming_jobs_slot_only(pg_engine):
+    setup_queue(pg_engine)
+    with Session(pg_engine) as db:
+        now = database_now(db)
+        jobs = [RadarJob(job_key=str(i) * 64, market='TW', run_date=date(2026, 11, i + 6),
+                         lanes=['signal_close'], scope={}, state='pending') for i in range(2)]
+        db.add_all(jobs)
+        db.flush()
+        a, b = jobs
+        items = [ensure_work(db, identity={'window': i}, stage='window', lane='signal_close', run_date=a.run_date,
+                            scope={}, input_revision='a' * 64, retry_at=now) for i in range(2)]
+        shared, other = items
+        db.add_all([RadarJobWork(job_id=job.id, work_id=item.id, required=True, active=active)
+                    for job, item, active in ((a, shared, True), (b, shared, False), (b, other, True))])
+        ids = (a.id, b.id, shared.id, other.id)
+        db.commit()
+    with Session(pg_engine) as db:
+        first = claim_work(db, job_id=ids[0], slot='window')
+        assert first.work_id == ids[2]
+        db.commit()
+    with Session(pg_engine) as db:
+        assert claim_work(db, job_id=ids[0], slot='window') is None
+        second = claim_work(db, job_id=ids[1], slot='window')
+        assert second.work_id == ids[3]
+        db.commit()

@@ -1,12 +1,12 @@
 """One bounded claim/collect/accept cycle. No background work after HTTP return."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 from copy import deepcopy
 import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ai_stock_sentinel.daily_radar.collection_transactions import read_only_collection, CollectionMutationError
 from ai_stock_sentinel.db.models import RadarWorkItem, RadarSourceSnapshot
-from ai_stock_sentinel.daily_radar.work_queue import claim_work, fence, finish_work, LostLease, database_now, retry_delay, ensure_work
+from ai_stock_sentinel.daily_radar.work_queue import aware, claim_work, fence, finish_work, LostLease, database_now, retry_delay, ensure_work, occupied_slot, observe_normal_slot
 from ai_stock_sentinel.daily_radar.jobs import reconcile_job, prepared_generation, job_status
 from ai_stock_sentinel.daily_radar.validation_preparation import reserve_validation_commit
 from ai_stock_sentinel.daily_radar.readiness import recovery_action
@@ -57,7 +57,8 @@ def _reason(exc):
     value = str(exc)
     # Only stable machine reasons may enter shared summaries. Never persist
     # provider bodies, URLs, tokens or private symbols from exception text.
-    if value in {'research_source_dependency_waiting', 'official_trading_calendar_unavailable',
+    if value in {'research_source_dependency_waiting', 'validation_price_source_unavailable',
+        'official_trading_calendar_unavailable',
         'research_source_snapshot_integrity_invalid', 'radar_prepared_run_missing',
         'radar_collection_mutated_domain', 'market_session_identity_invalid',
         'market_bar_identity_or_coverage_invalid', 'background_context_identity_invalid',
@@ -68,13 +69,18 @@ def _reason(exc):
     return 'radar_provider_unavailable'
 
 
-def advance_job(db, job_id, *, handlers=None, now=None):
-    reconcile_job(db, job_id, now=now)
-    claim = claim_work(db, job_id=job_id, now=now)
+def advance_job(db, job_id, *, handlers=None, now=None, window_only=False):
+    if not window_only:
+        reconcile_job(db, job_id, now=now)
+    slot = 'window' if window_only else 'normal'
+    claim = claim_work(db, job_id=job_id, now=now, slot=slot)
     db.commit()
     if claim is None:
-        reconcile_job(db, job_id, now=now, audit=True)
-        return job_status(db, job_id) | {'advanced_count': 0}
+        busy = occupied_slot(db, job_id, slot, database_now(db, now)) is not None
+        if not window_only and not busy:
+            reconcile_job(db, job_id, now=now, audit=True)
+        status = job_status(db, job_id, include_observation=True) | {'advanced_count': 0, 'advance_slot_busy': busy}
+        return status | observe_normal_slot(db, job_id, now)
     try:
         # Domain acceptance owns db. Default collectors get a separate reader;
         # custom handlers using db remain subject to the same read-only guard.
@@ -107,9 +113,13 @@ def advance_job(db, job_id, *, handlers=None, now=None):
             progressed = any(old_sources.get(p['request_hash']) != p['snapshot_sha256']
                 for p in result['source_observations'])
             retry_at = database_now(db, now) + timedelta(seconds=retry_delay(work.attempt_count, progressed=progressed))
-            if accepted.get('retry_at') is not None:
-                from ai_stock_sentinel.daily_radar.work_queue import aware
-                retry_at = max(retry_at, aware(accepted['retry_at']))
+            explicit = accepted.get('retry_at')
+            if explicit is not None:
+                retry_at = max(retry_at, aware(explicit))
+            # A recoverable window may diagnose a failed required input without
+            # propagating its exception. Keep the source cooldown in that case.
+            cooldowns = (aware(datetime.fromisoformat(value)) for value in result['source_dependencies'].values())
+            retry_at = max(retry_at, max(cooldowns, default=retry_at))
         finish_work(db, claim, state=state, result=result, reason=accepted.get('reason'), retry_at=retry_at, now=now)
         db.commit()
     except LostLease as exc:
@@ -138,12 +148,17 @@ def advance_job(db, job_id, *, handlers=None, now=None):
             due = database_now(db, now) + timedelta(seconds=retry_delay(work.attempt_count)) if state == 'waiting_provider' else None
             explicit = getattr(exc, 'retry_at', None)
             if explicit is not None and due is not None:
-                from ai_stock_sentinel.daily_radar.work_queue import aware
                 due = max(due, aware(explicit))
+            source_result = _source_result(handlers)
+            if due is not None:
+                cooldowns = (datetime.fromisoformat(value) for value in source_result['source_dependencies'].values())
+                due = max(due, max(cooldowns, default=due))
             finish_work(db, claim, state=state, reason=reason, retry_at=due,
-                result={'error_type': type(exc).__name__, **_source_result(handlers)}, now=now)
+                result={'error_type': type(exc).__name__, **source_result}, now=now)
             db.commit()
         except LostLease:
             db.rollback()
-    reconcile_job(db, job_id, now=now, audit=True)
-    return job_status(db, job_id) | {'advanced_count': 1}
+    if not window_only:
+        reconcile_job(db, job_id, now=now, audit=True)
+    status = job_status(db, job_id, include_observation=True) | {'advanced_count': 1}
+    return status | observe_normal_slot(db, job_id, now)

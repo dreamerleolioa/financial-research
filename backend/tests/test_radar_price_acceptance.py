@@ -139,16 +139,21 @@ def test_publication_does_not_accept_correct_trade_date_with_wrong_close(monkeyp
     assert accepted["5880.TW"]["sha256"] and accepted["5880.TW"]["raw_ohlcv"]["close"] == 102
 
 
-def test_official_collection_keeps_existing_source_dependency_backoff():
-    from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector
+def test_official_collection_retains_a_waiting_source_when_no_halt_is_proven(monkeypatch):
+    from datetime import datetime, timezone
+    from ai_stock_sentinel.daily_radar import next_open_action_scope, trading_status
+    from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector, refused_prices
     from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
 
     def busy(*args, **kwargs):
-        raise SourceDependencyBusy(["source-key"], None)
+        raise SourceDependencyBusy(["source-key"], datetime.now(timezone.utc))
 
-    provider = SimpleNamespace(official_research_history=busy)
-    with pytest.raises(SourceDependencyBusy, match="research_source_dependency_waiting"):
-        OfficialPriceCollector(provider).collect("5880.TW", SIGNAL, TARGET)
+    monkeypatch.setattr(next_open_action_scope, "_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr(trading_status, "collect_target_suspension", lambda *args: None)
+    result = OfficialPriceCollector(SimpleNamespace(official_research_history=busy)).collect("5880.TW", SIGNAL, TARGET)
+    assert str(TARGET) in result.unavailable_dates
+    assert refused_prices({"target_date": str(TARGET)}, "official_validation_price_missing",
+        result, sessions=DAYS)["skip_reason"] == "validation_price_source_unavailable"
 
 
 def test_failed_month_does_not_discard_an_earlier_proven_window_in_same_batch(monkeypatch):
@@ -167,7 +172,9 @@ def test_failed_month_does_not_discard_an_earlier_proven_window_in_same_batch(mo
         return []
 
     monkeypatch.setattr(next_open_action_scope, "_events", events)
-    provider = SimpleNamespace(official_research_history=prices)
+    def missing_status(*args, **kwargs):
+        raise OSError('official status outage')
+    provider = SimpleNamespace(official_research_history=prices, capture_twse_report=missing_status)
     evidence = OfficialPriceCollector(provider).collect("5880.TW", SIGNAL, july)
     assert not accept_signal_close_prices(CANDIDATE, DAYS, [bar(day, 100.0) for day in DAYS], evidence).reason
     july_window = accept_next_open_prices(CANDIDATE, [SIGNAL, july], [], evidence)

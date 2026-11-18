@@ -1,6 +1,7 @@
 """Share source request ownership/backoff without holding DB connections over HTTP."""
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from math import ceil
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -30,7 +31,7 @@ def _provider_group(request):
 
 
 def _retry_after(exc, now):
-    headers = getattr(exc, "headers", None) or {}
+    headers = getattr(getattr(exc, "response", None), "headers", None) or getattr(exc, "headers", None) or {}
     value = getattr(exc, "retry_after", None) or headers.get("Retry-After")
     if value is None:
         return 0
@@ -38,10 +39,18 @@ def _retry_after(exc, now):
         seconds = int(value)
     except (ValueError, TypeError):
         try:
-            seconds = int((parsedate_to_datetime(str(value)).astimezone(timezone.utc) - now).total_seconds())
+            seconds = ceil((parsedate_to_datetime(str(value)).astimezone(timezone.utc) - now).total_seconds())
         except (ValueError, TypeError, OverflowError):
             return 0
-    return min(86400, max(0, seconds))
+    return max(0, seconds)
+
+
+def _provider_backoff(exc, now):
+    """Only an explicit provider-wide limit closes the shared gate."""
+    from yfinance.exceptions import YFRateLimitError
+    status = (getattr(getattr(exc, 'response', None), 'status_code', None) or getattr(exc, 'http_status', None)
+              or getattr(exc, 'code', None))
+    return status == 429 or isinstance(exc, YFRateLimitError) or _retry_after(exc, now) > 0
 
 
 def _reserve(store, request):
@@ -99,13 +108,17 @@ def capture_source(store, *, request, fetch):
             row = fence(db, source_claim)
             now = database_now(db)
             delay = retry_delay(row.attempt_count, retry_after=_retry_after(exc, now))
-            retry_at = now + timedelta(seconds=delay)
-            local_failure = (getattr(exc, "local_budget_exhausted", False)
-                or isinstance(exc, RuntimeError) and str(exc) == "forward_price_provider_returned_no_data")
-            finish_work(db, gate_claim, state="ready" if local_failure else "waiting_provider",
-                reason=type(exc).__name__, retry_at=now if local_failure else retry_at)
+            try:
+                retry_at = now + timedelta(seconds=delay)
+            except OverflowError:
+                # Leave room for database/session timezone conversion.
+                retry_at = datetime(9999, 12, 30, tzinfo=timezone.utc)
+            provider_backoff = _provider_backoff(exc, now)
+            finish_work(db, gate_claim, state="waiting_provider" if provider_backoff else "ready",
+                reason=type(exc).__name__, retry_at=retry_at if provider_backoff else now)
             finish_work(db, source_claim, state="waiting_provider", reason=type(exc).__name__, retry_at=retry_at)
-        store.dependencies.update({key: retry_at.isoformat() for key in keys})
+        affected = keys if provider_backoff else keys[1:]
+        store.dependencies.update({key: retry_at.isoformat() for key in affected})
         raise
     with Session(store.bind) as db, db.begin():
         fence(db, gate_claim)

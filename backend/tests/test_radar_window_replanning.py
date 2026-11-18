@@ -166,3 +166,40 @@ def test_only_selected_origin_changes_affect_semantic_revision(status):
     candidate = {'selection_status': status, 'observation_origin': None}
     changed = candidate | {'observation_origin': {'candidate_id': 9, 'first_seen_date': '2026-06-02'}}
     assert (validation_candidate_revision(candidate) == validation_candidate_revision(changed)) == (status == 'shadow')
+
+
+def test_replanning_keeps_unresolved_conflict_on_an_already_saved_window(db, monkeypatch):
+    from ai_stock_sentinel.daily_radar import readiness
+    from ai_stock_sentinel.daily_radar.trading_status import CONFLICT
+
+    _, job = setup(db)
+    work = active(db, job)[0]
+    work.state, work.reason = 'needs_review', CONFLICT
+    saved = dict(work.scope) | {'state': 'validated', 'reason': None}
+    original = dict(job.scope)
+    original.pop('window_plan', None)
+    original.pop('window_planning', None)
+    job.scope = original
+    db.commit()
+    monkeypatch.setattr(readiness, 'inventory_items', lambda *a, **k: iter([saved]))
+    reconcile_job(db, job.id, now=NOW)
+    assert [(row.id, row.state, row.reason) for row in active(db, job)] == [(work.id, 'needs_review', CONFLICT)]
+
+
+def test_another_job_attaches_unresolved_existing_window_conflict(db, monkeypatch):
+    from ai_stock_sentinel.daily_radar import readiness
+    from ai_stock_sentinel.daily_radar.trading_status import CONFLICT
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+
+    _, job = setup(db)
+    work = active(db, job)[0]
+    work.state, work.reason = 'needs_review', CONFLICT
+    work.identity = dict(work.identity) | {'cutoff':'2026-06-07'}
+    work.work_key = fingerprint(work.identity)
+    work.run_date = date(2026, 6, 7)
+    saved = dict(work.scope) | {'state': 'validated', 'reason': None}
+    db.commit()
+    monkeypatch.setattr(readiness, 'inventory_items', lambda *a, **k: iter([saved]))
+    second = create_job(db, run_date=DAY, lanes=['signal_close', 'next_open'], now=NOW)
+    assert second.id != job.id
+    assert [(row.id, row.state) for row in active(db, second)] == [(work.id, 'needs_review')]

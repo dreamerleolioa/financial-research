@@ -42,13 +42,14 @@ def capture_validation_acceptance(db, candidates, *, market, windows, validation
     return ValidationAcceptance(market, revisions, results)
 
 
-def _check_acceptance(db, outcomes, acceptance):
+def _check_acceptance(db, outcomes, acceptance, calendar):
     from ai_stock_sentinel.calibration.forward_validation import parse_date
     from ai_stock_sentinel.daily_radar.forward_validation import (
         forward_validation_candidates_from_runs, forward_validation_result_revision, is_original_rights_conflict_recovery,
     )
     from ai_stock_sentinel.daily_radar.validation_inputs import validation_candidate_revision
     from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult as Result
+    from ai_stock_sentinel.daily_radar.trading_status import REASON, suspension_conflicts
     ids = set(acceptance.candidate_revisions)
     current = forward_validation_candidates_from_runs(db, market=acceptance.market, candidate_ids=sorted(ids))
     if ({c['candidate_id']: validation_candidate_revision(c) for c in current}
@@ -63,23 +64,26 @@ def _check_acceptance(db, outcomes, acceptance):
     # Relation locks freeze candidate/origin changes. Result locks also exclude
     # concurrent result owners until the calendar checkpoint has been accepted.
     result_ids = {key[0] for key in keys}
-    existing = {(r.candidate_id, r.window_days, r.validation_version):
-        (forward_validation_result_revision(r), r.evaluation_as_of_date,
-         is_original_rights_conflict_recovery(r, incoming.get((r.candidate_id, r.window_days, r.validation_version))))
-        for r in db.scalars(
+    existing = {(r.candidate_id, r.window_days, r.validation_version): r for r in db.scalars(
         select(Result).where(Result.candidate_id.in_(result_ids), Result.window_days.in_({key[1] for key in keys}),
             Result.validation_version.in_({key[2] for key in keys}))
         .order_by(Result.candidate_id, Result.window_days, Result.validation_version, Result.id)
         .with_for_update().execution_options(populate_existing=True, yield_per=128))}
-    for row in outcomes:
-        key = (int(row['candidate_id']), int(row['window_days']), str(row['validation_version']))
-        revision, saved_cutoff, original_recovery = existing.get(key, (None, None, False))
+    symbols = {c["candidate_id"]: c["symbol"] for c in current}
+    for key, row in incoming.items():
+        saved = existing.get(key)
+        if (saved is not None and (saved.skip_reason == REASON or row.get("skip_reason") == REASON)
+                and suspension_conflicts(saved, row, calendar=calendar, symbol=symbols[key[0]])):
+            continue
+        revision = forward_validation_result_revision(saved)
+        saved_cutoff = saved.evaluation_as_of_date if saved else None
+        original_recovery = saved is not None and is_original_rights_conflict_recovery(saved, row)
         cutoff = parse_date(row.get('evaluation_as_of_date'))
         if not original_recovery and saved_cutoff is not None and (cutoff is None or saved_cutoff > cutoff):
             raise ValidationAcceptanceConflict('newer_validation_result_preserved')
         if key not in acceptance.result_revisions or revision != acceptance.result_revisions[key]:
             raise ValidationAcceptanceConflict('validation_results_changed')
-    return {key: acceptance.result_revisions[key] for key in keys}
+    return {key: acceptance.result_revisions.get(key) for key in keys}
 
 
 def reserve_validation_commit(db, *, freeze_candidates=False):
@@ -106,8 +110,8 @@ def accept_validation_results(db, outcomes, *, calendar, acceptance=None, **upse
     # caller catches an error and commits, this batch cannot leak flushed rows.
     with db.begin_nested():
         if acceptance is not None:
-            upsert_options['expected_revisions'] = _check_acceptance(db, outcomes, acceptance)
-        summary = upsert_forward_validation_results(db, outcomes, **upsert_options)
+            upsert_options['expected_revisions'] = _check_acceptance(db, outcomes, acceptance, calendar)
+        summary = upsert_forward_validation_results(db, outcomes, calendar=calendar, **upsert_options)
         if calendar is not None and not save_calendar(db, calendar):
             raise ValueError('calendar_checkpoint_unavailable')
     return summary

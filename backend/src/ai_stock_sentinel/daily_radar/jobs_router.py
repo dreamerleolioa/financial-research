@@ -20,7 +20,7 @@ def capabilities(db):
     migrated = {'radar_jobs', 'radar_work_items', 'radar_job_work', 'radar_work_attempts',
                 'radar_source_snapshots', 'radar_input_manifests', 'radar_run_inputs'} <= tables
     return {'version': 'radar-durable-v1', 'enabled': durable_enabled() and snapshots_enabled() and migrated,
-            'durable_execution': durable_enabled(), 'source_snapshots': snapshots_enabled(), 'migrated': migrated}
+            'parallel_window_advance': True, 'durable_execution': durable_enabled(), 'source_snapshots': snapshots_enabled(), 'migrated': migrated}
 
 
 def require_enabled(db):
@@ -56,10 +56,10 @@ def read_job(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.post('/jobs/{job_id}/advance')
-def advance(job_id: int, db: Session = Depends(get_db)):
+def advance(job_id: int, db: Session = Depends(get_db), window_only: bool = False):
     require_enabled(db)
     try:
-        return advance_job(db, job_id)
+        return advance_job(db, job_id, window_only=window_only) if window_only else advance_job(db, job_id)
     except ValueError as exc:
         if str(exc) != 'radar_job_not_found':
             raise

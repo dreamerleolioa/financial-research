@@ -584,6 +584,7 @@ def upsert_forward_validation_results(
     *,
     terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
     require_existing_conflict: bool = False,
+    calendar=None,
     expected_revisions: Mapping[tuple, str | None] | None = None,
 ) -> dict[str, int]:
     from ai_stock_sentinel.daily_radar.price_acceptance import (
@@ -620,6 +621,7 @@ def upsert_forward_validation_results(
             .execution_options(yield_per=128)
         )
     }
+    preserved_conflicts = []
     written = 0
     validated = 0
     skipped = 0
@@ -659,6 +661,21 @@ def upsert_forward_validation_results(
         statement = statement.with_for_update().execution_options(populate_existing=True)
         existing = session.execute(statement).scalar_one_or_none()
         incoming_cutoff = _parse_date(outcome.get('evaluation_as_of_date'))
+        expected_day = None
+        if ((existing is not None and existing.skip_reason == "target_session_suspended")
+                or outcome.get("skip_reason") == "target_session_suspended"):
+            from ai_stock_sentinel.daily_radar.trading_status import CONFLICT, KEY, expected_target, matches, suspension_conflicts
+            from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
+            window_calendar = calendar or (load_calendar(session, start_date=signal_date, as_of_date=incoming_cutoff) if incoming_cutoff else None)
+            expected_day = expected_target(window_calendar, signal_date, int(outcome["window_days"]), incoming_cutoff)
+            if suspension_conflicts(existing, outcome, calendar=window_calendar, symbol=candidate_symbol):
+                preserved_conflicts.append({"candidate_id": candidate_id, "window_days": outcome["window_days"],
+                                            "target_date": str(expected_day), "reason": CONFLICT})
+                continue
+            if (existing is not None and existing.status == 'skipped' and existing.skip_reason == 'target_session_suspended'
+                    and existing.target_date == expected_day
+                    and matches(_mapping(existing.outcome).get(KEY), symbol=candidate_symbol, target=expected_day)):
+                continue
         if (expected_revisions is not None and existing is not None and existing.evaluation_as_of_date is not None
                 and (incoming_cutoff is None or existing.evaluation_as_of_date > incoming_cutoff)
                 and not is_original_rights_conflict_recovery(existing, outcome)):
@@ -673,17 +690,31 @@ def upsert_forward_validation_results(
         if saved_lock is not None:
             incoming_lock = _mapping(outcome.get("outcome")).get(PRICE_EVIDENCE)
             if incoming_lock is not None and incoming_lock["sha256"] != saved_lock["sha256"]:
-                raise ValidationAcceptanceConflict("validation_price_version_changed")
+                from ai_stock_sentinel.daily_radar.price_acceptance import same_official_inputs_without_vendor
+                if not same_official_inputs_without_vendor(existing.outcome, _mapping(outcome.get("outcome"))):
+                    raise ValidationAcceptanceConflict("validation_price_version_changed")
             continue
         if existing is not None and existing.status == "validated" and outcome.get("skip_reason") in RETRYABLE_PRICE_REASONS:
             continue
+        from ai_stock_sentinel.daily_radar.price_acceptance import VENDOR_UNAVAILABLE
         if (existing is not None and existing.skip_reason == "conflicting_price_records"
-                and outcome.get("skip_reason") in {
+                and (outcome.get("skip_reason") in {
                     "official_validation_price_missing", "official_validation_events_unverified",
-                }):
+                    "validation_price_source_unavailable", "official_suspension_report_unavailable",
+                } or _mapping(outcome.get("outcome")).get(VENDOR_UNAVAILABLE))):
             # Failed collection supplies no evidence that the prior conflict is gone.
             continue
         payload = dict(_mapping(outcome.get("outcome")))
+        if outcome.get('skip_reason') == 'target_session_suspended':
+            if existing is not None and existing.status == 'validated':
+                continue
+            from ai_stock_sentinel.daily_radar.trading_status import KEY, matches
+            target = _parse_date(outcome.get('target_date'))
+            cutoff = _parse_date(outcome.get('evaluation_as_of_date'))
+            if (outcome.get('status') != 'skipped' or target is None or cutoff is None
+                    or target != expected_day or not signal_date < target <= cutoff
+                    or not matches(payload.get(KEY), symbol=candidate_symbol, target=target)):
+                raise ValueError('invalid_target_suspension_evidence')
         if (research_window and existing is not None and existing.status == "skipped"
                 and existing.skip_reason in corporate_actions.TERMINAL_REASONS
                 and corporate_actions.PROVENANCE_KEY in existing.outcome):
@@ -772,6 +803,7 @@ def upsert_forward_validation_results(
                 retryable_skipped += 1
     session.flush()
     return {
+        **({"preserved_conflicts": preserved_conflicts} if preserved_conflicts else {}),
         "records_written": written,
         "validated_count": validated,
         "skipped_count": skipped,
@@ -934,6 +966,13 @@ def exclude_persisted_daily_radar_windows(
     prior_present = (payload['historical_repair'].has_key('prior_evidence') if dialect == 'postgresql'
                      else func.json_type(payload, '$.historical_repair.prior_evidence').is_not(None))
     def complete_window(row):
+        if row['skip_reason'] == 'target_session_suspended':
+            from ai_stock_sentinel.daily_radar.trading_status import KEY, matches
+            from ai_stock_sentinel.daily_radar.trading_status import expected_target
+            target = expected_target(calendar, row['run_date'], row['window_days'], as_of_date or row['evaluation_as_of_date'])
+            return (row['status'] == 'skipped' and target is not None and _parse_date(row['target_date']) == target
+                    and row['evaluation_as_of_date'] is not None and row['evaluation_as_of_date'] >= target
+                    and matches(_mapping(row['outcome']).get(KEY), symbol=row['symbol'], target=target))
         if row['status'] != 'validated' or row['historical_prior_present'] or _mapping(row['outcome']).get('historical_repair'):
             return True  # Reviewed rows require explicit manual repair, never ordinary overwrite.
         if benchmark_symbol != 'TAIEX':

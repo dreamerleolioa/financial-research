@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 import os
 
-from sqlalchemy import select, update, and_, or_, func
+from sqlalchemy import select, update, and_, or_, func, type_coerce, DateTime
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -73,11 +73,45 @@ def ensure_work(db, *, identity, stage, lane, run_date, scope, input_revision,
     return db.scalar(select(RadarWorkItem).where(RadarWorkItem.work_key == values["work_key"]))
 
 
-def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240):
+def _occupied_slot_query(job_id, slot, now):
+    """The attempt owns its slot even if its work is shared across dates."""
+    owner = RadarWorkAttempt.scope['advance_job_id'].as_integer()
+    query = (select(RadarWorkItem.lease_expires_at)
+             .join(RadarWorkAttempt, RadarWorkAttempt.lease_token == RadarWorkItem.lease_token)
+             .where(RadarWorkItem.state == 'running', RadarWorkItem.lease_expires_at > now,
+                    func.coalesce(RadarWorkAttempt.scope['advance_slot'].as_string(), 'normal') == slot,
+                    or_(owner == job_id, and_(owner.is_(None),
+                        select(RadarJobWork.work_id).where(RadarJobWork.work_id == RadarWorkItem.id,
+                            RadarJobWork.job_id == job_id, RadarJobWork.active.is_(True)).exists()))))
+    return query.order_by(RadarWorkItem.lease_expires_at).limit(1)
+
+
+def occupied_slot(db, job_id, slot, now):
+    return db.scalar(_occupied_slot_query(job_id, slot, now))
+
+
+def observe_normal_slot(db, job_id, now=None):
+    # The lease and its timestamp are from the same statement snapshot.
+    observed_at = (func.statement_timestamp() if db.get_bind().dialect.name == 'postgresql'
+                   else type_coerce(func.strftime('%Y-%m-%d %H:%M:%f', 'now'), DateTime()))
+    deadline = _occupied_slot_query(job_id, 'normal', aware(now) if now else observed_at).scalar_subquery()
+    observed, occupied = db.execute(select(observed_at, deadline)).one()
+    return {'normal_slot_busy': occupied is not None, 'normal_observed_at': aware(observed).isoformat()}
+
+
+def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240, slot=None):
     now = database_now(db, now)
     due = or_(and_(RadarWorkItem.state.in_(CLAIMABLE), RadarWorkItem.retry_at <= now),
               and_(RadarWorkItem.state == "running", RadarWorkItem.lease_expires_at <= now))
     query = select(RadarWorkItem).where(due, RadarWorkItem.not_before <= now)
+    if slot is not None:
+        from ai_stock_sentinel.db.models import RadarJob
+        # Serialize the claim decision while separate leases fence each work item.
+        db.scalar(select(RadarJob.id).where(RadarJob.id == job_id).with_for_update())
+        if occupied_slot(db, job_id, slot, now) is not None:
+            return None
+        if slot == 'window':
+            query = query.where(RadarWorkItem.stage == 'window')
     if job_id is not None:
         query = query.join(RadarJobWork, RadarJobWork.work_id == RadarWorkItem.id).where(
             RadarJobWork.job_id == job_id, RadarJobWork.active.is_(True))
@@ -98,7 +132,7 @@ def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240):
     db.execute(update(RadarWorkAttempt).where(RadarWorkAttempt.work_id == row.id,
         RadarWorkAttempt.state == "running").values(state="lost_lease", finished_at=now).execution_options(synchronize_session=False))
     attempt = RadarWorkAttempt(work_id=row.id, lease_token=token, input_revision=row.input_revision,
-        started_at=now, state="running", scope=deepcopy(row.scope))
+        started_at=now, state="running", scope=deepcopy(row.scope) | ({"advance_slot": slot, "advance_job_id": job_id} if slot else {}))
     db.add(attempt)
     db.flush()
     return WorkClaim(row.id, token, attempt.id, row.input_revision, row.stage, row.lane, row.run_date, deepcopy(row.scope))

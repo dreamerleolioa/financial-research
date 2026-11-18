@@ -3,7 +3,7 @@
 Official final bars determine the raw prices. A signal-close window may
 translate them to the signal-date basis only with a verified adjustment.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import isclose
 from statistics import median
 from collections.abc import Mapping
@@ -14,10 +14,12 @@ from ai_stock_sentinel.calibration.forward_validation import OHLC_PRICE_FIELDS, 
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 
 PRICE_EVIDENCE = "validation_price_evidence"
+VENDOR_UNAVAILABLE = "supplementary_vendor_unavailable"
 VERSION = "radar-validation-prices-v1"
 RETRYABLE_PRICE_REASONS = frozenset({
     "adjustment_factor_unverified", "conflicting_price_records", "official_corporate_action_in_window",
     "official_validation_events_unverified", "official_validation_price_missing", "signal_price_anchor_mismatch",
+    "official_suspension_report_unavailable", "validation_price_source_unavailable",
 })
 PRICE_REL_TOL = 1e-7
 PRICE_ABS_TOL = .005
@@ -39,6 +41,9 @@ class OfficialPriceEvidence:
     events: list | None
     report_sources: tuple[EventReport, ...] = ()
     event_coverage: frozenset | None = None
+    target_suspension: dict | None = None
+    suspension_error: str | None = None
+    unavailable_dates: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -200,11 +205,15 @@ def accept_signal_close_prices(candidate, sessions, adjusted_rows, official):
     stock = _window(official.stock, dates)
     benchmark = _window(official.benchmark, dates)
     if not stock or not benchmark:
+        if _events_cover_window(official, dates[1:]) and _cash_dividends(official.events, set(dates[1:])) is None:
+            return AcceptedPrices(reason="official_corporate_action_in_window")
         return AcceptedPrices(reason="official_validation_price_missing")
     anchor = number((candidate.get("input_snapshot", {}).get("ohlcv") or {}).get("close"))
     if anchor is None or not isclose(anchor, stock[0]["close"], abs_tol=PRICE_ABS_TOL, rel_tol=PRICE_REL_TOL):
         return AcceptedPrices(reason="signal_price_anchor_mismatch")
 
+    if _events_cover_window(official, dates[1:]) and _cash_dividends(official.events, set(dates[1:])) is None:
+        return AcceptedPrices(reason="official_corporate_action_in_window")
     adjusted = _provider_index(adjusted_rows, set(dates))
     if adjusted is None:
         return AcceptedPrices(reason="conflicting_price_records")
@@ -267,10 +276,45 @@ def accept_next_open_prices(candidate, sessions, vendor_rows, official):
                        research_rows(benchmark, {}), official, vendor=vendor.values())
 
 
-def refused_prices(row, reason):
-    return row | {"status": "skipped", "skip_reason": reason, "target_date": None,
-                  "outcome": {"expected_target_date": row.get("target_date")
-                              or row.get("outcome", {}).get("expected_target_date")}}
+def has_trade(rows, day):
+    row = rows.get(str(day))
+    # Partial prices are contradictory evidence too. Placeholders contain no
+    # positive price, whereas a damaged candle may still show actual trading.
+    return bool(row and any((value := number(row.get(key))) is not None and value > 0
+                            for key in OHLC_PRICE_FIELDS))
+
+
+def same_official_inputs_without_vendor(saved, incoming):
+    if not (saved.get(VENDOR_UNAVAILABLE) or incoming.get(VENDOR_UNAVAILABLE)):
+        return False
+    def official(value):
+        return {key: item for key, item in value[PRICE_EVIDENCE].items()
+                if key not in {"sha256", "vendor_window_sha256"}}
+    return (saved[PRICE_EVIDENCE].get("return_basis") == "next_open"
+            and official(saved) == official(incoming))
+
+
+def refused_prices(row, reason, official=None, *, sessions=(), event_requires_prices=True):
+    outcome = {"expected_target_date": row.get("target_date") or row.get("outcome", {}).get("expected_target_date")}
+    needs_price = (reason in {"official_validation_price_missing", "official_validation_events_unverified"}
+                   or event_requires_prices and reason == "official_corporate_action_in_window")
+    if official is not None and needs_price and getattr(official, "unavailable_dates", frozenset()).intersection(map(str, sessions)):
+        reason = "validation_price_source_unavailable"
+    if official is not None and getattr(official, "suspension_error", None):
+        outcome["suspension_lookup_error"] = official.suspension_error
+        if reason in {"official_validation_price_missing", "official_validation_events_unverified"}:
+            reason = "official_suspension_report_unavailable"
+    if reason == "official_corporate_action_in_window" and official is not None:
+        if sessions:
+            dates = {str(day) for day in sessions[1:]}
+            events = [e for e in (official.events or []) if e['effective_date'] in dates]
+            reports = [report for report in official.report_sources
+                       if any(report.start_date <= day <= report.end_date for day in dates)]
+        else:
+            events, reports = official.events, official.report_sources
+        outcome['official_event_review'] = {'events': events,
+            'sources': [dict(report.source) for report in reports]}
+    return row | {"status": "skipped", "skip_reason": reason, "target_date": None, "outcome": outcome}
 
 
 def _stable_reviewed_input(value, detail_paths):
@@ -383,17 +427,36 @@ class OfficialPriceCollector:
         self.sources.append(EventReport(str(day), str(day), source, detail=True))
 
     def collect(self, symbol, start, end):
+        return self._for_target(symbol, end, self._collect_range(symbol, start, end))
+
+    def collect_targets(self, symbol, start, targets):
+        # Range receipts establish coverage for all the enclosed windows. Only
+        # dates lacking a target quote need an additional suspension lookup.
+        targets = sorted(set(targets))
+        if len(targets) == 1:
+            target, = targets
+            return {target: self.collect(symbol, start, target)}
+        evidence = self._collect_range(symbol, start, targets[-1])
+        return {target: self._for_target(symbol, target, evidence) for target in targets}
+
+    def _collect_range(self, symbol, start, end):
         from ai_stock_sentinel.daily_radar.next_open_action_scope import _events
         from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
         from ai_stock_sentinel.daily_radar.trading_calendar import months
         from ai_stock_sentinel.daily_radar.work_queue import LostLease
 
+        unavailable = set()
+
+        def add_unavailable(first, last):
+            unavailable.update(str(first + timedelta(days=i)) for i in range((last - first).days + 1))
+
         def collect_prices(ticker, first, last):
             try:
                 rows = self.provider.official_research_history(ticker, start_date=first, end_date=last)
-            except (SourceDependencyBusy, LostLease):
+            except LostLease:
                 raise
-            except (ValueError, RuntimeError, OSError):
+            except (SourceDependencyBusy, ValueError, RuntimeError, OSError):
+                add_unavailable(first, last)
                 return {}
             return {row["date"]: row for row in rows}
 
@@ -407,11 +470,31 @@ class OfficialPriceCollector:
             self.sources = []
             try:
                 month_events = _events(symbol, first, last, self, record_detail=self._capture_event_detail)
-            except (SourceDependencyBusy, LostLease):
+            except LostLease:
                 raise
-            except (ValueError, RuntimeError, OSError):
+            except (SourceDependencyBusy, ValueError, RuntimeError, OSError):
+                add_unavailable(first, last)
                 continue
             events.extend(month_events)
             sources.extend(self.sources)
             event_coverage.update(str(first + timedelta(days=i)) for i in range((last - first).days + 1))
-        return OfficialPriceEvidence(stock, benchmark, events, tuple(sources), frozenset(event_coverage))
+        return OfficialPriceEvidence(stock, benchmark, events, tuple(sources), frozenset(event_coverage),
+                                     unavailable_dates=frozenset(unavailable))
+
+    def _for_target(self, symbol, target, evidence):
+        from ai_stock_sentinel.calibration.research_prices import ResearchSourceError
+        from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
+        from ai_stock_sentinel.daily_radar.trading_status import collect_target_suspension
+        from ai_stock_sentinel.daily_radar.work_queue import LostLease
+
+        partial_price = getattr(self.provider, "has_partial_official_price", None)
+        if has_trade(evidence.stock, target) or (partial_price and partial_price(symbol, target)):
+            return evidence
+        try:
+            return replace(evidence, target_suspension=collect_target_suspension(self.provider, symbol, target))
+        except LostLease:
+            raise
+        except (SourceDependencyBusy, ResearchSourceError) as exc:
+            return replace(evidence, suspension_error=str(exc))
+        except (ValueError, RuntimeError, OSError, KeyError, TypeError) as exc:
+            return replace(evidence, suspension_error=type(exc).__name__)

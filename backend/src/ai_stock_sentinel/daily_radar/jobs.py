@@ -102,6 +102,7 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
     from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
     from ai_stock_sentinel.daily_radar.readiness import inventory_items
     from ai_stock_sentinel.daily_radar.planning_inventory import inventory_input_revision, candidate_page
+    from ai_stock_sentinel.daily_radar.trading_status import CONFLICT
     start = job.run_date - timedelta(days=364)
     calendar = load_calendar(db, start_date=start, as_of_date=job.run_date)
     if calendar is None or calendar.through < job.run_date:
@@ -147,29 +148,47 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
         previous = db.scalar(select(RadarWorkItem).where(RadarWorkItem.work_key == fingerprint(identity)))
         if previous and date.fromisoformat(previous.scope['as_of_date']) > job.run_date:
             identity['cutoff'] = str(job.run_date)
-        # Legacy conflicts need one collection to establish source references
-        # for durable rechecks. The evaluator parks them if still unresolved.
+        # Legacy conflicts/events need one collection to retain concrete evidence.
+        # The evaluator parks an event that the existing rules cannot resolve.
+        collect_review_evidence = item['reason'] in {'conflicting_price_records', 'official_corporate_action_in_window'}
         manual = (item['state'] in {'invalid_window', 'missing_diagnostic', 'input_unverified'}
                   or (item['next_action'] == 'needs_review'
-                      and item['reason'] != 'conflicting_price_records'))
+                      and not collect_review_evidence))
         work = ensure_work(db, identity=identity, stage='window', lane=item['return_basis'], run_date=job.run_date,
             scope=dict(item) | {'as_of_date': str(job.run_date)}, input_revision=fingerprint(identity),
             state='needs_review' if manual else 'pending', retry_at=now,
             priority=20, not_before=stage_time(job.run_date, 'window'))
-        if work.state != 'running':
+        if work.state != 'running' and work.reason != CONFLICT:
+            if (not manual and item['reason'] == 'official_corporate_action_in_window' and work.state == 'needs_review'
+                    and not (work.result or {}).get('source_observations')):
+                work.state, work.reason, work.retry_at = 'pending', item['reason'], now
             if manual and work.reason != 'source_revision_changed':
                 work.state, work.reason, work.retry_at = 'needs_review', item['reason'], None
             elif work.state in {'ready', 'terminal', 'superseded'}:
                 work.state, work.reason, work.retry_at = 'pending', item['reason'], now
         member(db, job, work)
     if completed_keys:
+        # An input replan temporarily retires all memberships. Reattach an
+        # unresolved contradiction when the same fixed window is still present.
+        candidates = db.execute(select(RadarWorkItem.id, RadarWorkItem.identity).where(
+            RadarWorkItem.state == 'needs_review', RadarWorkItem.reason == CONFLICT,
+            RadarWorkItem.run_date <= job.run_date,
+            RadarWorkItem.identity["candidate_id"].as_integer().in_(page))).all()
+        fixed_keys = set(completed_keys)
+        conflicts = [row.id for row in candidates if
+                     fingerprint({k: v for k, v in row.identity.items() if k != 'cutoff'}) in fixed_keys]
+        if conflicts:
+            _upsert_members(db, job.id, conflicts, True)
         db.execute(update(RadarWorkItem).where(RadarWorkItem.work_key.in_(completed_keys),
-            RadarWorkItem.state != 'running', RadarWorkItem.id.in_(select(RadarJobWork.work_id).where(
+            RadarWorkItem.state != 'running',
+            RadarWorkItem.reason.is_distinct_from(CONFLICT),
+            RadarWorkItem.id.in_(select(RadarJobWork.work_id).where(
                 RadarJobWork.job_id == job.id)))
             .values(state='ready', reason=None, retry_at=None))
         db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
             RadarJobWork.active.is_(True), RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(
-                RadarWorkItem.work_key.in_(completed_keys), RadarWorkItem.state != 'running')))
+                RadarWorkItem.work_key.in_(completed_keys), RadarWorkItem.state != 'running',
+                RadarWorkItem.reason.is_distinct_from(CONFLICT))))
             .values(active=False))
     latest_calendar = load_calendar(db, start_date=start, as_of_date=job.run_date)
     if (inventory_input_revision(db, as_of_date=job.run_date) != inputs or latest_calendar is None
@@ -474,10 +493,11 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
     return job
 
 
-def job_status(db, job_id):
+def job_status(db, job_id, *, include_observation=False):
     job = db.get(RadarJob, job_id)
     if job is None:
         raise ValueError('radar_job_not_found')
+    now = database_now(db)
     members = db.execute(select(
         RadarWorkItem.lane, RadarWorkItem.stage, RadarWorkItem.state, RadarWorkItem.reason,
         RadarWorkItem.retry_at, RadarWorkItem.not_before, RadarWorkItem.lease_expires_at,
@@ -493,7 +513,6 @@ def job_status(db, job_id):
             lane['reasons'][work.reason] += 1
     closed = any(w.stage == 'market-session' and w.state == 'terminal' and w.market_status == 'closed' for w in members)
     scope = job.scope or {}
-    now = database_now(db)
     runnable = any((w.state in {'pending', 'waiting_provider'} and w.retry_at is not None
         and aware(w.retry_at) <= now and aware(w.not_before) <= now)
         or (w.state == 'running' and aware(w.lease_expires_at) <= now) for w in members)
@@ -504,6 +523,7 @@ def job_status(db, job_id):
         'planning': {k: (scope.get('window_planning') or {}).get(k)
             for k in ('state', 'complete', 'processed_candidates')},
         'runnable_now': runnable,
+        **({'observed_at': now.isoformat()} if include_observation else {}),
         'next_attempt_at': job.next_attempt_at.isoformat() if job.next_attempt_at else None,
         'publication': {'state': 'closed' if closed else (scope.get('audit') or {}).get('publication', {}).get('state', 'pending')},
         'lanes': lanes, 'last_audit': scope.get('audit'), 'work_count': len(members)}
