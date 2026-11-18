@@ -175,7 +175,7 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
     return reports
 
 
-def scoring_prerequisite_inputs(session, *, run_date):
+def scoring_prerequisite_inputs(session, *, run_date, include_all_contexts=False):
     """Actual publication prerequisites without scanning validation history."""
     from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
     from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
@@ -183,6 +183,7 @@ def scoring_prerequisite_inputs(session, *, run_date):
     steps = prepared.step_statuses if prepared else {}
     blockers = []
     cache_rows = []
+    contexts = {}
     if prepared is None:
         blockers.append({"reason": "prepared_run_missing", "next_action": "prepare_universe"})
     else:
@@ -193,12 +194,12 @@ def scoring_prerequisite_inputs(session, *, run_date):
                     "missing_symbols": data.get("missing_symbols", []),
                     "missing_symbol_reasons": data.get("missing_symbol_reasons", {}),
                     "next_action": "resume"})
-        if durable_enabled():
-            from ai_stock_sentinel.daily_radar.integrity import background_gaps
-            for step, missing in background_gaps(session, prepared).items():
-                if missing:
-                    blockers.append({'step': step, 'reason': 'same_day_context_incomplete',
-                        'missing_symbols': missing, 'next_action': 'resume'})
+        from ai_stock_sentinel.daily_radar.integrity import background_blockers
+        from ai_stock_sentinel.daily_radar.repository import get_shared_background_context_trace_by_symbol
+        required_contexts = ("lending", "full_margin") if durable_enabled() else ("full_margin",)
+        contexts = get_shared_background_context_trace_by_symbol(session, symbols=prepared.selected_symbols,
+            context_types=None if include_all_contexts else required_contexts, reference_date=run_date, point_in_time=True)
+        blockers.extend(background_blockers(prepared, contexts))
         try:
             require_prepared_open_session(prepared)
             cache_rows = _require_complete_daily_radar_raw_rows(get_final_raw_data_rows_for_symbols(
@@ -227,14 +228,26 @@ def scoring_prerequisite_inputs(session, *, run_date):
             blockers.append({'step': 'refresh-institutional-flows',
                 'reason': 'daily_radar_institutional_archive_incomplete',
                 'missing_markets': exc.detail.get('missing_markets', ['TW', 'TWO']), 'next_action': 'resume'})
-    return prepared, steps, blockers, cache_rows
+    return prepared, steps, blockers, cache_rows, contexts
 
 
-def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False, scope='all'):
+def _live_margin_blocker(blocker):
+    return blocker.get("step") == "refresh-full-margin" and blocker.get("reason") == "same_day_context_incomplete"
+
+
+def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False,
+                   scope='all', audit_completed_score=False):
     """Caller holds a read-only/no-autoflush session; never fetches providers."""
+    if scope == 'validation':
+        return {'version': 'radar-readiness-v1', 'scope': scope, 'market': 'TW',
+                'requested_run_date': str(run_date), 'effective_run_date': str(run_date),
+                'validation': validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
+                    sample_limit=None if include_all_validation_gaps else 100), 'data_ready': None}
     if scope not in {'all', 'publication'}:
         raise ValueError('invalid_readiness_scope')
-    prepared, steps, blockers, cache_rows = scoring_prerequisite_inputs(session, run_date=run_date)
+    from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
+    prepared, steps, blockers, cache_rows, contexts = scoring_prerequisite_inputs(
+        session, run_date=run_date, include_all_contexts=snapshots_enabled())
     run = session.scalar(select(DailyRadarRun).where(DailyRadarRun.id.in_(canonical_radar_run_ids(
         market="TW", start_date=run_date, end_date=run_date))))
     stored_selected_count = session.scalar(select(func.count()).select_from(DailyRadarCandidate).where(
@@ -243,32 +256,45 @@ def read_readiness(session, *, run_date: date, lookback_days=365, include_all_va
     validation = (validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
                                       sample_limit=None if include_all_validation_gaps else 100)
                   if scope == 'all' else {})
-    from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
     input_summary = None
-    current_digest = None
-    if snapshots_enabled() and prepared is not None and not blockers:
-        from ai_stock_sentinel.daily_radar.input_manifests import (
-            collect_execution_inputs, prepared_input_context, manifest_envelope,
-        )
-        from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_cache_records
-        from ai_stock_sentinel.daily_radar.repository import get_shared_background_context_trace_by_symbol, BACKGROUND_CONTEXT_TYPES
-        from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
-        contexts = get_shared_background_context_trace_by_symbol(session, symbols=prepared.selected_symbols,
-            context_types=BACKGROUND_CONTEXT_TYPES, reference_date=run_date, point_in_time=True)
-        current_inputs = collect_execution_inputs(session, run_date=run_date, market="TW",
-            records=load_daily_radar_cache_records(cache_rows), market_context=prepared.market_context,
-            background_contexts=contexts, input_context=prepared_input_context(prepared, cache_rows))
-        current_digest = fingerprint(manifest_envelope(run_date=run_date, market="TW", payload=current_inputs))
     if run and snapshots_enabled():
         from ai_stock_sentinel.daily_radar.input_manifests import published_input_summary
         input_summary = published_input_summary(session, run)
-        input_summary["matches_current_inputs"] = bool(current_digest and input_summary.get("fingerprint") == current_digest)
         if input_summary["state"] == "recorded":
             output_complete = output_complete and input_summary["output_complete"]
+
+    frozen_audit = (audit_completed_score and run and run.status == "completed" and output_complete
+                    and input_summary and input_summary["state"] == "recorded")
+    current_digest = None
+    if snapshots_enabled() and prepared is not None and (
+            not blockers or (frozen_audit and all(_live_margin_blocker(b) for b in blockers))):
+        from ai_stock_sentinel.daily_radar.input_manifests import (
+            collect_execution_inputs, prepared_input_context, manifest_envelope,
+        )
+        from ai_stock_sentinel.daily_radar.integrity import prepared_scoring_records
+        from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+        current_inputs = collect_execution_inputs(session, run_date=run_date, market="TW",
+            records=prepared_scoring_records(cache_rows, contexts), market_context=prepared.market_context,
+            background_contexts=contexts, input_context=prepared_input_context(prepared, cache_rows))
+        current_digest = fingerprint(manifest_envelope(run_date=run_date, market="TW", payload=current_inputs))
+        if frozen_audit and current_digest != input_summary["fingerprint"]:
+            # Older publications froze the raw OHLCV record before projecting the
+            # latest margin trace. Require the entire original envelope to match.
+            from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_cache_records
+            original_inputs = current_inputs | {"records": load_daily_radar_cache_records(cache_rows)}
+            original_digest = fingerprint(manifest_envelope(run_date=run_date, market="TW", payload=original_inputs))
+            if original_digest == input_summary["fingerprint"]:
+                current_digest = original_digest
+        if frozen_audit and current_digest == input_summary["fingerprint"]:
+            blockers = [b for b in blockers if not _live_margin_blocker(b)]
+    if input_summary is not None:
+        input_summary["matches_current_inputs"] = bool(current_digest and input_summary.get("fingerprint") == current_digest)
     return {"version": "radar-readiness-v1", "scope": scope, "market": "TW", "requested_run_date": str(run_date),
         "effective_run_date": str(run_date), "lookback_days": lookback_days,
         "sample_start_date": str(run_date - timedelta(days=lookback_days - 1)),
         "scoring": {"ready": not blockers, "blockers": blockers,
+            "full_margin_ready": bool(prepared and prepared.selected_symbols
+                and not any(b.get("step") == "refresh-full-margin" for b in blockers)),
             "prepared_run_id": prepared.id if prepared else None,
             "input_fingerprint": current_digest,
             "symbol_count": len(prepared.selected_symbols) if prepared else 0,

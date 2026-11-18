@@ -2527,6 +2527,9 @@ def test_current_short_history_reaches_prefilter_without_blocking_healthy_symbol
     )
     prepared.step_statuses["market-session"] = {"status":"open","market":"TW","run_date":str(run_date),"provider":"twse","dataset":"MI_INDEX"}
     daily_radar_db_session.add(prepared)
+    for symbol in prepared.selected_symbols:
+        _seed_current_margin(daily_radar_db_session, run_date,
+                             {"latest_margin_balance": 100, "margin_balance_delta_pct": 1.0}, symbol)
     daily_radar_db_session.commit()
     short = _build_technical_payload('3718.TWO', _recovery_frame(periods=9), run_date=run_date)
     client = _api_client(monkeypatch, daily_radar_db_session,
@@ -2724,9 +2727,9 @@ curl() {
     expected = ['refresh-full-margin', 'refresh-ohlcv', 'refresh-avwap']
     if failed_step not in {'refresh-full-margin', 'refresh-ohlcv'}:
         expected.append('run-scoring')
-    expected.extend(['refresh-managed-raw-data', 'validation'])
+    expected.append('refresh-managed-raw-data')
     assert calls == expected, result.stdout + result.stderr
-    assert result.returncode == (1 if failed_step else 0), result.stdout + result.stderr
+    assert result.returncode == int(bool(failed_step) and failed_step != 'validation'), result.stdout + result.stderr
 
 
 def test_daily_radar_refresh_managed_raw_data_covers_recent_analysis_without_exposing_symbols(
@@ -3081,8 +3084,15 @@ def test_daily_radar_run_scoring_requires_completed_refresh_steps(
     ]
 
 
+def _seed_current_margin(db, day, payload, symbol="2330.TW"):
+    upsert_shared_background_context(db, symbol=symbol, context_type="full_margin",
+        applicable_consumers=("daily_radar",), source={"provider": "fixture"},
+        as_of_date=day, freshness="fresh", payload=payload, replay_key=f"margin:{symbol}:{day}")
+
+
+@pytest.mark.parametrize("current_margin", [True, False])
 def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
-    monkeypatch,
+    monkeypatch, current_margin,
     daily_radar_db_session: Session,
 ) -> None:
     _persist_raw_data(
@@ -3112,6 +3122,15 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
             "market-session": {"status":"open","market":"TW","run_date":"2026-06-01","provider":"twse","dataset":"MI_INDEX"},
         },
     )
+    if current_margin:
+        _seed_current_margin(daily_radar_db_session, prepared.run_date,
+                             {"latest_margin_balance": 42, "margin_balance_delta_pct": 0.5})
+    else:
+        _seed_current_margin(daily_radar_db_session, prepared.run_date, {
+            "applicability": "not_applicable", "eligibility": {
+                "source_url": "https://www.twse.com.tw/exchangeReport/TWT93U", "symbol": "2330.TW",
+                "reason": "official_credit_trading_ineligible", "credit_status": "Y",
+                "report_date": str(prepared.run_date), "evaluated_for": str(prepared.run_date)}})
     daily_radar_db_session.add(prepared)
     daily_radar_db_session.commit()
     client = _api_client(monkeypatch, daily_radar_db_session)
@@ -3125,11 +3144,17 @@ def test_daily_radar_run_scoring_allows_failed_optional_avwap_step(
     finally:
         _clear_daily_radar_api_overrides()
 
+    if not current_margin:
+        assert response.status_code == 409
+        assert response.json()["detail"]["missing_symbols_by_step"] == {"refresh-full-margin": ["2330.TW"]}
+        assert response.json()["detail"]["missing_symbol_reasons"]["refresh-full-margin"]["2330.TW"] == (
+            "twse_margin_eligibility_requires_recheck")
+        return
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
     captured = client.captured_daily_radar_call  # type: ignore[attr-defined]
-    assert [row.symbol for row in captured["cache_rows"]] == ["2330.TW"]
+    assert captured["records"][0]["margin"]["margin_balance"] == 42
 
 
 def test_daily_radar_scoring_attaches_prepared_discovery_audit(monkeypatch, daily_radar_db_session: Session) -> None:
@@ -3143,6 +3168,7 @@ def test_daily_radar_scoring_attaches_prepared_discovery_audit(monkeypatch, dail
     )}
     steps["market-session"] = {"status":"open","market":"TW","run_date":str(day),"provider":"twse","dataset":"MI_INDEX"}
     steps["prepare-universe"] = {"status": "completed", "market_exploration": audit}
+    _seed_current_margin(daily_radar_db_session, day, {"margin_balance_delta_pct": 0})
     daily_radar_db_session.add(DailyRadarPreparedRun(
         run_date=day, market="TW", selected_symbols=["2330.TW"], universe=[], symbol_count=1,
         market_context=_market_context(), step_statuses=steps,

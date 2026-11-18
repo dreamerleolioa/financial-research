@@ -2,23 +2,48 @@
 import argparse
 from http.client import HTTPException
 from datetime import date
+import json
 import os
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 from daily_radar_http import get, diagnostic_json, request_deadline
 
 
-def valid_readiness(result, run_date):
-    return (isinstance(result, dict) and result.get('version') == 'radar-readiness-v1'
-        and result.get('market') == 'TW' and result.get('requested_run_date') == run_date
-        and result.get('effective_run_date') == run_date
-        and all(isinstance(result.get(key), dict) for key in ('publication', 'scoring', 'validation'))
-        and all(isinstance(result['validation'].get(basis), dict) for basis in ('signal_close', 'next_open')))
+def read_scoped(endpoint, token, run_date, scope, request):
+    params = {'market': 'TW', 'run_date': run_date, 'scope': scope}
+    path = endpoint.rstrip('/') + '/internal/daily-radar/readiness?'
+    try:
+        return request(path + urlencode(params), token)
+    except HTTPError as exc:
+        if exc.code != 422 or scope != 'validation':
+            raise
+        # The previous FastAPI router accepts only all/publication. Retry only
+        # this read when its sole validation error identifies the scope field.
+        payload = json.loads(exc.read(8192))
+        details = payload.get('detail') if isinstance(payload, dict) else None
+        if not (isinstance(details, list) and len(details) == 1 and isinstance(details[0], dict)
+                and details[0].get('loc') == ['query', 'scope'] and details[0].get('type') == 'literal_error'):
+            raise
+    return request(path + urlencode(params | {'scope': 'all'}), token)
+
+
+def valid_readiness(result, run_date, scope='all'):
+    if not (isinstance(result, dict) and result.get('version') == 'radar-readiness-v1'
+            and result.get('market') == 'TW' and result.get('requested_run_date') == run_date
+            and result.get('effective_run_date') == run_date):
+        return False
+    if scope in {'all', 'publication'} and not all(isinstance(result.get(key), dict)
+                                                  for key in ('publication', 'scoring')):
+        return False
+    validation = result.get('validation')
+    return isinstance(validation, dict) and (scope == 'publication' or
+        all(isinstance(validation.get(basis), dict) for basis in ('signal_close', 'next_open')))
 
 
 def scope_ready(result, run_date, scope):
-    if not valid_readiness(result, run_date):
+    if not valid_readiness(result, run_date, scope):
         return False
     if scope == 'publication':
         provenance = result['publication'].get('input_manifest')
@@ -42,9 +67,9 @@ def run(*, endpoint, token, run_date, output_dir, scope="all", request=get):
     path.mkdir(parents=True, exist_ok=True)
     try:
         with request_deadline(180):
-            result = request(endpoint.rstrip("/") + "/internal/daily-radar/readiness?" + urlencode(
-                {"market": "TW", "run_date": run_date}), token)
-        if not valid_readiness(result, run_date):
+            requested = scope if scope in {'all', 'publication'} else 'validation'
+            result = read_scoped(endpoint, token, run_date, requested, request)
+        if not valid_readiness(result, run_date, scope):
             raise ValueError("invalid_readiness_response")
         ready = scope_ready(result, run_date, scope)
     except (OSError, HTTPException, ValueError, TypeError, AttributeError) as exc:

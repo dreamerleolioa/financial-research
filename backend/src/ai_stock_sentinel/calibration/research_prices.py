@@ -15,7 +15,7 @@ from ai_stock_sentinel.calibration.official_corporate_actions import tpex_report
 from ai_stock_sentinel.calibration.twse_rights_recovery import TWSE
 from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 from ai_stock_sentinel.data_sources.official_http import official_request_get
-from ai_stock_sentinel.phase1_avwap.provider import normalize_twse_stock_day_payload
+from ai_stock_sentinel.phase1_avwap.provider import _twse_trade_date, normalize_twse_stock_day_payload
 from ai_stock_sentinel.taiwan_symbols import is_supported_taiwan_symbol
 from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
 
@@ -93,76 +93,122 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.deadline = None
         self.request_count = 0
         self.cache = {}
+        self._partial_twse_prices = set()
         self.diagnostics = []
         self.budget_limit = None
         self.source_store = source_store if source_store is not None else store_for_session(session)
 
     def fetch(self, symbols, *, start_date, end_date):
-        supported = [s for s in symbols if s in {"TAIEX", "SPX"} or is_supported_taiwan_symbol(s)]
-        if not supported:
+        from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
+
+        supported = list(dict.fromkeys(s for s in symbols
+                                       if s in {"TAIEX", "SPX"} or is_supported_taiwan_symbol(s)))
+        if self.source_store is not None and durable_enabled():
+            return self._fetch_source_units(supported, start_date=start_date, end_date=end_date, allow_source=True)
+        if self.source_store is None:
+            return self._fetch_vendor_batch(supported, start_date=start_date, end_date=end_date)
+        captured = self.fetch_cached(supported, start_date=start_date, end_date=end_date)
+        missing = [symbol for symbol in supported if symbol not in captured]
+        for symbol, rows in self._fetch_vendor_batch(missing, start_date=start_date, end_date=end_date).items():
+            if not rows:
+                continue
+            try:
+                payload, proof = self.source_store.capture_sdk(operation="research-unadjusted-history",
+                    params=self._sdk_params(symbol, start_date, end_date), fetch=lambda: {"rows": rows}, reuse=False)
+                captured[symbol] = self._captured_rows(payload, proof, start_date, end_date)
+            except Exception as exc:
+                self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": [symbol]})
+        return captured
+
+    def _fetch_vendor_batch(self, symbols, *, start_date, end_date):
+        allowed = []
+        for index, symbol in enumerate(symbols):
+            try:
+                self._reserve_request()
+            except TimeoutError as exc:
+                self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__,
+                                         "symbols": symbols[index:]})
+                break
+            allowed.append(symbol)
+        if not allowed:
             return {}
         try:
-            if self.source_store is not None:
-                from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
-                if durable_enabled():
-                    return self._fetch_source_units(supported, start_date=start_date, end_date=end_date)
-                operation = "research-unadjusted-history"
-                params = {symbol: {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
-                    "auto_adjust": False, "actions": True} for symbol in supported}
-                captured = {symbol: self.source_store.lookup_sdk(operation=operation, params=params[symbol])
-                            for symbol in supported}
-                missing = [symbol for symbol, item in captured.items() if item is None]
-                try:
-                    fresh = super().fetch(missing, start_date=start_date, end_date=end_date) if missing else {}
-                except Exception as exc:
-                    self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": missing})
-                    fresh = {}
-                for symbol in missing:
-                    if fresh.get(symbol):
-                        captured[symbol] = self.source_store.capture_sdk(operation=operation, params=params[symbol],
-                            fetch=lambda symbol=symbol: {"rows": fresh[symbol]}, reuse=False)
-                return {symbol: [dict(row) | {"source_capture": proof} for row in payload["rows"]
-                                if start_date <= date.fromisoformat(row["date"]) <= end_date]
-                        for symbol, item in captured.items() if item is not None for payload, proof in [item]}
-            return super().fetch(supported, start_date=start_date, end_date=end_date)
+            return super().fetch(allowed, start_date=start_date, end_date=end_date)
         except Exception as exc:
-            self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": supported})
+            self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": allowed})
             return {}
 
-    def _fetch_source_units(self, symbols, *, start_date, end_date):
+    @staticmethod
+    def _sdk_params(symbol, start_date, end_date):
+        return {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
+                "auto_adjust": False, "actions": True}
+
+    @staticmethod
+    def _captured_rows(payload, proof, start_date, end_date):
+        return [dict(row) | {"source_capture": proof} for row in payload["rows"]
+                if start_date <= date.fromisoformat(row["date"]) <= end_date]
+
+    def fetch_cached(self, symbols, *, start_date, end_date):
+        return self._fetch_source_units(symbols, start_date=start_date, end_date=end_date, allow_source=False)
+
+    def _fetch_vendor(self, symbol, *, start_date, end_date):
+        self._reserve_request()
+        rows = super().fetch([symbol], start_date=start_date, end_date=end_date).get(symbol, [])
+        self.history_timeout()
+        if not rows:
+            raise RuntimeError("forward_price_provider_returned_no_data")
+        return rows
+
+    def handle_history_failure(self, symbol, exc):
+        self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": [symbol]})
+        return True
+
+    def history_timeout(self):
+        if self.deadline is None:
+            return None
+        remaining = self.deadline - self.clock()
+        if remaining <= 0:
+            self.budget_limit = "deadline"
+            raise _budget_exhausted()
+        return min(10, remaining)
+
+    def _fetch_source_units(self, symbols, *, start_date, end_date, allow_source):
         result = {}
-        for symbol in symbols:
-            params = {"symbol": symbol, "start_date": str(start_date), "end_date": str(end_date),
-                      "auto_adjust": False, "actions": True}
+        operation = "research-unadjusted-history"
+        for symbol in dict.fromkeys(symbols):
             try:
-                captured = self.source_store.lookup_sdk(operation="research-unadjusted-history", params=params)
+                if self.source_store is None:
+                    break
+                params = self._sdk_params(symbol, start_date, end_date)
+                captured = self.source_store.lookup_sdk(operation=operation, params=params)
                 if captured is None:
+                    if not allow_source:
+                        continue
                     def fetch(symbol=symbol):
-                        rows = super(RecoveringResearchPriceProvider, self).fetch(
-                            [symbol], start_date=start_date, end_date=end_date)
-                        if not rows.get(symbol):
-                            raise RuntimeError("forward_price_provider_returned_no_data")
-                        return {"rows": rows[symbol]}
-                    captured = self.source_store.capture_sdk(operation="research-unadjusted-history", params=params, fetch=fetch)
+                        return {"rows": self._fetch_vendor(symbol, start_date=start_date, end_date=end_date)}
+                    captured = self.source_store.capture_sdk(operation=operation, params=params, fetch=fetch)
                 payload, proof = captured
-                result[symbol] = [dict(row) | {"source_capture": proof} for row in payload["rows"]
-                    if start_date <= date.fromisoformat(row["date"]) <= end_date]
+                result[symbol] = self._captured_rows(payload, proof, start_date, end_date)
             except Exception as exc:
                 self.diagnostics.append({"stage": "yfinance", "error_type": type(exc).__name__, "symbols": [symbol]})
         return result
 
-    def _request(self, getter, url, *, params):
+    def _reserve_request(self):
         if self.deadline is None:
             self.deadline = self.clock() + self.total_timeout
+        remaining = self.deadline - self.clock()
+        if remaining <= 0 or self.request_count >= self.max_requests:
+            self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
+            raise _budget_exhausted()
+        self.request_count += 1
+        return remaining
+
+    def _request(self, getter, url, *, params):
         # Only the shared index dependency gets one retry; every attempt uses
         # the same request/deadline budget as stock and corporate-action recovery.
         attempts = 2 if url == INDEX_URL and getter is self.official_getter else 1
         for attempt in range(1, attempts + 1):
-            remaining = self.deadline - self.clock()
-            if remaining <= 0 or self.request_count >= self.max_requests:
-                self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
-                raise _budget_exhausted()
-            self.request_count += 1
+            remaining = self._reserve_request()
             kwargs = {"params": params, "timeout": min(8, remaining)}
             if getter is self.official_getter and getter is official_request_get:
                 kwargs["max_attempts"] = 1
@@ -185,7 +231,8 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     reason = "research_source_transport_error"
                     retryable = isinstance(exc, (requests.exceptions.Timeout,
                         requests.exceptions.ConnectionError, OSError))
-                will_retry = (retryable and attempt < attempts and self.clock() < self.deadline
+                provider_backoff = status == 429 or bool(headers.get("Retry-After"))
+                will_retry = (retryable and not provider_backoff and attempt < attempts and self.clock() < self.deadline
                               and self.request_count < self.max_requests)
                 self.diagnostics.append({"stage": "source_request", "source_url": url,
                     "http_status": status, "content_type": headers.get("content-type"),
@@ -193,7 +240,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     "error_type": type(exc).__name__, "reason": reason})
                 if will_retry:
                     continue
-                if retryable and attempt < attempts:
+                if retryable and not provider_backoff and attempt < attempts:
                     self.budget_limit = "request_limit" if self.request_count >= self.max_requests else "deadline"
                     raise _budget_exhausted() from exc
                 raise ResearchSourceError(reason, retryable=retryable, http_status=status,
@@ -224,11 +271,34 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                     or not isinstance(payload.get("data"), list) or payload["total"] != len(payload["data"])):
                 raise ValueError("official_research_incomplete_month_report")
             rows = [row | {"official_price_report": source} for row in self._twse_month_rows(symbol, payload)]
+            if symbol != "TAIEX":
+                self._remember_partial_twse_prices(symbol, month, payload, rows)
         days = [date.fromisoformat(row["date"]) for row in rows]
         if len(set(days)) != len(days) or any((day.year, day.month) != (month.year, month.month) for day in days):
             raise ValueError("official_research_row_dates_invalid")
         self.cache[key] = sorted(rows, key=lambda row: row["date"])
         return self.cache[key]
+
+    def _remember_partial_twse_prices(self, symbol, month, payload, rows):
+        fields = payload.get("fields", [])
+        required = ("日期", "開盤價", "最高價", "最低價", "收盤價")
+        if not all(name in fields for name in required):
+            return
+        day_index, *prices = [fields.index(name) for name in required]
+        complete = {row["date"] for row in rows}
+        for raw in payload.get("data", []):
+            if not isinstance(raw, list) or len(raw) <= max(day_index, *prices):
+                continue
+            try:
+                day = _twse_trade_date(str(raw[day_index]))
+            except ValueError:
+                continue
+            if ((day.year, day.month) == (month.year, month.month) and str(day) not in complete
+                    and any((value := _number(raw[index])) is not None and value > 0 for index in prices)):
+                self._partial_twse_prices.add((symbol, day))
+
+    def has_partial_official_price(self, symbol, day):
+        return (symbol, day) in self._partial_twse_prices
 
     @staticmethod
     def _twse_month_rows(symbol, payload):

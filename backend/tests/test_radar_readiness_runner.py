@@ -57,3 +57,19 @@ def test_missing_persisted_candidates_do_not_satisfy_publication_readiness(tmp_p
     payload['publication']['output_complete'] = False
     assert run(endpoint='https://backend.invalid', token='private', run_date='2026-11-06', output_dir=tmp_path,
         request=lambda *args: payload, scope='publication') == 1
+
+
+
+def test_legacy_scope_rejection_falls_back_only_for_the_validation_read(tmp_path):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    urls = []
+    def older_server(url, token):
+        urls.append(url)
+        if url.endswith('scope=validation'):
+            detail = {'detail':[{'loc':['query','scope'],'type':'literal_error','input':'validation'}]}
+            raise HTTPError(url,422,'unsupported validation scope',{},BytesIO(json.dumps(detail).encode()))
+        return response()
+    assert run(endpoint='https://backend.invalid',token='test',run_date='2026-11-06',
+               output_dir=tmp_path,scope='signal_close',request=older_server)==0
+    assert len(urls)==2 and urls[1].endswith('run_date=2026-11-06&scope=all')

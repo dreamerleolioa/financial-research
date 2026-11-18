@@ -343,12 +343,15 @@ def _recovery_matches_official_events(outcome, events, days):
 
 
 def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, provider,
-                               as_of_date, benchmark_symbol, calendar):
+                               as_of_date, benchmark_symbol, calendar, price_source_unavailable=False):
     from ai_stock_sentinel.calibration.research_prices import _mark_conflicts
     from ai_stock_sentinel.daily_radar.next_open_history_repair import _Tape, _verify_after
     from ai_stock_sentinel.daily_radar.next_open_official_repair import collect_window
     from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
 
+    diagnostics = getattr(provider, 'diagnostics', [])
+    event_diagnostics_start = len(diagnostics)
+    from ai_stock_sentinel.daily_radar.price_acceptance import VENDOR_UNAVAILABLE
     accepted = accept_next_open_prices(candidate, days, yahoo, official)
     base = evaluate_research_window(
         candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
@@ -356,7 +359,20 @@ def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, p
         trading_calendar=calendar.sessions, validate_signal_session=True,
     )
     if not accepted.reason:
-        return accepted.with_proof(base) if base["status"] == "validated" else base
+        if base["status"] != "validated":
+            return base
+        result = accepted.with_proof(base)
+        vendor_dates = {row["date"] for row in yahoo}
+        if not {str(day) for day in days}.issubset(vendor_dates):
+            result["outcome"][VENDOR_UNAVAILABLE] = True
+        return result
+    from ai_stock_sentinel.daily_radar.trading_status import suspended_outcome
+    if suspended := suspended_outcome(base, candidate, days, official):
+        return suspended
+    if (price_source_unavailable and accepted.reason == "official_corporate_action_in_window"
+            and (not yahoo or not benchmark)):
+        return bind_validation_input(candidate, refused_prices(base | {"target_date": str(days[-1])}, "validation_price_source_unavailable",
+            official, sessions=days))
     if accepted.reason in {"official_corporate_action_in_window", "official_validation_price_missing"}:
         # Keep the established rights/distribution/reduction rules. A recovered
         # window must still independently prove its official inputs before use.
@@ -392,7 +408,90 @@ def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, p
                 raise
             except (ValueError, RuntimeError, OSError):
                 pass
-    return bind_validation_input(candidate, refused_prices(base | {"target_date": str(days[-1])}, accepted.reason))
+    result = refused_prices(base | {"target_date": str(days[-1])}, accepted.reason, official, sessions=days)
+    if result["skip_reason"] == 'official_corporate_action_in_window':
+        result['outcome']['event_validation_diagnostics'] = [
+            {key: item[key] for key in ('stage', 'reason', 'target_date') if key in item}
+            for item in diagnostics[event_diagnostics_start:] if item.get('symbol') == candidate['symbol']
+            and item.get('target_date') == str(days[-1])
+            and item.get('stage') in {rights.PROVENANCE_KEY, corporate_actions.PROVENANCE_KEY}]
+    return bind_validation_input(candidate, result)
+
+
+def _fill_missing_vendor_prices(current, cached):
+    dates = {row["date"] for row in current}
+    return [*current, *(row for row in cached if row["date"] not in dates)]
+
+
+def _collect_locked_research_prices(candidates, pending, *, calendar, request, as_of_date,
+                                    collector, provider, durable_window):
+    from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceEvidence
+    from ai_stock_sentinel.daily_radar.trading_status import proven_suspension
+
+    by_symbol = defaultdict(list)
+    for candidate in candidates:
+        signal = parse_date(candidate["record_date"])
+        future = [day for day in calendar.sessions if signal < day <= as_of_date]
+        for window in pending[candidate_key(candidate)]:
+            if len(future) >= window:
+                by_symbol[candidate["symbol"]].append((candidate, [signal, *future[:window]]))
+
+    outcomes = []
+    for symbol, windows in by_symbol.items():
+        start = min(days[0] for _, days in windows)
+        targets = sorted({days[-1] for _, days in windows})
+        try:
+            official = collector.collect_targets(symbol, start, targets)
+        except SourceDependencyBusy:
+            if durable_window:
+                raise
+            official = dict.fromkeys(targets, OfficialPriceEvidence({}, {}, None,
+                suspension_error="research_source_dependency_waiting"))
+        tradable = [target for target in targets if not proven_suspension(official[target], symbol, target)]
+        diagnostics = getattr(provider, 'diagnostics', [])
+        before_fetch = len(diagnostics)
+        yahoo, benchmark = [], []
+        unavailable = False
+        if tradable:
+            try:
+                yahoo = provider.fetch([symbol], start_date=start, end_date=as_of_date).get(symbol, [])
+                # Ordinary next-open calculations use official benchmark bars.
+                # Vendor benchmark history is needed by the corporate-action recovery rules.
+                if any(not official[target].stock.get(str(target))
+                       or any(e["effective_date"] <= str(target) and
+                              (e["family"] != "rights" or not e.get("cash_dividend"))
+                              for e in official[target].events or ())
+                       for target in tradable):
+                    benchmark = provider.fetch([request.benchmark_symbol], start_date=start,
+                                               end_date=as_of_date).get(request.benchmark_symbol, [])
+            except (SourceDependencyBusy, OSError):
+                unavailable = True
+            unavailable |= any(row.get('stage') == 'yfinance' and row.get('error_type')
+                               for row in diagnostics[before_fetch:])
+        for candidate, days in windows:
+            window_yahoo, window_benchmark = yahoo, benchmark
+            if unavailable and days[-1] in tradable and (days[0], days[-1]) != (start, as_of_date):
+                cached = getattr(provider, "fetch_cached", None)
+                if cached:
+                    dates = {str(day) for day in days}
+                    if not dates.issubset({r["date"] for r in yahoo}):
+                        saved = cached([symbol], start_date=days[0], end_date=days[-1]).get(symbol, [])
+                        window_yahoo = _fill_missing_vendor_prices(yahoo, saved)
+                    if not dates.issubset({r["date"] for r in benchmark}):
+                        saved = cached([request.benchmark_symbol], start_date=days[0],
+                                       end_date=days[-1]).get(request.benchmark_symbol, [])
+                        window_benchmark = _fill_missing_vendor_prices(benchmark, saved)
+            try:
+                outcomes.append(_evaluate_locked_next_open(candidate, days, yahoo=window_yahoo, benchmark=window_benchmark,
+                    official=official[days[-1]], provider=provider, as_of_date=as_of_date,
+                    benchmark_symbol=request.benchmark_symbol, calendar=calendar, price_source_unavailable=unavailable))
+            except SourceDependencyBusy:
+                if durable_window:
+                    raise
+                unavailable_evidence = OfficialPriceEvidence({}, {}, None, suspension_error="research_source_dependency_waiting")
+                outcomes.append(_evaluate_locked_next_open(candidate, days, yahoo=[], benchmark=[], official=unavailable_evidence,
+                    provider=provider, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol, calendar=calendar))
+    return outcomes
 
 
 def run_research_validation(session, request, *, as_of_date: date, price_provider, calendar_provider=None,
@@ -473,6 +572,11 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             if future_count >= min(pending[candidate_key(candidate)]):
                 due_candidates.append(candidate)
         fresh = due_candidates
+    if fresh and official_price_collector is not None and official_calendar is not None:
+        session.rollback()
+        outcomes.extend(_collect_locked_research_prices(fresh, pending, calendar=official_calendar, request=request,
+            as_of_date=as_of_date, collector=official_price_collector, provider=price_provider, durable_window=prepare_only))
+        fresh = []
     if fresh:
         price_start = min(parse_date(c["record_date"]) for c in fresh)
         reference = load_benchmark_prices_from_prepared_market_context(
@@ -524,21 +628,8 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
             if callable(repair) and official_price_collector is None:
                 prices = repair(prices, required_dates_by_symbol=required_by_symbol, as_of_date=as_of_date)
             for symbol in batch:
-                official = None
-                if official_price_collector is not None and official_calendar is not None:
-                    official = official_price_collector.collect(
-                        symbol, min(parse_date(c["record_date"]) for c, _, _ in by_symbol[symbol]),
-                        max(required_by_symbol[symbol]),
-                    )
                 for candidate, due, candidate_calendar in by_symbol[symbol]:
                     for window in due:
-                        if official is not None:
-                            signal = parse_date(candidate["record_date"])
-                            days = [signal, *[day for day in candidate_calendar if signal < day <= as_of_date][:window]]
-                            outcomes.append(_evaluate_locked_next_open(candidate, days, yahoo=yahoo.get(symbol, []),
-                                benchmark=benchmark, official=official, provider=price_provider, as_of_date=as_of_date,
-                                benchmark_symbol=request.benchmark_symbol, calendar=official_calendar))
-                            continue
                         row = evaluate_research_window(
                             candidate, price_series=prices.get(symbol, []), benchmark_prices=benchmark,
                             window_days=window, as_of_date=as_of_date, benchmark_symbol=request.benchmark_symbol,
@@ -606,6 +697,8 @@ def run_research_validation(session, request, *, as_of_date: date, price_provide
                   "max_requests": getattr(price_provider, "max_requests", None),
                   "total_timeout_seconds": getattr(price_provider, "total_timeout", None)},
               "skip_reasons": dict(Counter(r["skip_reason"] for r in persisted if r["status"] == "skipped"))}
+    if summary.get("preserved_conflicts"):
+        report["preserved_conflicts"] = summary["preserved_conflicts"]
     if scoped:
         report["aggregation_scope"] = "explicit_conflict_windows"
         verified = [

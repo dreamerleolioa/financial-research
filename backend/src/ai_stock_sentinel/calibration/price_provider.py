@@ -114,6 +114,12 @@ class YFinanceForwardPriceProvider:
     auto_adjust = True
     actions = False
 
+    def history_timeout(self):
+        return None
+
+    def handle_history_failure(self, symbol, exc):
+        return False
+
     def fetch(
         self,
         symbols: Sequence[str],
@@ -166,9 +172,12 @@ class YFinanceForwardPriceProvider:
 
             ticker._get_ticker_tz = checked_timezone
             try:
+                timeout = self.history_timeout()
                 history = ticker.history(start=start_date, end=end_date + timedelta(days=1),
                     period=None, interval="1d", auto_adjust=self.auto_adjust,
-                    actions=self.actions, raise_errors=True)
+                    actions=self.actions, raise_errors=True,
+                    **({"timeout": timeout} if timeout is not None else {}))
+                self.history_timeout()  # Check completion per ticker, before waiting for batch peers.
             except ForwardPriceUnavailableError as exc:
                 if exc is not unavailable:
                     raise
@@ -183,8 +192,16 @@ class YFinanceForwardPriceProvider:
         # yf.download catches every Ticker error and substitutes empty frames.
         # Per-ticker strict history keeps those failures visible, with bounded
         # concurrency rather than process-wide exception configuration changes.
+        def collect_symbol(symbol):
+            try:
+                return fetch_symbol(symbol)
+            except Exception as exc:
+                if len(ordered_symbols) == 1 or not self.handle_history_failure(symbol, exc):
+                    raise
+                return symbol, []
+
         with ThreadPoolExecutor(max_workers=min(8, len(ordered_symbols))) as pool:
-            result = {symbol: rows for symbol, rows in pool.map(fetch_symbol, ordered_symbols) if rows}
+            result = {symbol: rows for symbol, rows in pool.map(collect_symbol, ordered_symbols) if rows}
         if not result:
             raise ForwardPriceUnavailableError(ordered_symbols, start_date=start_date, end_date=end_date)
         return result

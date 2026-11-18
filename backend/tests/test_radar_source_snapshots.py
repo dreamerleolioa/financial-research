@@ -196,3 +196,34 @@ def test_covering_snapshot_is_reused_without_returning_future_prices(archive, mo
     result = RecoveringResearchPriceProvider(source_store=store).fetch(['2330.TW'],
         start_date=date(2026, 11, 5), end_date=date(2026, 11, 5))
     assert [row['date'] for row in result['2330.TW']] == ['2026-11-05']
+
+
+def test_twse_margin_worker_rechecks_cached_pre_roster_empty_response(archive, monkeypatch):
+    from ai_stock_sentinel.daily_radar.source_snapshots import PARSER_VERSION
+
+    policy = {key: '' for key in ('DAILY_RADAR_TW_OHLCV_PROVIDER_MODE', 'DAILY_RADAR_BACKGROUND_PROVIDER_MODE',
+                                  'DAILY_RADAR_LENDING_PROVIDER_MODE', 'DAILY_RADAR_AVWAP_PROVIDER_MODE')}
+    for key in policy:
+        monkeypatch.delenv(key, raising=False)
+    store = SourceSnapshotStore(archive)
+    params = {'symbol': '2258.TW', 'context_type': 'full_margin', 'run_date': '2026-11-17'}
+    operation = 'background-chip-context'
+    legacy_request = {'provider': 'radar-provider-chain', 'operation': operation, 'params': params,
+                      'policy': policy, 'parser_version': PARSER_VERSION, 'sdk_version': None}
+    store.record(legacy_request, {'contexts': [{'missing_reason': 'finmind_no_data'}]})
+    fresh = {'contexts': [{'eligibility': 'newly checked'}]}
+    value, proof = store.capture_operation(operation=operation, params=params, fetch=lambda: fresh)
+    assert value == fresh
+    assert store.capture_operation(operation=operation, params=params, fetch=lambda: pytest.fail('unexpected fetch')) == (fresh, proof)
+
+
+def test_late_intraday_capture_does_not_replace_after_date_confirmation(archive):
+    params = {'symbol': '2258.TW', 'context_type': 'full_margin', 'run_date': '2026-11-17'}
+    # 00:09 Taipei is still within a raw snapshot lifetime of the trading date.
+    now = datetime(2026, 11, 17, 16, 9, tzinfo=timezone.utc)
+    store = SourceSnapshotStore(archive, clock=lambda: now)
+    def capture(value):
+        return store.capture_operation(operation='background-chip-context', params=params, fetch=lambda: value)[0]
+    assert capture({'contexts': ['preliminary']}) == {'contexts': ['preliminary']}
+    now += timedelta(minutes=1)
+    assert capture({'contexts': ['rechecked']}) == {'contexts': ['rechecked']}

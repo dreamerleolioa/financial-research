@@ -89,8 +89,10 @@ def main() -> None:
                 trading_calendar=calendar.sessions if calendar is not None else None,
             )
             if args.write_results:
-                accept_validation_results(session, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
+                write_summary = accept_validation_results(session, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
                 session.commit()
+                if write_summary.get("preserved_conflicts"):
+                    evaluation.report["preserved_conflicts"] = write_summary["preserved_conflicts"]
 
     if args.output is not None:
         write_report(evaluation.report, args.output)

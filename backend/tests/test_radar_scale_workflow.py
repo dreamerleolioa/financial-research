@@ -100,7 +100,7 @@ def seed_publication(db):
         for kind in ('lending','full_margin'):
             db.add(SharedBackgroundContext(symbol=symbol, context_type=kind,
                 applicable_consumers=['daily_radar'], source={'provider':'fixture'},
-                as_of_date=DAY, freshness='fresh', payload={'margin_balance_delta_pct':1},
+                as_of_date=DAY, freshness='fresh', payload={'latest_margin_balance':400, 'margin_balance_delta_pct':1},
                 replay_key=f'{symbol}:{kind}:{DAY}'))
     _persist_required_institutional_archive(db, run_date=DAY, include_market_bars=False)
     result = execute_prepared_scoring(db, payload=DailyRadarRefreshStepRequest(run_date=DAY))

@@ -84,7 +84,9 @@ def test_postgres_target_canonicalizes_socket_and_rejects_symlinks_and_environme
         dsn = f'postgresql+psycopg2:///radar_test?host={socket}/.&port=55476'
         assert _local_test_url(dsn).query['host'] == str(socket.resolve())
         link = socket / 'outside'
-        link.symlink_to(Path(__file__).parents[1], target_is_directory=True)
+        # A checkout itself may be under /tmp (isolated verification clones).
+        # The rejected destination must actually be outside the allowed root.
+        link.symlink_to(Path('/'), target_is_directory=True)
         with pytest.raises(ValueError):
             _local_test_url(f'postgresql+psycopg2:///radar_test?host={link}&port=55476')
         for parameter in ('hostaddr=192.0.2.1', 'dbname=production', 'service=production',

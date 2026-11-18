@@ -7,10 +7,9 @@ import os
 from pathlib import Path
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlencode
 
 from daily_radar_http import get, post, request_deadline, _NoRedirect, diagnostic_json
-from check_daily_radar_readiness import valid_readiness, scope_ready
+from check_daily_radar_readiness import valid_readiness, scope_ready, read_scoped
 
 
 RECOLLECT_CONFLICTS = {"validation_inputs_changed", "validation_results_changed"}
@@ -117,11 +116,10 @@ def run(*, endpoint, token, run_date, output_dir, request=None, sleep=time.sleep
                         raise TimeoutError('validation_budget_exhausted')
                     root = endpoint.removesuffix('/internal/daily-radar/forward-validation/run')
                     with request_deadline(min(180, remaining_time)):
-                        readiness = readiness_request(root + '/internal/daily-radar/readiness?' + urlencode(
-                            {'market': 'TW', 'run_date': run_date}), token)
+                        readiness = read_scoped(root, token, run_date, 'validation', readiness_request)
                     if clock() > deadline:
                         raise TimeoutError('validation_budget_exhausted')
-                    if not valid_readiness(readiness, run_date):
+                    if not valid_readiness(readiness, run_date, basis):
                         raise ValueError('invalid_readiness_response')
                     ready = scope_ready(readiness, run_date, basis)
                     readiness_blocked = not ready

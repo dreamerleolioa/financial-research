@@ -79,7 +79,7 @@ flowchart TD
 
 價格衝突保留為 `needs_review`。有來源參照時，只在來源到期後重查來源 hash；相同內容不重跑完整窗口，hash 改變才喚醒 evaluator。日期錯誤、舊 validated 結果缺診斷、已審核 rights／history repair 仍由既有 manifest／CAS 流程處理。內部程式錯誤列為 `failed_internal`，不藉由無限重試或放寬檢查取得成功。未完成窗口和 optional 工作在後續觸發續跑。
 
-原 cron 時間保留，包括下一日 00:30 才可 scoring。新增每 30 分鐘的 resume trigger，沒有今天是否開市的前置 gate。開關關閉時保留既有流程；開啟時由新 driver 記錄／推進意圖，23:50 validation、00:30 publication、07:00 repair 仍用獨立 readiness deadline 判定失敗。一般早期 enqueue／advance 成功只表示已記錄或有進展。
+台北時間隔日 00:30 評分、07:00 補修發布資料，02:15 驗證成熟窗口、06:45 補修驗證。durable 模式在整點與半點續跑 Radar，在每小時 15 分與 45 分續跑 validation，兩者各自使用 `--owner`、佇列和 readiness。到期的舊混合意圖首次續跑時在同一交易記下發布與驗證的接手者，之後每頁最多接回 1,000 筆原有工作，保留規劃進度，既有租約、行情退避時間與提交結果均依原工作 ID 接續。日期沿用儲存的交易日。切換時先將後端流量移到支援 `scoped_resume=true` 的版本，再啟用兩個排程。仍接收新請求的舊後端無法辨識工作歸屬。已領取的工作可依原租約提交，交接標記可辨識上一版 worker 的最後一次 reconcile。平日 17:45 的續跑時段留給 Radar 行情歸檔。
 
 Durable driver 可用 `--known-validation-gaps` 讀取已審閱的 `radar-known-validation-gaps-v1` 檔案。檔案包含盤點截止日 `as_of_date` 及當日由唯讀 readiness 以 `include_all_validation_gaps=true` 回傳的 `gaps`。已知窗口依候選版本、日曆、目標日、原因及缺口結果版本精確比對。完整比對時，已知且相同的缺口仍列在 JSON 摘要，`readiness_deadline_passed` 仍為 false。新增、改變、無法完整比對的缺口，以及發布或內部工作失敗，仍讓 driver 非零退出。未傳入清單的執行保留嚴格告警。
 
@@ -93,7 +93,7 @@ Migration `ef6a7b8c9d0e` 為 candidates 增加精簡 validation projection 與�
 
 評分歷史摘要依交易日遞減、同日 symbol 遞增固定排序；實體列順序或 query plan 改變不能改變 scoring input manifest。同日原本沒有排序的舊 manifest，若排列不同，首次核對可能需要重新發布目前 canonical run；原 manifest 與歷史結果不覆寫。
 
-Driver 每次請求後原子保存 `jobs.json`，保留 job ID、日期、已完成請求、工作摘要與錯誤型別。工作剩餘預算不足一個正常請求時停止並標記 `time_budget`，留待續跑；實際請求 timeout 仍是失敗。最終 readiness 另有 180 秒預算，失敗保留先前進度並非零退出。Deadline 意圖只建立所要求的 lanes；publication 單獨檢查當日發布，validation 與 repair 仍執行完整盤點及原有缺口判斷。一般 workflow 最多 150 次 advance，deadline 最多 2,000 次，兩者工作時間上限仍為 1,200 秒；避免 23:50 才開放窗口卻被 150 次上限固定截斷。
+Driver 每次請求後原子保存 `jobs.json`，保留 job ID、日期、已完成請求、工作摘要與錯誤型別。工作剩餘預算不足一個正常請求時停止並標記 `time_budget`，留待續跑；實際請求 timeout 仍是失敗。最終 readiness 另有 180 秒預算，失敗保留先前進度並非零退出。發布排程負責 publication 與 auxiliary，deadline 檢查發布。驗證排程負責兩種報酬口徑與其日曆，deadline 盤點窗口與已審閱缺口。一般續跑最多 150 次 advance，deadline 最多 2,000 次，工作時間上限均為 1,200 秒。
 
 近正式規模的隔離驗證使用 `RADAR_SCALE_CANDIDATES=15500` 與 `RADAR_TEST_POSTGRES_DSN` 執行 `uv run pytest tests/test_radar_scale_workflow.py -q -s`。從已完成必要 refresh 的資料開始，涵蓋 migration 回填、15,500 個歷史候選／155,000 個窗口、當日 230 檔來源與實際評分、1,088 個缺口、提前分批續跑與同一輪 deadline、兩種 validation 落庫、完整 readiness 及冪等續跑。外部行情以固定證據替身提供，DB、HTTP router、driver、domain handler 與接受交易使用實際實作；不代表正式 provider 或部署已驗證。
 

@@ -6,12 +6,24 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
+from ai_stock_sentinel.daily_radar.twse_margin_roster import (
+    TWSE_CREDIT_STATUS_URL, TWSE_MARGIN_ROSTER_URL, valid_roster_evidence,
+)
+
 TWSE_NEW_LISTING_URL = "https://www.twse.com.tw/rwd/zh/company/newlisting"
 TWSE_PUBLIC_OFFERING_URL = "https://www.twse.com.tw/announcement/publicForm"
-TWSE_CREDIT_STATUS_URL = "https://www.twse.com.tw/exchangeReport/TWT93U"
 TPEX_CREDIT_STATUS_URL = "https://www.tpex.org.tw/www/zh-tw/margin/sbl"
 # 僅接受官方明確標示的第一上市；轉上市及其他註記不能用此規則推定資格。
 _INITIAL_LISTING_REMARKS = {"第一上市", "創新板第一上市"}
+
+
+def margin_inapplicability_description(payload: Mapping[str, Any]) -> str:
+    source = payload["eligibility"]["source_url"]
+    if source == TWSE_MARGIN_ROSTER_URL:
+        return "未列入證交所當日可融資融券名單"
+    if source in (TWSE_CREDIT_STATUS_URL, TPEX_CREDIT_STATUS_URL):
+        return "官方信用資格表標示當日未取得信用交易資格"
+    return "初次上市櫃未滿六個月"
 
 
 def margin_is_not_applicable(
@@ -24,6 +36,8 @@ def margin_is_not_applicable(
     if payload.get("applicability") != "not_applicable" or not isinstance(evidence, Mapping):
         return False
     source = evidence.get("source_url")
+    if source == TWSE_MARGIN_ROSTER_URL:
+        return valid_roster_evidence(evidence, run_date=run_date, symbol=symbol)
     if source in (TWSE_CREDIT_STATUS_URL, TPEX_CREDIT_STATUS_URL):
         suffix = ".TW" if source == TWSE_CREDIT_STATUS_URL else ".TWO"
         try:

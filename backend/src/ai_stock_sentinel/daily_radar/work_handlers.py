@@ -278,12 +278,13 @@ class WorkHandlers:
             raise LostLease('radar_window_inputs_changed')
         request = DailyRadarForwardValidationRunRequest(mode='due', as_of_date=asof, start_date=signal,
             end_date=signal, windows=[scope['window_days']], return_basis=scope['return_basis'])
-        def result_row(db):
-            return db.scalar(select(DailyRadarForwardValidationResult).where(
+        def result_row(db, *, lock=False):
+            query = (select(DailyRadarForwardValidationResult).where(
                 DailyRadarForwardValidationResult.candidate_id == scope['candidate_id'],
                 DailyRadarForwardValidationResult.window_days == scope['window_days'],
                 DailyRadarForwardValidationResult.validation_version == scope['validation_version'])
                 .execution_options(populate_existing=True))
+            return db.scalar(query.with_for_update() if lock else query)
         expected = {(scope['candidate_id'], scope['window_days'], scope['validation_version']):
                     forward_validation_result_revision(result_row(self.db))}
         provider = (CachedForwardPrices(self.db, store=self.store) if scope['return_basis'] == 'signal_close'
@@ -305,7 +306,17 @@ class WorkHandlers:
             latest_revision = fingerprint([str(d) for d in latest.sessions if signal <= d <= target]) if latest and target else None
             if [validation_candidate_revision(c) for c in current] != revision or latest is None or latest.through < asof or latest_revision != calendar_revision:
                 raise LostLease('radar_window_inputs_changed')
-            existing = result_row(db)
+            existing = result_row(db, lock=True)
+            from ai_stock_sentinel.daily_radar.trading_status import CONFLICT, suspension_conflicts
+            conflicts = [
+                {'candidate_id': scope['candidate_id'], 'window_days': scope['window_days'],
+                 'target_date': row['target_date'], 'reason': CONFLICT}
+                for row in bundle.outcomes
+                if suspension_conflicts(existing, row, calendar=latest, symbol=current[0]['symbol'])
+            ]
+            if conflicts:
+                return {'state': 'needs_review', 'reason': CONFLICT,
+                        'result': {'conflicts': conflicts, 'manual_repair_required': True}}
             if existing is not None and existing.evaluation_as_of_date and existing.evaluation_as_of_date > asof:
                 return {'state': 'needs_review', 'reason': 'newer_validation_result_preserved',
                         'result': {'manual_repair_required': True}}
@@ -317,7 +328,10 @@ class WorkHandlers:
                     return {'state': 'needs_review', 'reason': reason, 'result': {'manual_repair_required': True}}
             kwargs = {'terminal_skip_reasons': RESEARCH_TERMINAL_REASONS} if scope['return_basis'] == 'next_open' else {}
             try:
-                upsert_forward_validation_results(db, bundle.outcomes, expected_revisions=expected, **kwargs)
+                summary = upsert_forward_validation_results(db, bundle.outcomes, calendar=latest, expected_revisions=expected, **kwargs)
+                if summary.get('preserved_conflicts'):
+                    return {'state': 'needs_review', 'reason': 'validated_return_conflicts_with_suspension',
+                            'result': {'conflicts': summary['preserved_conflicts'], 'manual_repair_required': True}}
             except ValidationAcceptanceConflict:
                 return {'state': 'needs_review', 'reason': 'validation_price_version_changed',
                         'result': {'manual_repair_required': True}}

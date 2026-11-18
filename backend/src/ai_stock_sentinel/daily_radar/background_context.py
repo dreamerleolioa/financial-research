@@ -9,7 +9,8 @@ from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
 
-from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
+from ai_stock_sentinel.daily_radar.margin_applicability import margin_inapplicability_description, margin_is_not_applicable
+from ai_stock_sentinel.daily_radar.twse_margin_roster import twse_exemption_is_current
 from ai_stock_sentinel.daily_radar.repository import (
     BACKGROUND_CONTEXT_CONSUMER_DAILY_RADAR,
     BACKGROUND_CONTEXT_TYPES,
@@ -95,17 +96,29 @@ class StubBackgroundChipContextProvider:
 
 
 def same_day_background_context_is_reusable(row: Any, *, run_date: date) -> bool:
-    if row.as_of_date != run_date or row.freshness != "fresh":
-        return False
-    if row.context_type != "full_margin":
-        return True
+    return background_context_gap_reason(
+        symbol=row.symbol, context_type=row.context_type, run_date=run_date,
+        as_of_date=str(row.as_of_date), freshness=row.freshness, payload=_mapping(row.payload),
+        missing_reason=row.missing_reason,
+    ) is None
 
-    payload = _mapping(row.payload)
-    if margin_is_not_applicable(payload, run_date=run_date, symbol=row.symbol):
-        return True
-    return _is_finite_number(payload.get("margin_balance_delta_pct")) or (
-        payload.get("margin_balance_delta_pct_unavailable_reason") == "baseline_zero"
-    )
+
+def background_context_gap_reason(*, symbol, context_type, run_date, as_of_date, freshness,
+                                  payload, missing_reason=None) -> str | None:
+    if as_of_date != run_date.isoformat() or freshness != "fresh":
+        return missing_reason or "same_day_context_missing"
+    if context_type != "full_margin":
+        return None
+    if payload.get("applicability") == "not_applicable":
+        if not margin_is_not_applicable(payload, run_date=run_date, symbol=symbol):
+            return "invalid_margin_eligibility"
+        if symbol.endswith(".TW") and not twse_exemption_is_current(payload["eligibility"], run_date):
+            return "twse_margin_eligibility_requires_recheck"
+        return None
+    if (_is_finite_number(payload.get("margin_balance_delta_pct"))
+            or payload.get("margin_balance_delta_pct_unavailable_reason") == "baseline_zero"):
+        return None
+    return missing_reason or "margin_delta_missing"
 
 
 @dataclass(frozen=True)
@@ -408,7 +421,7 @@ def build_background_context_labels(
             else BACKGROUND_CONTEXT_LABELS.get(context_type)
         ) or f"背景脈絡：{context_type}"
         if context_type == "full_margin" and margin_is_not_applicable(_mapping(context.get("payload"))):
-            label = "融資融券不適用（第一上市未滿六個月）"
+            label = f"融資融券不適用（{margin_inapplicability_description(context['payload'])}）"
         labels.append(
             {
                 "context_type": context_type,

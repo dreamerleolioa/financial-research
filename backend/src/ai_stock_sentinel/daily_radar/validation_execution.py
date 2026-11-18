@@ -26,12 +26,15 @@ logger = logging.getLogger("ai_stock_sentinel.daily_radar.maintenance_router")
 
 
 def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar, request,
-                                  collect_official, fetch_prices):
+                                  collect_official, fetch_prices, collect_targets=None, fetch_cached=None):
     from ai_stock_sentinel.calibration.forward_validation import evaluate_forward_window
     from ai_stock_sentinel.daily_radar.forward_validation import _with_market_lifecycle_diagnostics
     from ai_stock_sentinel.daily_radar.observation_validation import evaluate_observation
     from ai_stock_sentinel.daily_radar.validation_inputs import bind_validation_input
     from ai_stock_sentinel.daily_radar.window_identity import bind_window
+    from ai_stock_sentinel.daily_radar.trading_status import proven_suspension, suspended_outcome
+    from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
+    from yfinance.exceptions import YFRateLimitError
 
     by_symbol = defaultdict(list)
     for candidate in candidates:
@@ -47,10 +50,23 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
     for symbol, windows in by_symbol.items():
         start = min(days[0] for _, days in windows)
         end = max(days[-1] for _, days in windows)
-        official = collect_official(symbol, start, end)
-        adjusted = fetch_prices([symbol], start_date=start, end_date=end).get(symbol, [])
+        targets = sorted({days[-1] for _, days in windows})
+        official_by_target = (collect_targets(symbol, start, targets) if collect_targets else
+                              {target: collect_official(symbol, start, target) for target in targets})
+        tradable_targets = [t for t in targets if not proven_suspension(official_by_target[t], symbol, t)]
+        adjusted, price_unavailable = [], False
+        if tradable_targets:
+            try:
+                adjusted = fetch_prices([symbol], start_date=start, end_date=max(tradable_targets)).get(symbol, [])
+            except (SourceDependencyBusy, OSError, YFRateLimitError):
+                price_unavailable = True
         for candidate, days in windows:
-            accepted = accept_signal_close_prices(candidate, days, adjusted, official)
+            official = official_by_target[days[-1]]
+            window_prices = adjusted
+            missing_adjusted = not window_prices and days[-1] in tradable_targets
+            if missing_adjusted and fetch_cached and (days[0], days[-1]) != (start, max(tradable_targets)):
+                window_prices = fetch_cached([symbol], start_date=days[0], end_date=days[-1]).get(symbol, [])
+            accepted = accept_signal_close_prices(candidate, days, window_prices, official)
             row = evaluate_forward_window(
                 candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
                 adapter=DAILY_RADAR_FORWARD_ADAPTER, window_days=len(days) - 1,
@@ -58,6 +74,9 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
                 validation_version=FORWARD_VALIDATION_VERSION, hit_threshold_pct=0,
                 trading_calendar=calendar.sessions,
             )
+            if suspended := suspended_outcome(row, candidate, days, official):
+                outcomes.append(suspended)
+                continue
             if (accepted.reason == "official_validation_price_missing"
                     and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}):
                 lifecycle = _with_market_lifecycle_diagnostics(
@@ -70,7 +89,11 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
                     outcomes.append(bind_validation_input(candidate, lifecycle))
                     continue
             if accepted.reason and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}:
-                row = refused_prices(row, accepted.reason)
+                reason = accepted.reason
+                if (price_unavailable and not window_prices
+                        and reason in {"adjustment_factor_unverified", "official_validation_price_missing"}):
+                    reason = "validation_price_source_unavailable"
+                row = refused_prices(row, reason, official, sessions=days, event_requires_prices=False)
             elif row["status"] == "validated":
                 row["outcome"]["observation_diagnostic"] = evaluate_observation(
                     candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
@@ -221,7 +244,9 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         if official_price_collector is not None and calendar is not None:
             db.rollback()
             outcomes = _collect_locked_signal_prices(candidates, windows_by_candidate, calendar=calendar,
-                request=request, collect_official=official_price_collector.collect, fetch_prices=fetch_prices)
+                request=request, collect_official=official_price_collector.collect, fetch_prices=fetch_prices,
+                collect_targets=official_price_collector.collect_targets,
+                fetch_cached=getattr(price_provider, "fetch_cached", None))
         else:
             outcomes = build_forward_validation_report(
                 candidates,
@@ -264,6 +289,8 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
         )
         from ai_stock_sentinel.daily_radar.forward_validation import current_run_validation_diagnostics
         report.update(current_run_validation_diagnostics(outcomes))
+        if write_summary.get("preserved_conflicts"):
+            report["preserved_conflicts"] = write_summary["preserved_conflicts"]
         if source_errors:
             report.update({"source_recovery": source_errors[:64], "source_recovery_summary": {
                 "total_count": len(source_errors), "reported_count": min(len(source_errors), 64),

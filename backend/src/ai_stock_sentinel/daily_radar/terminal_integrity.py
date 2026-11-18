@@ -47,6 +47,10 @@ def terminal_evidence_matches(candidate, row, *, basis, sessions, as_of_date):
         return parse_date(row.get('target_date')) == target and _proven_termination(
             symbol=candidate['symbol'], signal_date=signal, target_date=target,
             evaluation_date=evaluation, payload=payload)
+    if reason == 'target_session_suspended':
+        from ai_stock_sentinel.daily_radar.trading_status import KEY, matches
+        return (evaluation >= target and parse_date(row.get('target_date')) == target
+                and matches(payload.get(KEY), symbol=candidate['symbol'], target=target))
     if (basis != 'next_open' or payload.get('return_basis') != 'next_open'
             or payload.get('price_basis') != 'unadjusted_price' or evaluation < target
             or parse_date(payload.get('expected_target_date')) != target):

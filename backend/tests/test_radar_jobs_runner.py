@@ -98,11 +98,15 @@ def test_registered_history_stays_in_readiness_without_repeating_alert(tmp_path)
 
 
 @pytest.mark.parametrize('schedule, step, expected_lanes, use_baseline', [
-    ('50 15 * * 1-5', '', 'signal_close,next_open', True),
-    ('0 23 * * 1-5', '', 'publication,signal_close,next_open', True),
+    ('15 18 * * 1-5', '', 'signal_close,next_open', True),
+    ('0 23 * * 1-5', '', 'publication', False),
     ('30 16 * * 1-5', '', 'publication', False),
     ('*/30 * * * *', '', None, False),
+    ('15 0-17,19-23 * * *', '', None, False),
+    ('45 22 * * 1-5', '', 'signal_close,next_open', True),
     ('', 'run-forward-validation', 'signal_close,next_open', True),
+    ('', 'run-scoring', 'publication', False),
+    ('', 'repair-avwap-and-rescore', 'publication', False),
 ])
 def test_durable_workflow_passes_reviewed_baseline_at_validation_deadlines(
         tmp_path, schedule, step, expected_lanes, use_baseline):
@@ -116,8 +120,12 @@ def test_durable_workflow_passes_reviewed_baseline_at_validation_deadlines(
     from run_daily_radar_jobs import validation_gap_key
 
     root = Path(__file__).parents[2]
-    workflow = yaml.load((root / '.github/workflows/daily-radar.yml').read_text(), Loader=yaml.BaseLoader)
-    commands = next(step['run'] for step in workflow['jobs']['durable-radar']['steps'] if 'run' in step)
+    owner = 'validation' if use_baseline or schedule == '15 0-17,19-23 * * *' else 'radar'
+    filename = 'daily-radar-validation.yml' if owner == 'validation' else 'daily-radar.yml'
+    workflow = yaml.load((root / '.github/workflows' / filename).read_text(), Loader=yaml.BaseLoader)
+    if schedule:
+        assert {'cron': schedule} in workflow['on']['schedule']
+    commands = next(step['run'] for step in workflow['jobs']['durable-' + owner]['steps'] if 'run' in step)
     stub = tmp_path / 'python'
     stub.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
     stub.chmod(0o700)
@@ -128,6 +136,8 @@ def test_durable_workflow_passes_reviewed_baseline_at_validation_deadlines(
     output = subprocess.run(['bash', '-c', commands], check=True, cwd=root, env=env,
                             text=True, capture_output=True).stdout.splitlines()
     assert output[0] == '.github/scripts/run_daily_radar_jobs.py'
+    assert output[output.index('--owner') + 1] == owner
+    assert ('--recheck-publication' in output) == (step in ('run-scoring', 'repair-avwap-and-rescore'))
     if expected_lanes:
         assert output[output.index('--require-lanes') + 1] == expected_lanes
     else:

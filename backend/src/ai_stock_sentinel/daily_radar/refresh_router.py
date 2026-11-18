@@ -8,7 +8,7 @@ import logging
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar.market_session import MarketSessionProvider, require_open_session
@@ -226,9 +226,12 @@ def refresh_daily_radar_avwap_endpoint(
     db: Session = Depends(get_db),
     provider: DailyPriceProvider = Depends(get_phase1_avwap_daily_price_provider),
 ) -> DailyRadarRefreshStepResponse:
+    from ai_stock_sentinel.daily_radar.jobs import prepared_generation
+
     request = payload or DailyRadarRefreshStepRequest()
     run_date = request.run_date or dependencies._backend_today()
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    generation = prepared_generation(prepared)
     refresh_symbol_set = resolve_phase1_refresh_symbol_set(db, seed_symbols=list(prepared.selected_symbols))
     refresh_symbols = refresh_symbol_set.symbols
     preparation = prepare_phase1_avwap_refresh_for_symbols(
@@ -239,6 +242,14 @@ def refresh_daily_radar_avwap_endpoint(
     )
     db.rollback()
     result = persist_phase1_avwap_refresh(db, collect_phase1_avwap_refresh(preparation))
+    # A concurrent validation may have committed a calendar during collection.
+    if db.get_bind().dialect.name == 'sqlite':
+        db.execute(text('UPDATE daily_radar_prepared_runs SET id=id WHERE 0'))
+    prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
+    db.refresh(prepared, with_for_update=True)
+    if prepared_generation(prepared) != generation:
+        db.rollback()
+        raise HTTPException(status_code=409, detail={'code': 'daily_radar_prepared_run_changed'})
     status = "failed" if result.missing_symbols else "completed"
     missing_symbol_reasons = dict(result.missing_symbol_reasons)
     skipped_symbol_reasons = {**refresh_symbol_set.skipped_symbol_reasons, **result.skipped_symbol_reasons}
