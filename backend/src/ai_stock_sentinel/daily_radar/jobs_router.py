@@ -21,7 +21,8 @@ def capabilities(db):
     migrated = {'radar_jobs', 'radar_work_items', 'radar_job_work', 'radar_work_attempts',
                 'radar_source_snapshots', 'radar_input_manifests', 'radar_run_inputs'} <= tables
     return {'version': 'radar-durable-v1', 'enabled': durable_enabled() and snapshots_enabled() and migrated,
-            'scoped_resume': True, 'parallel_window_advance': True, 'durable_execution': durable_enabled(), 'source_snapshots': snapshots_enabled(), 'migrated': migrated}
+            'scoped_resume': True, 'parallel_window_advance': True, 'validation_gap_comparison': True,
+            'durable_execution': durable_enabled(), 'source_snapshots': snapshots_enabled(), 'migrated': migrated}
 
 
 def require_enabled(db):

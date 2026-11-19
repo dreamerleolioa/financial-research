@@ -32,6 +32,7 @@ from ai_stock_sentinel.daily_radar.validation_inputs import (
     validation_candidate_revision, validation_inputs_match, UNVERIFIED,
 )
 from ai_stock_sentinel.db.models import DailyRadarRun, DailyRadarCandidate
+from ai_stock_sentinel.radar_gap_contract import digest, validation_gap_key
 
 
 def recovery_action(reason):
@@ -148,16 +149,29 @@ def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=Non
                 yield item
 
 
-def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100):
+def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100, known_hashes=None):
     calendar = load_calendar(session, start_date=as_of_date, as_of_date=as_of_date)
     reports = {basis: {"validation_version": version, "counts": Counter(), "reasons": Counter(), "gaps": []}
         for basis, version in (("signal_close", FORWARD_VALIDATION_VERSION), ("next_open", RESEARCH_VALIDATION_VERSION))}
+    seen_windows = set()
+    if known_hashes is not None:
+        for report in reports.values():
+            report['comparison'] = {'known': 0, 'new': 0}
     for item in inventory_items(session, as_of_date=as_of_date, lookback_days=lookback_days,
-                                include_gap_revision=sample_limit is None):
+                                include_gap_revision=sample_limit is None or known_hashes is not None):
         report = reports[item["return_basis"]]
         report["counts"][item["state"]] += 1
         if item["state"] not in {"validated", "terminal", "immature"}:
             report["reasons"][item["reason"]] += 1
+            if known_hashes is not None:
+                window = (item['candidate_id'], item['return_basis'], item['window_days'])
+                if window in seen_windows:
+                    raise HTTPException(409, detail='duplicate_validation_gap')
+                seen_windows.add(window)
+                known = digest(validation_gap_key(item)) in known_hashes
+                report['comparison']['known' if known else 'new'] += 1
+                if known:
+                    continue  # The compact report samples new gaps only.
             if sample_limit is None or len(report["gaps"]) < sample_limit:
                 report["gaps"].append(item)
     for report in reports.values():

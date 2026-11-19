@@ -83,6 +83,10 @@ flowchart TD
 
 Durable driver 可用 `--known-validation-gaps` 讀取已審閱的 `radar-known-validation-gaps-v1` 檔案。檔案包含盤點截止日 `as_of_date` 及當日由唯讀 readiness 以 `include_all_validation_gaps=true` 回傳的 `gaps`。已知窗口依候選版本、日曆、目標日、原因及缺口結果版本精確比對。完整比對時，已知且相同的缺口仍列在 JSON 摘要，`readiness_deadline_passed` 仍為 false。新增、改變、無法完整比對的缺口，以及發布或內部工作失敗，仍讓 driver 非零退出。未傳入清單的執行保留嚴格告警。
 
+定日 validation 偵測到 `validation_gap_comparison` 後，會把已審閱基準的日期與窗口指紋送到內部唯讀 `POST /internal/daily-radar/readiness/compare`。後端在同一份 PostgreSQL 快照盤點兩種口徑，回傳基準指紋、已知與新增數、原因分布及每種口徑最多 5 個新增窗口。runner 核對回應日期、基準、交易日曆與總數後判斷告警。逐筆明細仍可用原 GET 查詢。舊後端沿用原本的完整報告檢查。一般續跑依既有工作佇列前進。
+
+若手動指定的交易日早於基準日期，該日使用空清單比對。有完整日曆且零缺口的口徑可通過。有缺口的口徑回報 `new: null` 並保留告警，避免用後來的基準認列歷史缺口。
+
 ### 歷史規模與請求預算
 
 Migration `ef6a7b8c9d0e` 為 candidates 增加精簡 validation projection 與輸入 hash，由 PostgreSQL trigger 在同一寫入交易內維護，包含 raw SQL 更新；部署前需回填既有 candidates。規劃與候選讀取不再反覆解壓完整 replay JSON，canonical run、策略版本、輸入及日曆改變仍會使規劃失效。SQLite 保留原始欄位投影，兩條讀取路徑須有相同語意。
