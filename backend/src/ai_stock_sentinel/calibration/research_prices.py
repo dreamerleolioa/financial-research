@@ -203,7 +203,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.request_count += 1
         return remaining
 
-    def _request(self, getter, url, *, params):
+    def _request(self, getter, url, *, params, decode=_json):
         # Only the shared index dependency gets one retry; every attempt uses
         # the same request/deadline budget as stock and corporate-action recovery.
         attempts = 2 if url == INDEX_URL and getter is self.official_getter else 1
@@ -217,7 +217,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
             response = None
             try:
                 response = getter(url, **kwargs)
-                payload = _json(response)
+                payload = decode(response)
             except (ValueError, requests.exceptions.RequestException, OSError) as exc:
                 status = getattr(response, "status_code", None)
                 headers = getattr(response, "headers", {})
@@ -379,6 +379,35 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         if captured is None:
             raise ValueError("twse_rights_report_unavailable")
         return captured
+
+    def capture_rights_disclosures(self, symbol, target):
+        from ai_stock_sentinel.daily_radar import disclosed_rights
+        from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+
+        params = {"step": "1", "firstin": "1", "off": "1", "TYPEK": "sii", "co_id": symbol.split(".")[0],
+                  "year": str(target.year - 1911), "month": f"{target.month:02}", "b_date": "01",
+                  "e_date": f"{target.day:02}"}
+        def fetch():
+            return self._request(self.actions_getter, disclosed_rights.URL, params=params,
+                                 decode=lambda response: disclosed_rights.report_payload(response, stock_code=params["co_id"]))
+        if self.source_store is not None:
+            return self.source_store.capture(provider="mops_rights", url=disclosed_rights.URL, params=params, fetch=fetch)
+        payload = fetch()
+        return payload, {"source_url": f"{disclosed_rights.URL}?{urlencode(params)}", "snapshot_sha256": fingerprint(payload)}
+
+    def capture_split_day(self, symbol, day):
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        start = datetime.combine(day, time.min, TAIPEI)
+        params = {"period1": int(start.timestamp()), "period2": int((start + timedelta(days=1)).timestamp()),
+                  "interval": "1d", "events": "div,splits"}
+        def fetch():
+            return self._request(self.actions_getter, url, params=params)
+        if self.source_store is not None:
+            return self.source_store.capture(provider="yahoo_chart_events", url=url, params=params, fetch=fetch)
+        from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+        payload = fetch()
+        return payload, {"provider": "yahoo_chart_events", "source_url": f"{url}?{urlencode(params)}",
+                         "captured_at": datetime.now(timezone.utc).isoformat(), "snapshot_sha256": fingerprint(payload)}
 
     def _actions(self, symbol, start, end):
         key = ("actions", symbol, start, end)

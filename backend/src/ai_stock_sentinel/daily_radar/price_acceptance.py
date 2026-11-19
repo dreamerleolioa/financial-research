@@ -181,7 +181,7 @@ def _event_evidence(official, dates):
     return events, [source | {"dates": sorted(days)} for _, (source, days) in sorted(reports.items())]
 
 
-def _price_lock(candidate, basis, stock, benchmark, official, *, vendor=(), factors=(), rights_terms=(), vendor_benchmark=()):
+def _price_lock(candidate, basis, stock, benchmark, official, *, vendor=(), factors=(), rights_terms=(), vendor_benchmark=(), basis_evidence=None):
     source_versions = {row["price_source"] for row in [*stock, *benchmark]}
     events, reports = _event_evidence(official, {row["date"] for row in stock[1:]})
     vendor_rows = [{"date": row["date"], **_quote(row), "price_source": row.get("price_source"),
@@ -193,6 +193,8 @@ def _price_lock(candidate, basis, stock, benchmark, official, *, vendor=(), fact
         "source_versions": sorted(source_versions), "vendor_window_sha256": fingerprint(vendor_rows),
         "event_reports": reports, "events": events, "factors": list(factors),
     }
+    if basis_evidence:
+        data["basis_evidence"] = basis_evidence
     if rights_terms:
         data["rights_terms"] = list(rights_terms)
         if basis == 'next_open':
@@ -224,6 +226,10 @@ def _events_cover_window(official, days):
 
 
 def accept_signal_close_prices(candidate, sessions, adjusted_rows, official):
+    return _signal_close_prices(candidate, sessions, adjusted_rows, official, anchor_evidence=None)
+
+
+def _signal_close_prices(candidate, sessions, adjusted_rows, official, *, anchor_evidence):
     dates = [str(day) for day in sessions]
     adjusted = _provider_index(adjusted_rows, set(dates))
     if adjusted is None:
@@ -235,7 +241,9 @@ def accept_signal_close_prices(candidate, sessions, adjusted_rows, official):
             return AcceptedPrices(reason="official_corporate_action_in_window")
         return AcceptedPrices(reason="official_validation_price_missing")
     anchor = number((candidate.get("input_snapshot", {}).get("ohlcv") or {}).get("close"))
-    if anchor is None or not isclose(anchor, stock[0]["close"], abs_tol=PRICE_ABS_TOL, rel_tol=PRICE_REL_TOL):
+    raw_anchor = stock[0]["close"]
+    expected_anchor = raw_anchor if anchor_evidence is None else raw_anchor * anchor_evidence["scale"]
+    if anchor is None or not isclose(anchor, expected_anchor, abs_tol=PRICE_ABS_TOL, rel_tol=PRICE_REL_TOL):
         return AcceptedPrices(reason="signal_price_anchor_mismatch")
 
     if _events_cover_window(official, dates[1:]) and _cash_dividends(official.events, set(dates[1:])) is None:
@@ -286,7 +294,7 @@ def accept_signal_close_prices(candidate, sessions, adjusted_rows, official):
     anchor_factor = anchor / stock[0]["close"]
     prices = [row | {key: row[key] * factor * anchor_factor for key in OHLC_PRICE_FIELDS}
               for row, factor in zip(stock, factors, strict=True)]
-    return _price_lock(candidate, "signal_close", prices, benchmark, official, vendor=source, factors=factors)
+    return _price_lock(candidate, "signal_close", prices, benchmark, official, vendor=source, factors=factors, basis_evidence=anchor_evidence)
 
 
 def research_rows(rows, cash_values):
@@ -559,6 +567,15 @@ class OfficialPriceCollector:
         return OfficialPriceEvidence(stock, benchmark, events, tuple(sources), frozenset(event_coverage),
                                      unavailable_dates=frozenset(unavailable), rights_terms=terms,
                                      unavailable_terms=frozenset(unavailable_terms), partial_stock_dates=partial_stock_dates)
+
+    def recover_signal_basis(self, reason, candidate, days, vendor, official, load_snapshot=None):
+        from ai_stock_sentinel.daily_radar import disclosed_rights
+        if reason == "signal_price_anchor_mismatch":
+            from ai_stock_sentinel.daily_radar import dividend_anchor
+            return dividend_anchor.recover(candidate, days, vendor, official, self.provider, load_snapshot)
+        if reason == "adjustment_factor_unverified" and hasattr(self.provider, "capture_rights_disclosures"):
+            return disclosed_rights.recover(candidate, days, vendor, official, self.provider.capture_rights_disclosures)
+        return None
 
     def _for_target(self, symbol, target, evidence):
         from ai_stock_sentinel.calibration.research_prices import ResearchSourceError

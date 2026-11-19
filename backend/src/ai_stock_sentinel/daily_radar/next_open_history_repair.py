@@ -31,7 +31,7 @@ from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult as Res
 LEGACY_VERSION = 'daily-radar-next-open-repair-v1'
 VERSION = 'daily-radar-next-open-repair-v2'
 CAPTURE_VERSION = 'daily-radar-next-open-capture-v2'
-METHODS = ('fetch', 'repair', 'official_research_history', 'capture_twse_report', 'capture_tpex_report')
+METHODS = ('fetch', 'repair', 'official_research_history', 'capture_twse_report', 'capture_tpex_report', 'capture_split_day')
 MAX_BYTES = 64 * 1024 * 1024
 
 

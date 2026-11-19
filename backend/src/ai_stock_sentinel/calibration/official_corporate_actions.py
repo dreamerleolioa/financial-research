@@ -1,11 +1,15 @@
 """Prove stock distributions and cash-reduction halts for next-open skips."""
 
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from html.parser import HTMLParser
 from math import isclose
 import re
+from urllib.parse import parse_qs, urlsplit
+from zoneinfo import ZoneInfo
+
+import numpy as np
 
 from ai_stock_sentinel.calibration import twse_rights_recovery as rights
 from ai_stock_sentinel.calibration.forward_validation import number
@@ -19,6 +23,7 @@ EVIDENCE_VERSION = "next-open-official-corporate-action-v1"
 TPEX_DISTRIBUTIONS = "/www/zh-tw/bulletin/exDailyQ"
 TPEX_REDUCTIONS = "/www/zh-tw/bulletin/revivt"
 TWSE_REDUCTION_DETAIL = "/rwd/zh/reducation/TWTAVUDetail"
+REDUCTION_PRECISION_VERSION = "next-open-verified-reduction-precision-v2"
 PRECISION_VERSION = "bounded-distribution-decimals-v1"
 # A displayed 0.1 share per thousand can round by at most 0.05 share.
 # Cap the 7/6-decimal precision observed in Yahoo ratios/dividends;
@@ -43,6 +48,7 @@ class Action:
     previous_close: float
     halt_start: date | None = None
     distribution_terms: DistributionTerms | None = None
+    reduction_shares_per_thousand: str | None = None
 
 
 def _numeric(value):
@@ -152,7 +158,7 @@ def _twse_reduction(code, resume, notice, capture):
         return None, None
     action = _cash_reduction(resume, stop_date, rights._amount(row[shares], "股") / 1000,
                             rights._amount(row[refund], "元/股"), notice["停止買賣前收盤價格"])
-    return action, source
+    return replace(action, reduction_shares_per_thousand=_decimal_text(row[shares], "股")), source
 
 
 class _DetailCells(HTMLParser):
@@ -264,6 +270,75 @@ def _cash_reduction(resume, stop, ratio, refund, previous_close):
     return Action(CASH_REDUCTION_HALT, resume, ratio, refund, _numeric(previous_close), stop)
 
 
+def reduction_precision(payload, symbol, day, shares, split, cash):
+    """Compare the original Yahoo unit and shortest binary32 decimal, before division."""
+    zone = ZoneInfo("Asia/Taipei")
+    try:
+        chart = payload["chart"]
+        record, = chart["result"]
+        if (chart["error"] is not None or record["meta"]["symbol"] != symbol
+                or record["meta"]["exchangeTimezoneName"] != zone.key):
+            return None
+        if set(record["events"]) != {"splits", "dividends"}:
+            return None
+        (split_key, event), = record["events"]["splits"].items()
+        (refund_key, refund), = record["events"]["dividends"].items()
+        stamp = event["date"]
+        if (record["timestamp"] != [stamp] or split_key != str(stamp) or refund_key != split_key
+                or datetime.fromtimestamp(stamp, zone).date() != day
+                or refund["date"] != stamp or number(refund["amount"]) != cash or not cash):
+            return None
+        # Compare the canonical decimal itself, not just two values in the same float bin.
+        canonical = np.format_float_positional(np.float32(shares), unique=True, trim="-")
+        numerator = Decimal(str(event["numerator"]))
+        if (event["denominator"] != 1000 or event["splitRatio"] != canonical + ":1000"
+                or numerator != Decimal(canonical) or numerator / 1000 != Decimal(str(split))):
+            return None
+        return {"policy_version": "yahoo-reduction-per-thousand-binary32-v1",
+                "official_shares_per_thousand": shares, "numerator": event["numerator"],
+                "denominator": event["denominator"], "splitRatio": event["splitRatio"], "date": str(day)}
+    except (AttributeError, ArithmeticError, KeyError, OSError, TypeError, ValueError):
+        return None
+
+
+def valid_split_receipt(raw, source, symbol, day):
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+    try:
+        url = urlsplit(source["source_url"])
+        start = datetime.combine(day, time.min, ZoneInfo("Asia/Taipei"))
+        query = {"period1": [str(int(start.timestamp()))], "period2": [str(int((start + timedelta(days=1)).timestamp()))],
+                 "interval": ["1d"], "events": ["div,splits"]}
+        return (url.scheme == "https" and url.netloc == "query1.finance.yahoo.com" and not url.fragment
+                and url.path == f"/v8/finance/chart/{symbol}" and parse_qs(url.query, keep_blank_values=True) == query
+                and datetime.fromisoformat(source["captured_at"]).tzinfo is not None
+                and source["snapshot_sha256"] == fingerprint(raw))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def verified_reduction_precision(proof, event):
+    if not isinstance(proof, dict):
+        return False
+    try:
+        raw, source = proof["chart"], proof["source"]
+        day = date.fromisoformat(proof["date"])
+        if (proof["date"] not in (event["halt_start"], event["effective_date"])
+                or not valid_split_receipt(raw, source, event["symbol"], day)
+                or float(Decimal(proof["official_shares_per_thousand"]) / 1000) != event["share_ratio"]):
+            return False
+        verified = reduction_precision(raw, event["symbol"], day, proof["official_shares_per_thousand"],
+                                       Decimal(str(proof["numerator"])) / 1000, event["cash_per_share"])
+        return verified is not None and proof == verified | {"chart": raw, "source": source}
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return False
+
+
+def valid_precision_version(proof, event, reason):
+    if proof.get("evidence_version") == REDUCTION_PRECISION_VERSION:
+        return reason == CASH_REDUCTION_HALT and verified_reduction_precision(proof.get("reduction_precision"), event)
+    return proof.get("evidence_version") == EVIDENCE_VERSION and "reduction_precision" not in proof
+
+
 def _match_ohlc(row, reference, factor=1, tolerance=0.005):
     return all(isclose(row[field], reference[field] * factor, rel_tol=1e-7, abs_tol=tolerance)
                for field in rights.OHLC)
@@ -309,6 +384,7 @@ def prove_window(symbol, signal, window_days, as_of_date, *, yahoo_rows, benchma
     if not isclose(official_stock[previous]["close"], action.previous_close, rel_tol=0, abs_tol=0.005):
         raise ValueError("official_corporate_action_reference_close_mismatch")
     adjusted = []
+    reduction_proof = None
     precision = None
     if action.distribution_terms is not None:
         terms = action.distribution_terms
@@ -335,6 +411,15 @@ def prove_window(symbol, signal, window_days, as_of_date, *, yahoo_rows, benchma
         has_split, has_cash = split not in (0, 1), cash != 0
         split_matches = split is not None and isclose(split, action.share_ratio)
         cash_matches = cash is not None and isclose(cash, action.cash_per_share)
+        if (has_split and not split_matches and action.reduction_shares_per_thousand is not None
+                and day in event_days and not split_seen and has_cash and cash == action.cash_per_share
+                and callable(getattr(provider, "capture_split_day", None))):
+            raw_event, receipt = provider.capture_split_day(symbol, date.fromisoformat(day))
+            reduction_proof = reduction_precision(raw_event, symbol, date.fromisoformat(day),
+                                                  action.reduction_shares_per_thousand, split, cash)
+            if reduction_proof and valid_split_receipt(raw_event, receipt, symbol, date.fromisoformat(day)):
+                reduction_proof.update(source=receipt, chart=raw_event)
+                split_matches = True
         if precision is not None:
             if has_split and split is not None:
                 split_matches, tolerance = _distribution_match(split, official_ratio, ratio_radius,
@@ -377,7 +462,7 @@ def prove_window(symbol, signal, window_days, as_of_date, *, yahoo_rows, benchma
         for row in (*official_stock.values(), *official_index.values())
     }
     return action.reason, {
-        "evidence_version": EVIDENCE_VERSION,
+        "evidence_version": REDUCTION_PRECISION_VERSION if reduction_proof else EVIDENCE_VERSION,
         "event": {"symbol": symbol, "effective_date": event_date, "share_ratio": action.share_ratio,
                   "type": "cash_reduction" if action.halt_start else "stock_distribution",
                   "previous_close": action.previous_close,
@@ -387,5 +472,6 @@ def prove_window(symbol, signal, window_days, as_of_date, *, yahoo_rows, benchma
         "session_dates": [str(day) for day in sessions],
         "halt_dates": sorted(halt),
         "yahoo_adjusted_dates": adjusted,
+        **({"reduction_precision": reduction_proof} if reduction_proof else {}),
         **({"distribution_precision": precision} if precision is not None else {}),
     }

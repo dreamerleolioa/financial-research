@@ -17,7 +17,8 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
 )
 from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
 from ai_stock_sentinel.daily_radar.schemas import DailyRadarForwardValidationRunResponse
-from ai_stock_sentinel.daily_radar.price_acceptance import accept_signal_close_prices, refused_prices
+from ai_stock_sentinel.daily_radar.price_acceptance import AcceptedPrices, accept_signal_close_prices, refused_prices
+from ai_stock_sentinel.calibration.research_prices import ResearchSourceError
 from ai_stock_sentinel.daily_radar.validation_preparation import (
     ValidationPreparation, accept_validation_results, capture_validation_acceptance,
 )
@@ -26,7 +27,7 @@ logger = logging.getLogger("ai_stock_sentinel.daily_radar.maintenance_router")
 
 
 def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar, request,
-                                  collect_official, fetch_prices, collect_targets=None, fetch_cached=None):
+                                  collect_official, fetch_prices, collect_targets=None, fetch_cached=None, recover_basis=None, load_snapshot=None):
     from ai_stock_sentinel.calibration.forward_validation import evaluate_forward_window
     from ai_stock_sentinel.daily_radar.forward_validation import _with_market_lifecycle_diagnostics
     from ai_stock_sentinel.daily_radar.observation_validation import evaluate_observation
@@ -34,6 +35,7 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
     from ai_stock_sentinel.daily_radar.window_identity import bind_window
     from ai_stock_sentinel.daily_radar.trading_status import proven_suspension, suspended_outcome
     from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
+    from ai_stock_sentinel.daily_radar.work_queue import LostLease
     from yfinance.exceptions import YFRateLimitError
 
     by_symbol = defaultdict(list)
@@ -68,6 +70,18 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
             if missing_adjusted and fetch_cached and (days[0], days[-1]) != (start, max(tradable_targets)):
                 window_prices = fetch_cached([symbol], start_date=days[0], end_date=days[-1]).get(symbol, [])
             accepted = accept_signal_close_prices(candidate, days, window_prices, official)
+            if accepted.reason and recover_basis is not None:
+                try:
+                    accepted = recover_basis(accepted.reason, candidate, days, window_prices, official, load_snapshot=load_snapshot) or accepted
+                except (LostLease, SourceDependencyBusy):
+                    raise
+                except ResearchSourceError as exc:
+                    if exc.retryable:
+                        accepted = AcceptedPrices(reason="validation_price_source_unavailable")
+                except OSError:
+                    accepted = AcceptedPrices(reason="validation_price_source_unavailable")
+                except ValueError as exc:
+                    logger.info("Signal basis evidence unavailable for %s on %s: %s", symbol, days[-1], type(exc).__name__)
             row = evaluate_forward_window(
                 candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
                 adapter=DAILY_RADAR_FORWARD_ADAPTER, window_days=len(days) - 1,
@@ -258,10 +272,18 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
             windows_by_candidate = preparation.evaluation_windows_by_candidate
     with metrics.stage("evaluate"):
         if official_price_collector is not None and calendar is not None:
+            from sqlalchemy import select
+            from sqlalchemy.orm import Session
+            from ai_stock_sentinel.db.models import DailyRadarCandidate
+            def load_snapshot(candidate_id):
+                with Session(db.get_bind()) as reader:
+                    return reader.scalar(select(DailyRadarCandidate.input_snapshot).where(
+                        DailyRadarCandidate.id == candidate_id))
             db.rollback()
             outcomes = _collect_locked_signal_prices(candidates, windows_by_candidate, calendar=calendar,
                 request=request, collect_official=official_price_collector.collect, fetch_prices=fetch_prices,
                 collect_targets=official_price_collector.collect_targets,
+                load_snapshot=load_snapshot, recover_basis=getattr(official_price_collector, "recover_signal_basis", None),
                 fetch_cached=getattr(price_provider, "fetch_cached", None))
         else:
             outcomes = build_forward_validation_report(

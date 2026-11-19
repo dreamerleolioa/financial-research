@@ -263,6 +263,11 @@ def _later_sessions(calendar, target):
 def verify_event_report_receipts(calls):
     from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
     for call in calls:
+        if call['request']['method'] == 'capture_split_day' and not call.get('failed'):
+            raw, source = call['value']
+            symbol, day = call['request']['args']
+            if not actions.valid_split_receipt(raw, source, symbol, date.fromisoformat(day)):
+                raise ValueError('next_open_official_event_report_hash_invalid')
         if call['request']['method'] in ('capture_twse_report', 'capture_tpex_report') and not call.get('failed'):
             raw, source = call['value']
             if not _source(source) or source['snapshot_sha256'] != fingerprint(raw):
