@@ -7,12 +7,12 @@ from datetime import date, timedelta
 from fastapi import HTTPException
 from sqlalchemy import select, func, inspect
 
-from ai_stock_sentinel.calibration.forward_validation import is_terminal_forward_validation_skip_reason, parse_date
+from ai_stock_sentinel.calibration.forward_validation import parse_date
 from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 from ai_stock_sentinel.daily_radar.dependencies import DAILY_RADAR_REQUIRED_REFRESH_STEPS
 from ai_stock_sentinel.daily_radar.forward_validation import (
-    FORWARD_VALIDATION_VERSION, forward_validation_candidates_from_runs,
+    FORWARD_VALIDATION_VERSION, SIGNAL_TERMINAL_REASONS, forward_validation_candidates_from_runs,
     persisted_forward_validation_outcomes,
 )
 from ai_stock_sentinel.daily_radar.market_session import require_prepared_open_session
@@ -79,7 +79,7 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar, requ
     elif row["status"] == "skipped":
         reason = row["skip_reason"] or "validation_not_available"
         terminal = (reason in RESEARCH_TERMINAL_REASONS if basis == "next_open"
-                    else is_terminal_forward_validation_skip_reason(reason))
+                    else reason in SIGNAL_TERMINAL_REASONS)
         if terminal and not terminal_evidence_matches(candidate, row, basis=basis,
                 sessions=future[:window], as_of_date=as_of_date):
             terminal, reason = False, "terminal_evidence_unverified"

@@ -1444,8 +1444,11 @@ def test_forward_price_provider_does_not_fabricate_missing_high_low_from_close(
     )
 
     assert _price_rows(frame) == [
-        {"date": "2026-06-02", "open": 100.0, "high": None, "low": None, "close": 100.0},
+        {"date": "2026-06-02", "open": 100.0, "high": None, "low": None, "close": 100.0, "open_observed": True},
     ]
+    frame.loc[frame_index[0], "Open"] = float("nan")
+    assert _price_rows(frame)[0]["open_observed"] is False
+    assert _price_rows(frame)[0]["open"] == 100
 
 
 def test_merge_price_series_does_not_erase_existing_ohlc_with_close_only_row() -> None:

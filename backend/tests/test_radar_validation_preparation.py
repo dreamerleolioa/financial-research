@@ -62,7 +62,7 @@ def test_price_versions_follow_the_window_across_range_requests(basis, revision,
     event_days = [days[3], days[12]]
     corrected = False
 
-    def events(symbol, start, end, provider, *, record_detail=None):
+    def events(symbol, start, end, provider, *, record_detail=None, record_rights=None):
         params = {"startDate": start.strftime("%Y%m%d"), "endDate": end.strftime("%Y%m%d")}
         provider.capture_twse_report("/dividends", params)
         found = []

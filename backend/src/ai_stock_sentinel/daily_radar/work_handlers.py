@@ -330,7 +330,7 @@ class WorkHandlers:
             try:
                 summary = upsert_forward_validation_results(db, bundle.outcomes, calendar=latest, expected_revisions=expected, **kwargs)
                 if summary.get('preserved_conflicts'):
-                    return {'state': 'needs_review', 'reason': 'validated_return_conflicts_with_suspension',
+                    return {'state': 'needs_review', 'reason': summary['preserved_conflicts'][0]['reason'],
                             'result': {'conflicts': summary['preserved_conflicts'], 'manual_repair_required': True}}
             except ValidationAcceptanceConflict:
                 return {'state': 'needs_review', 'reason': 'validation_price_version_changed',

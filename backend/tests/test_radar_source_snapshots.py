@@ -227,3 +227,14 @@ def test_late_intraday_capture_does_not_replace_after_date_confirmation(archive)
     assert capture({'contexts': ['preliminary']}) == {'contexts': ['preliminary']}
     now += timedelta(minutes=1)
     assert capture({'contexts': ['rechecked']}) == {'contexts': ['rechecked']}
+
+
+def test_forward_quotes_with_unknown_open_origin_are_not_reused(archive):
+    store = SourceSnapshotStore(archive)
+    params = {"symbol":"6108.TW", "start_date":"2026-11-01", "end_date":"2026-11-18",
+              "auto_adjust":True, "actions":False}
+    req = store._sdk_request("forward-adjusted-history", params)
+    req.pop("open_provenance_version")
+    store._capture_request(req, fetch=lambda:{"rows":[{"date":"2026-11-16","open":12,"close":12}]})
+    for start in ("2026-11-01", "2026-11-16"):
+        assert store.lookup_sdk(operation="forward-adjusted-history",params=params | {"start_date":start}) is None

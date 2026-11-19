@@ -21,7 +21,6 @@ from ai_stock_sentinel.calibration.forward_validation import (
     DEFAULT_FORWARD_WINDOWS,
     ForwardValidationAdapter,
     TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
-    is_terminal_forward_validation_skip_reason,
 )
 from ai_stock_sentinel.calibration.repository import (
     load_benchmark_prices_from_prepared_market_context as load_cached_benchmark_prices,
@@ -41,6 +40,7 @@ from ai_stock_sentinel.db.models import (
 )
 
 
+SIGNAL_TERMINAL_REASONS = TERMINAL_FORWARD_VALIDATION_SKIP_REASONS | corporate_actions.TERMINAL_REASONS
 FORWARD_VALIDATION_VERSION = "daily-radar-forward-validation-v2"
 FORWARD_VALIDATION_REPORT_VERSION = "daily-radar-forward-validation-report-v2"
 DEFAULT_HIT_THRESHOLD_PCT = 0.0
@@ -323,7 +323,7 @@ def current_run_validation_diagnostics(outcomes):
             "signal_date": row.get("signal_date"), "window_days": row["window_days"],
             "target_date": row.get("target_date") or payload.get("expected_target_date"),
             "skip_reason": row.get("skip_reason"), "missing_dates": payload.get("missing_dates", []),
-            "retryable": not is_terminal_forward_validation_skip_reason(row.get("skip_reason")),
+            "retryable": row.get("skip_reason") not in SIGNAL_TERMINAL_REASONS,
             **({"market_lifecycle": payload["market_lifecycle"]} if payload.get("market_lifecycle") else {}),
         })
     return {"current_run_skip_reasons": dict(Counter(row["skip_reason"] for row in skipped)),
@@ -582,7 +582,7 @@ def upsert_forward_validation_results(
     session: Session,
     outcomes: Iterable[Mapping[str, Any]],
     *,
-    terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
+    terminal_skip_reasons=SIGNAL_TERMINAL_REASONS,
     require_existing_conflict: bool = False,
     calendar=None,
     expected_revisions: Mapping[tuple, str | None] | None = None,
@@ -680,6 +680,35 @@ def upsert_forward_validation_results(
                 and (incoming_cutoff is None or existing.evaluation_as_of_date > incoming_cutoff)
                 and not is_original_rights_conflict_recovery(existing, outcome)):
             continue
+        signal_terminal = not research_window and outcome.get("skip_reason") in corporate_actions.TERMINAL_REASONS
+        saved_terminal = not research_window and existing is not None and existing.skip_reason in corporate_actions.TERMINAL_REASONS
+        if signal_terminal or saved_terminal:
+            from ai_stock_sentinel.daily_radar.signal_action_evidence import matches_calendar
+            from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
+
+            action_calendar = calendar or (load_calendar(session, start_date=signal_date, as_of_date=incoming_cutoff)
+                                           if incoming_cutoff else None)
+            if signal_terminal and (outcome["validation_version"] != FORWARD_VALIDATION_VERSION or benchmark_symbol != "TAIEX"
+                    or candidate_market != "TW" or not matches_calendar(outcome, action_calendar, symbol=candidate_symbol,
+                                                                         signal=signal_date, cutoff=incoming_cutoff)):
+                raise ValueError("invalid_signal_action_evidence")
+            if saved_terminal:
+                saved = {"status": existing.status, "target_date": existing.target_date, "window_days": existing.window_days,
+                         "skip_reason": existing.skip_reason, "outcome": existing.outcome}
+                saved_terminal = matches_calendar(saved, action_calendar, symbol=candidate_symbol,
+                                                  signal=signal_date, cutoff=existing.evaluation_as_of_date)
+            if signal_terminal and existing is not None and existing.skip_reason == "conflicting_price_records":
+                preserved_conflicts.append({"candidate_id": candidate_id, "window_days": outcome["window_days"],
+                                            "target_date": str(existing.target_date), "reason": existing.skip_reason})
+                continue
+            if existing is not None and ((signal_terminal and existing.status == "validated")
+                                         or (saved_terminal and outcome["status"] == "validated")):
+                preserved_conflicts.append({"candidate_id": candidate_id, "window_days": outcome["window_days"],
+                                            "target_date": str(existing.target_date),
+                                            "reason": "validated_return_conflicts_with_corporate_action"})
+                continue
+            if saved_terminal:
+                continue
         key = (int(candidate_id), int(outcome['window_days']), str(outcome['validation_version']))
         if expected_revisions is not None and (key not in expected_revisions
                 or forward_validation_result_revision(existing) != expected_revisions[key]):
@@ -725,7 +754,7 @@ def upsert_forward_validation_results(
         if require_existing_conflict and rights.PROVENANCE_KEY not in payload:
             continue
         official_terminal = outcome.get("skip_reason") in corporate_actions.TERMINAL_REASONS
-        if official_terminal:
+        if official_terminal and research_window:
             proof = _mapping(payload.get(corporate_actions.PROVENANCE_KEY))
             event = _mapping(proof.get("event"))
             target = _parse_date(payload.get("expected_target_date"))
@@ -944,7 +973,7 @@ def exclude_persisted_daily_radar_windows(
     *,
     validation_version: str = FORWARD_VALIDATION_VERSION,
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
-    terminal_skip_reasons=TERMINAL_FORWARD_VALIDATION_SKIP_REASONS,
+    terminal_skip_reasons=SIGNAL_TERMINAL_REASONS,
     as_of_date: date | None = None,
     calendar=None,
 ) -> dict[str, list[int]]:
@@ -966,6 +995,9 @@ def exclude_persisted_daily_radar_windows(
     prior_present = (payload['historical_repair'].has_key('prior_evidence') if dialect == 'postgresql'
                      else func.json_type(payload, '$.historical_repair.prior_evidence').is_not(None))
     def complete_window(row):
+        if validation_version == FORWARD_VALIDATION_VERSION and row['skip_reason'] in corporate_actions.TERMINAL_REASONS:
+            from ai_stock_sentinel.daily_radar.signal_action_evidence import matches_calendar
+            return matches_calendar(row, calendar, symbol=row['symbol'], signal=row['run_date'], cutoff=row['evaluation_as_of_date'])
         if row['skip_reason'] == 'target_session_suspended':
             from ai_stock_sentinel.daily_radar.trading_status import KEY, matches
             from ai_stock_sentinel.daily_radar.trading_status import expected_target

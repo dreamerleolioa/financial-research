@@ -62,7 +62,8 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
                 price_unavailable = True
         for candidate, days in windows:
             official = official_by_target[days[-1]]
-            window_prices = adjusted
+            session_dates = set(map(str, days))
+            window_prices = [row for row in adjusted if row.get("date") in session_dates]
             missing_adjusted = not window_prices and days[-1] in tradable_targets
             if missing_adjusted and fetch_cached and (days[0], days[-1]) != (start, max(tradable_targets)):
                 window_prices = fetch_cached([symbol], start_date=days[0], end_date=days[-1]).get(symbol, [])
@@ -77,6 +78,16 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
             if suspended := suspended_outcome(row, candidate, days, official):
                 outcomes.append(suspended)
                 continue
+            if (accepted.reason == "official_corporate_action_in_window" and row["skip_reason"] in
+                    {"missing_future_price", "missing_benchmark"}):
+                from ai_stock_sentinel.daily_radar import signal_action_evidence
+                action = signal_action_evidence.classify_action(candidate, days, official)
+                if action is not None:
+                    reason, evidence = action
+                    row = row | {"skip_reason": reason, "target_date": str(days[-1]), "outcome": {
+                        "expected_target_date": str(days[-1]), signal_action_evidence.KEY: evidence}}
+                    outcomes.append(bind_validation_input(candidate, row))
+                    continue
             if (accepted.reason == "official_validation_price_missing"
                     and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}):
                 lifecycle = _with_market_lifecycle_diagnostics(
@@ -90,9 +101,14 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
                     continue
             if accepted.reason and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}:
                 reason = accepted.reason
-                if (price_unavailable and not window_prices
-                        and reason in {"adjustment_factor_unverified", "official_validation_price_missing"}):
-                    reason = "validation_price_source_unavailable"
+                if not window_prices:
+                    rights_need_quotes = reason == "official_corporate_action_in_window" and any(
+                        official.rights_terms.get(str(day), {}).get("kind") == "cash_rights_issue"
+                        for day in days[1:]
+                    )
+                    if rights_need_quotes or (price_unavailable and reason in
+                            {"adjustment_factor_unverified", "official_validation_price_missing"}):
+                        reason = "validation_price_source_unavailable"
                 row = refused_prices(row, reason, official, sessions=days, event_requires_prices=False)
             elif row["status"] == "validated":
                 row["outcome"]["observation_diagnostic"] = evaluate_observation(

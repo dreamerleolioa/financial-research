@@ -78,7 +78,7 @@ def excluded_actions(prior, symbol, signal, sessions, through):
                            for f in values.values()) for fact in values.values()), key=fingerprint)
 
 
-def _events(symbol, start, end, provider, *, record_detail=None):
+def _events(symbol, start, end, provider, *, record_detail=None, record_rights=None):
     code = symbol.split('.')[0]
     days = (start, end)
     events = []
@@ -88,7 +88,7 @@ def _events(symbol, start, end, provider, *, record_detail=None):
                 (rights.EX_RIGHTS, '資料日期', 'rights', ['除權息前收盤價', '權/息', '詳細資料']),
                 (rights.REDUCTION, '恢復買賣日期', 'reduction', []),
                 (rights.FACE_VALUE, '恢復買賣日期', 'face_value', [])):
-            raw, _ = provider.capture_twse_report(path, params)
+            raw, source = provider.capture_twse_report(path, params)
             rows = rights._dated_rows(raw, params, field, fields, allow_empty_status=path == rights.REDUCTION)
             for day, row in rows:
                 if str(row['股票代號']).strip() != code:
@@ -128,13 +128,15 @@ def _events(symbol, start, end, provider, *, record_detail=None):
                     item['cash_terms'] = actions._decimal_text(rows_detail[0][cash], '元／股')
                     if record_detail is not None:
                         record_detail(day, detail)
+                if record_rights and family == "rights" and notice in {"權", "除權"}:
+                    record_rights(symbol, day, row, source)
                 events.append(item)
     elif symbol.endswith('.TWO'):
         for path, field, code_field, family, fields in (
                 (actions.TPEX_DISTRIBUTIONS, '除權息日期', '代號', 'rights',
                  ['除權息前收盤價', '權/息', '現金股利', '每仟股無償配股', '現金增資股數', '現金增資認購價', '按持股比例仟股認購']),
                 (actions.TPEX_REDUCTIONS, '恢復買賣日期', '股票代號', 'reduction', ['最後交易日之收盤價格', '減資原因', '詳細資料'])):
-            rows, _ = actions._tpex_events(provider.capture_tpex_report, path, days, code, field, code_field, fields)
+            rows, source = actions._tpex_events(provider.capture_tpex_report, path, days, code, field, code_field, fields)
             for day, row in rows:
                 first, notice = day, row.get('權/息')
                 if family == 'reduction':
@@ -159,6 +161,8 @@ def _events(symbol, start, end, provider, *, record_detail=None):
                         raise ValueError('next_open_prior_action_scope_unverified')
                     item['cash_dividend'] = actions._numeric(row['現金股利'])
                     item['cash_terms'] = actions._decimal_text(row['現金股利'])
+                if record_rights and family == "rights" and notice in {"權", "除權"}:
+                    record_rights(symbol, day, row, source)
                 events.append(item)
     else:
         raise ValueError('next_open_prior_action_scope_unverified')

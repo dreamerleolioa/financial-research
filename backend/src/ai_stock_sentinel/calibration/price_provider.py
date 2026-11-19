@@ -270,6 +270,8 @@ def _price_rows(frame: Any, *, research: bool = False, benchmark: bool = False) 
             "low": _frame_number(frame, columns["Low"], position),
             "close": close,
         }
+        if not research and row["open"] == close:
+            row["open_observed"] = open_price is not None and open_price > 0
         if research:
             dividend = _frame_number(frame, dividend_column, position)
             split = _frame_number(frame, split_column, position)

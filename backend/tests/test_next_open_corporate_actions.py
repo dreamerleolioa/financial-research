@@ -287,3 +287,13 @@ def test_official_calendar_ignores_a_holiday_in_the_prepared_calendar(replay, mo
         assert outcome["missing_dates"] == []
         assert outcome["official_corporate_action"]["prior_expected_target_date"] == "2026-11-03"
         assert "2026-10-23" not in outcome["official_corporate_action"]["session_dates"]
+
+
+def test_small_unexplained_reduction_ratio_difference_keeps_window_open(replay):
+    archive, _, engine, run, _ = replay
+    split = next(row for row in archive["yahoo-6173"] if row[-1] not in (0, 1))
+    split[-1] -= 0.0000000212  # Same difference as the two 3714.TW next-open windows.
+    result = run("6173.TWO", date(2026, 10, 5), 19, seed=True)
+    assert result["terminal_skipped_count"] == 0
+    with Session(engine) as db:
+        assert db.scalars(select(Result)).one().skip_reason != "cash_reduction_halt_in_window"
