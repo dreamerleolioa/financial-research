@@ -195,3 +195,28 @@ def test_concurrent_page_fetches_have_no_open_transaction_and_only_one_cursor_co
         jobs = session.scalars(select(FundamentalBackfillJob).where(FundamentalBackfillJob.purpose == 'maintenance')).all()
         assert len(jobs) == 1 and jobs[0].next_after_symbol == '2330.TW'
         assert len(session.scalars(select(CompanyFundamentalPeriod)).all()) == 7
+
+
+def test_compact_readiness_uses_one_read_only_snapshot(pg_engine, monkeypatch):
+    from ai_stock_sentinel.daily_radar import readiness_router
+    from ai_stock_sentinel.daily_radar.schemas import ValidationGapBaseline
+
+    with pg_engine.begin() as writer:
+        writer.execute(text('create table observed_window (id integer primary key)'))
+        writer.execute(text('insert into observed_window values (1)'))
+
+    def inventory(db, **kwargs):
+        assert db.scalar(text('show transaction_read_only')) == 'on'
+        count = text('select count(*) from observed_window')
+        assert db.scalar(count) == 1
+        with pg_engine.begin() as writer:
+            writer.execute(text('insert into observed_window values (2)'))
+        assert db.scalar(count) == 1
+        return {}
+
+    monkeypatch.setattr(readiness_router, 'validation_inventory', inventory)
+    baseline = ValidationGapBaseline(version='radar-gap-comparison-v1', as_of_date=date(2026, 11, 12), hashes=[])
+    with Session(pg_engine) as db:
+        readiness_router.compare_validation_gaps(date(2026, 11, 18), baseline, db)
+    with pg_engine.connect() as next_read:
+        assert next_read.scalar(text('select count(*) from observed_window')) == 2

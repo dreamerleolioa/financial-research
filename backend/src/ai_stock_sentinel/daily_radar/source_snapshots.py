@@ -69,6 +69,7 @@ class SourceSnapshotStore:
         if operation not in {"research-unadjusted-history", "technical-adjusted-history", "forward-adjusted-history"}:
             raise ValueError("research_source_snapshot_operation_invalid")
         return {"provider": "yfinance", "operation": operation, "params": params,
+                **({"open_provenance_version": 1} if operation == "forward-adjusted-history" else {}),
                 "sdk_version": version("yfinance"), "parser_version": PARSER_VERSION}
 
     def lookup_sdk(self, *, operation, params):
@@ -90,6 +91,7 @@ class SourceSnapshotStore:
                 args = recorded.get("params") or {}
                 if (recorded.get("sdk_version") == request["sdk_version"]
                         and recorded.get("parser_version") == request["parser_version"]
+                        and recorded.get("open_provenance_version") == request.get("open_provenance_version")
                         and recorded.get("operation") == operation and args.get("symbol") == params["symbol"]
                         and args.get("auto_adjust") is params["auto_adjust"] and args.get("actions") is params["actions"]
                         and args.get("start_date", "9999") <= params["start_date"]

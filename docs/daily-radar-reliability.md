@@ -83,6 +83,10 @@ flowchart TD
 
 Durable driver 可用 `--known-validation-gaps` 讀取已審閱的 `radar-known-validation-gaps-v1` 檔案。檔案包含盤點截止日 `as_of_date` 及當日由唯讀 readiness 以 `include_all_validation_gaps=true` 回傳的 `gaps`。已知窗口依候選版本、日曆、目標日、原因及缺口結果版本精確比對。完整比對時，已知且相同的缺口仍列在 JSON 摘要，`readiness_deadline_passed` 仍為 false。新增、改變、無法完整比對的缺口，以及發布或內部工作失敗，仍讓 driver 非零退出。未傳入清單的執行保留嚴格告警。
 
+定日 validation 偵測到 `validation_gap_comparison` 後，會把已審閱基準的日期與窗口指紋送到內部唯讀 `POST /internal/daily-radar/readiness/compare`。後端在同一份 PostgreSQL 快照盤點兩種口徑，回傳基準指紋、已知與新增數、原因分布及每種口徑最多 5 個新增窗口。runner 核對回應日期、基準、交易日曆與總數後判斷告警。逐筆明細仍可用原 GET 查詢。舊後端沿用原本的完整報告檢查。一般續跑依既有工作佇列前進。
+
+若手動指定的交易日早於基準日期，該日使用空清單比對。有完整日曆且零缺口的口徑可通過。有缺口的口徑回報 `new: null` 並保留告警，避免用後來的基準認列歷史缺口。
+
 ### 歷史規模與請求預算
 
 Migration `ef6a7b8c9d0e` 為 candidates 增加精簡 validation projection 與輸入 hash，由 PostgreSQL trigger 在同一寫入交易內維護，包含 raw SQL 更新；部署前需回填既有 candidates。規劃與候選讀取不再反覆解壓完整 replay JSON，canonical run、策略版本、輸入及日曆改變仍會使規劃失效。SQLite 保留原始欄位投影，兩條讀取路徑須有相同語意。
@@ -127,3 +131,9 @@ AVWAP provider 不 commit 或 rollback 呼叫者的 session；ORM 的 `new`／`d
 `backend/scripts/daily_radar_forward_validation.py --source db --write-results` 與 legacy API 共用收集時版本快照和接受鎖定；CLI 在計算後才取得短寫入交易，版本變更時失敗退出，不輸出成功報告。未指定 `--write-results` 的唯讀報告模式保留。
 
 CLI 寫入只支援 TW／TAIEX，必須先讀到涵蓋所有候選信號及計算截止日、無衝突的既存官方日曆。5／10／20／40／60 日窗口依官方交易日固定；價格缺日保留缺口，休市信號不得計入已驗證結果。日曆不足時停止寫入；接受時仍以同一短交易原子保存結果與日曆，日曆衝突或 checkpoint 不可保存時整批回滾，不輸出成功報告。CLI 不自行抓取或補建官方日曆，唯讀與 fixture 報告模式維持原有行為。
+
+### 配息、配股、減資與現增窗口
+
+`signal_close` 遇到單純現金股利時，若供應商每個交易日的四價都符合官方原始行情的既有比價容差，且可確認開盤價來自實際報價，會核對官方配息日、金額及前收，再以訊號日的尺度重建四價。現增窗口逐筆核對前收、認購價及每千股認購數。供應商和官方行情有差異時，每個欄位都必須能由該日之後的事件因子解釋。次開口徑保留官方未還原價，認購款、權利價值與現金股利均不計入價格報酬。
+
+收盤窗口在完整日曆內遇到單一配股或退還股款減資時，會重新解析與封存雜湊一致的交易所公告，逐月核對個股報表、逐日比對大盤、停復牌日與日曆後結案。缺少報表、停牌區間出現成交、缺少其他交易日，或既有有效報酬與結案證據衝突時，仍保留缺口或交由人工檢查。結案窗口沒有報酬值。次開減資沿用原有來源精度核對。已認列的來源衝突與歷史補修仍受既有寫入保護。

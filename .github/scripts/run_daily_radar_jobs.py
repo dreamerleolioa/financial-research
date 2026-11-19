@@ -4,16 +4,40 @@ from datetime import date
 import json
 import os
 from pathlib import Path
+import sys
 import time
+from urllib.error import HTTPError
 from daily_radar_http import get, post, diagnostic_json, request_deadline
 
 
-GAP_FIELDS = ('candidate_id', 'candidate_revision', 'calendar_revision', 'return_basis',
-              'validation_version', 'window_days', 'expected_target_date', 'state', 'reason', 'gap_revision')
+# Actions runs this script directly from a checkout without installing the backend.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend' / 'src'))
+from ai_stock_sentinel.radar_gap_contract import COMPARISON_VERSION, baseline_digest, digest, validation_gap_key
 
 
-def validation_gap_key(gap):
-    return tuple(gap[field] for field in GAP_FIELDS)
+def readiness_error(exc):
+    error = {'phase': 'readiness', 'error_type': type(exc).__name__}
+    if isinstance(exc, HTTPError):
+        error['http_status'] = exc.code
+        exc.close()
+    elif isinstance(exc, ValueError) and str(exc) in (
+        'evidence_response_too_large', 'radar_readiness_date_mismatch',
+        'invalid_validation_gap_comparison', 'incomplete_validation_gap_comparison',
+    ):
+        error['code'] = str(exc)
+    return error
+
+
+def comparison_alert(validation, baseline_applicable):
+    counts = validation.get('comparison') or {}
+    known, new, total = counts.get('known'), counts.get('new'), validation.get('unresolved_count')
+    if (validation.get('calendar_ready') is not True or type(total) is not int
+            or any(type(n) is not int or n < 0 for n in (known, new))
+            or known + new != total or validation.get('ready') is not (total == 0)):
+        raise ValueError('incomplete_validation_gap_comparison')
+    if total and not baseline_applicable:
+        return {'known': 0, 'new': None}
+    return {'known': known, 'new': new}
 
 
 def validation_alert(report, known, run_date, lane):
@@ -185,7 +209,20 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         report = None
         try:
             # Final verification has its own budget, even after failed work.
-            report = call(read, url, until=clock() + 180)
+            compact = (known is not None and capability.get('validation_gap_comparison') is True
+                       and set(require_lanes) <= {'signal_close', 'next_open'})
+            if compact:
+                baseline_applicable = known['as_of_date'] <= run_date
+                as_of = min(known['as_of_date'], run_date)
+                hashes = sorted(digest(key) for key in known['keys']) if baseline_applicable else []
+                payload = {'version': COMPARISON_VERSION, 'as_of_date': as_of, 'hashes': hashes}
+                report = call(write, '/readiness/compare?run_date=' + run_date, payload, until=clock() + 180)
+                if (report.get('version') != COMPARISON_VERSION or report.get('market') != 'TW'
+                        or report.get('scope') != 'validation'
+                        or report.get('baseline_digest') != baseline_digest(as_of, hashes)):
+                    raise ValueError('invalid_validation_gap_comparison')
+            else:
+                report = call(read, url, until=clock() + 180)
             (out / 'readiness.json').write_text(diagnostic_json(report, token), encoding='utf-8')
             if report.get('requested_run_date') != run_date or report.get('effective_run_date') != run_date:
                 raise ValueError('radar_readiness_date_mismatch')
@@ -198,12 +235,13 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
                 else:
                     validation = report.get('validation', {}).get(lane, {})
                     ready = validation.get('ready') is True
-                    validation_alerts[lane] = validation_alert(validation, known, run_date, lane)
+                    validation_alerts[lane] = (comparison_alert(validation, baseline_applicable) if compact
+                                               else validation_alert(validation, known, run_date, lane))
                     failed |= validation_alerts[lane]['new'] != 0
                 deadline_passed &= ready
                 failed |= lane == 'publication' and not ready
         except Exception as exc:
-            errors.append({'phase': 'readiness', 'error_type': type(exc).__name__})
+            errors.append(readiness_error(exc))
             failed, deadline_passed = True, False
     failed |= any(lane.get('states', {}).get('failed_internal', 0)
                   for summary in summaries.values() for lane in summary.get('lanes', {}).values())

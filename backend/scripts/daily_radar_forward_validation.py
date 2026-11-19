@@ -14,6 +14,8 @@ from ai_stock_sentinel.daily_radar.forward_validation import (
     DEFAULT_FORWARD_WINDOWS,
     FORWARD_VALIDATION_VERSION,
     build_forward_validation_report,
+    build_forward_validation_report_from_outcomes,
+    persisted_forward_validation_outcomes,
     default_due_start_date,
     forward_validation_candidates_from_runs,
     forward_validation_fixture_inputs,
@@ -90,9 +92,15 @@ def main() -> None:
             )
             if args.write_results:
                 write_summary = accept_validation_results(session, evaluation.outcomes, calendar=calendar, acceptance=acceptance)
+                if conflicts := write_summary.get("preserved_conflicts"):
+                    persisted = persisted_forward_validation_outcomes(session, candidates, windows=windows,
+                                                                      as_of_date=args.as_of_date)
+                    report = build_forward_validation_report_from_outcomes(
+                        candidates, persisted, market=args.market, sample_source="db", as_of_date=args.as_of_date,
+                        windows=windows, benchmark_symbol=benchmark_symbol, trading_calendar=calendar.sessions,
+                        benchmark_prices=price_series.get(benchmark_symbol, []))
+                    evaluation.report.update(report, preserved_conflicts=conflicts)
                 session.commit()
-                if write_summary.get("preserved_conflicts"):
-                    evaluation.report["preserved_conflicts"] = write_summary["preserved_conflicts"]
 
     if args.output is not None:
         write_report(evaluation.report, args.output)

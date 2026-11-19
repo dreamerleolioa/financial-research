@@ -166,7 +166,7 @@ def test_failed_month_does_not_discard_an_earlier_proven_window_in_same_batch(mo
             raise OSError("official outage")
         return [bar(day, 100.0) for day in DAYS if start_date <= day <= end_date]
 
-    def events(symbol, start, end, provider, *, record_detail=None):
+    def events(symbol, start, end, provider, *, record_detail=None, record_rights=None):
         if start.month == 7:
             raise OSError("official event outage")
         return []

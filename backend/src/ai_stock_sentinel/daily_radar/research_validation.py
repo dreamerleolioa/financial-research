@@ -353,6 +353,10 @@ def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, p
     event_diagnostics_start = len(diagnostics)
     from ai_stock_sentinel.daily_radar.price_acceptance import VENDOR_UNAVAILABLE
     accepted = accept_next_open_prices(candidate, days, yahoo, official)
+    if accepted.reason == 'official_corporate_action_in_window':
+        from ai_stock_sentinel.daily_radar.rights_prices import accept_rights_prices
+        accepted = (accept_rights_prices(candidate, days, yahoo, official, basis='next_open',
+                                         vendor_benchmark=benchmark) or accepted)
     base = evaluate_research_window(
         candidate, price_series=accepted.stock, benchmark_prices=accepted.benchmark,
         window_days=len(days) - 1, as_of_date=as_of_date, benchmark_symbol=benchmark_symbol,

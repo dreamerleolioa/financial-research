@@ -205,3 +205,15 @@ def test_cli_write_rejects_unsupported_official_calendar_scope(db, monkeypatch, 
     with pytest.raises(ValueError, match='official_trading_calendar_scope_unsupported'):
         invoke(db, monkeypatch, tmp_path, cal, market=market, benchmark=benchmark)
     assert not (tmp_path/'report.json').exists() and saved(db) == before
+
+
+def test_cli_excludes_returns_rejected_by_the_writer(db, monkeypatch, tmp_path):
+    import json
+    cal = seed_basis(db, "signal_close")
+    # Preserve the committed gaps when a competing action prevents accepting the reevaluation.
+    invoke(db, monkeypatch, tmp_path, cal, missing_symbol="2330.TW")
+    conflicts = [{"window_days": w, "reason":"validated_return_conflicts_with_corporate_action"} for w in WINDOWS]
+    monkeypatch.setattr(cli, "accept_validation_results", lambda *args, **kwargs: {"preserved_conflicts": conflicts})
+    report = json.loads(invoke(db, monkeypatch, tmp_path, cal).read_text())
+    assert report["sample_summary"]["validated_sample_count"] == 0
+    assert report["preserved_conflicts"] == conflicts

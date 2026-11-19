@@ -67,7 +67,10 @@ def _sanitize_validation_error_value(value: Any) -> Any:
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(_request, exc: RequestValidationError):
+async def validation_exception_handler(request, exc: RequestValidationError):
+    # Invalid baseline lists can produce a separate validation detail for every hash.
+    if getattr(request.scope.get("route"), "name", None) == "compare_validation_gaps":
+        return JSONResponse(status_code=422, content={"detail": "invalid_validation_gap_baseline"})
     return JSONResponse(
         status_code=422,
         content={"detail": _sanitize_validation_error_value(exc.errors())},

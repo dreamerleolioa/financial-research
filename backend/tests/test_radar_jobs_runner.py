@@ -147,3 +147,54 @@ def test_durable_workflow_passes_reviewed_baseline_at_validation_deadlines(
         baseline = json.loads((root / output[output.index('--known-validation-gaps') + 1]).read_text())
         assert baseline['version'] == 'radar-known-validation-gaps-v1'
         assert baseline['gaps'] and len({validation_gap_key(g) for g in baseline['gaps']}) == len(baseline['gaps'])
+
+
+@pytest.mark.parametrize('change', ['date', 'version', 'digest', 'calendar', 'ratio', 'missing', 'boolean', 'negative'])
+def test_compact_alert_rejects_unverified_summary(tmp_path, change):
+    import json
+    from ai_stock_sentinel.radar_gap_contract import COMPARISON_VERSION, baseline_digest
+
+    day = '2026-11-18'
+    baseline = tmp_path / 'baseline.json'
+    baseline.write_text(json.dumps({'version': 'radar-known-validation-gaps-v1', 'as_of_date': day, 'gaps': []}))
+    receipt = {'requested_run_date': day, 'effective_run_date': day, 'job_id': 37}
+
+    def read(url, token, **kwargs):
+        assert url.endswith('/capabilities')
+        return {'version': 'radar-durable-v1', 'enabled': True, 'validation_gap_comparison': True}
+
+    def write(url, token, payload, **kwargs):
+        if '/jobs' in url:
+            return receipt
+        lane = {'ready': True, 'calendar_ready': True, 'unresolved_count': 0, 'comparison': {'known': 0, 'new': 0}}
+        report = receipt | {'market': 'TW', 'scope': 'validation', 'version': COMPARISON_VERSION,
+                            'baseline_digest': baseline_digest(day, []), 'validation': {'next_open': lane}}
+        if change in ('date', 'version', 'digest'):
+            report[{'date': 'effective_run_date', 'version': 'version', 'digest': 'baseline_digest'}[change]] = 'wrong'
+        elif change == 'missing':
+            report['validation'].clear()
+        elif change == 'calendar':
+            lane['calendar_ready'] = False
+        elif change == 'ratio':
+            lane['unresolved_count'] = 42
+        else:
+            lane['comparison']['new'] = False if change == 'boolean' else -1
+        return report
+
+    result = run(endpoint='https://test.invalid', token='secret', output_dir=tmp_path, run_date=day,
+                 require_lanes=['next_open'], read=read, write=write, known_validation_gaps=baseline)
+    assert result['status'] == 'failed' and result['readiness_deadline_passed'] is False
+
+
+def test_readiness_http_error_never_reads_body_after_request_deadline():
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from run_daily_radar_jobs import readiness_error
+
+    class UnreadableBody(BytesIO):
+        def read(self, *args):
+            pytest.fail('error body read after the HTTP deadline')
+
+    for status in (409, 422):
+        exc = HTTPError('https://example.test', status, 'secret', {}, UnreadableBody())
+        assert readiness_error(exc) == {'phase': 'readiness', 'error_type': 'HTTPError', 'http_status': status}

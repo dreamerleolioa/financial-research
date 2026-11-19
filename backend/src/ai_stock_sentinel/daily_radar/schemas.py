@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from ai_stock_sentinel.calibration.governance import DEFAULT_MIN_REPLAY_COVERAGE
 from ai_stock_sentinel.daily_radar.constants import (
@@ -619,3 +619,9 @@ class JobRequest(BaseModel):
     market: Literal['TW'] = 'TW'
     recheck_publication: bool = False
     lanes: list[Literal['publication', 'signal_close', 'next_open', 'auxiliary']] = Field(default_factory=lambda: ['publication', 'signal_close', 'next_open', 'auxiliary'], min_length=1, max_length=4)
+
+
+class ValidationGapBaseline(BaseModel):
+    version: Literal['radar-gap-comparison-v1']
+    as_of_date: date
+    hashes: list[Annotated[str, StringConstraints(pattern=r'^[0-9a-f]{64}$')]] = Field(max_length=50_000)

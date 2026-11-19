@@ -179,3 +179,104 @@ def test_authenticated_alert_inventory_can_return_more_than_sample_limit(storage
     assert full["unresolved_count"] == len(full["gaps"]) == 105
     assert full["ready"] is sample["ready"] is False
     assert all(len(gap["gap_revision"]) == 64 for gap in full["gaps"])
+
+
+def test_compact_comparison_through_driver_with_oversized_inventory(storage, monkeypatch, tmp_path):
+    import hashlib
+    import json
+    from io import BytesIO
+    from daily_radar_http import _read_json
+    from run_daily_radar_jobs import run
+
+    db, _ = storage
+    proof(db)
+    day = '2026-06-30'
+    rows = []
+    for basis, known, new in [('signal_close', 1439, 1033), ('next_open', 457, 760)]:
+        for i in range(known + new):
+            revision = hashlib.sha256(str(i).encode()).hexdigest()
+            rows.append(dict(candidate_id=i + 1, candidate_revision=revision, calendar_revision=revision,
+                             signal_date='2026-06-01', symbol='2330.TW', return_basis=basis, window_days=5,
+                             expected_target_date='2026-06-10', validation_version='daily-radar-test-validation-return-basis-and-source-proof-v2',
+                             state='missing_diagnostic' if i < known else 'missing_outcome',
+                             reason='observation_diagnostic_incomplete' if i < known else 'validation_outcome_missing',
+                             next_action='repair_diagnostic' if i < known else 'waiting_provider',
+                             gap_revision=revision))
+    with pytest.raises(ValueError, match='evidence_response_too_large'):
+        _read_json(BytesIO(json.dumps(rows, separators=(',', ':')).encode()))
+    baseline = tmp_path / 'baseline.json'
+    baseline.write_text(json.dumps({'version': 'radar-known-validation-gaps-v1', 'as_of_date': day,
+                                    'gaps': [g for g in rows if g['state'] == 'missing_diagnostic']}))
+    def inventory(*args, **kwargs):
+        assert kwargs['include_gap_revision']
+        yield from rows
+    monkeypatch.setattr('ai_stock_sentinel.daily_radar.readiness.inventory_items', inventory)
+    monkeypatch.setenv('DAILY_RADAR_INTERNAL_TOKEN', 'test-readiness')
+    app = FastAPI()
+    app.include_router(readiness_router.router)
+    app.dependency_overrides[get_db] = lambda: db
+    receipt = {'requested_run_date': day, 'effective_run_date': day, 'job_id': 37}
+    with TestClient(app) as client:
+        def read(url, token, **kwargs):
+            assert url.endswith('/capabilities')
+            return {'version': 'radar-durable-v1', 'enabled': True, 'scoped_resume': True,
+                    'validation_gap_comparison': True}
+
+        def write(url, token, body, **kwargs):
+            if '/jobs' in url:
+                return receipt
+            path = url.removeprefix('https://example.test')
+            assert client.post(path, json=body).status_code == 401
+            resp = client.post(path, json=body, headers={'Authorization': 'Bearer ' + token})
+            resp.raise_for_status()
+            assert len(resp.content) < 32 * 1024
+            return _read_json(BytesIO(resp.content))
+
+        def scheduled():
+            return run(endpoint='https://example.test', token='test-readiness', output_dir=tmp_path,
+                       run_date=day, require_lanes=('signal_close','next_open'), owner='validation',
+                       read=read, write=write, known_validation_gaps=baseline)
+
+        result = scheduled()
+        assert result['validation_alerts'] == {'signal_close': {'known': 1439, 'new': 1033},
+                                               'next_open': {'known': 457, 'new': 760}}
+        assert result['status'] == 'failed' and result['errors'] == []
+        rows[:] = [g for g in rows if g['state'] == 'missing_diagnostic']
+        known_only = scheduled()
+        assert known_only['status'] == 'recorded_or_advanced' and not known_only['readiness_deadline_passed']
+        original = rows[-1]
+        rows[-1] = dict(original, gap_revision=hashlib.sha256(b'updated evidence').hexdigest())
+        changed = scheduled()
+        assert changed['validation_alerts']['next_open'] == {'known': 456, 'new': 1}
+        assert changed['status'] == 'failed' and not changed['readiness_deadline_passed']
+        rows.append(original)
+        duplicate = scheduled()
+        assert duplicate['status'] == 'failed' and duplicate['errors'][0]['phase'] == 'readiness'
+        # This reviewed baseline is from the future relative to the requested date.
+        baseline.write_text(json.dumps(json.loads(baseline.read_text()) | {'as_of_date': '2026-07-01'}))
+        rows[:] = [original]
+        historical = scheduled()
+        assert historical['validation_alerts'] == {'signal_close': {'known': 0, 'new': 0},
+                                                  'next_open': {'known': 0, 'new': None}}
+        assert historical['status'] == 'failed' and historical['errors'] == []
+        rows.clear()
+        assert scheduled()['readiness_deadline_passed'] is True
+        url = f'/internal/daily-radar/readiness/compare?run_date={day}'
+        payload = {'version': 'radar-gap-comparison-v1', 'as_of_date': day, 'hashes': []}
+        headers = {'Authorization': 'Bearer test-readiness'}
+        for malformed in ({'as_of_date': '2026-07-01'}, {'hashes': ['abc']}, {'hashes': ['a' * 64] * 2}):
+            assert client.post(url, headers=headers, json=payload | malformed).status_code == 422
+
+
+def test_app_returns_bounded_comparison_validation_error(storage, monkeypatch):
+    from ai_stock_sentinel.api import app
+
+    db, _ = storage
+    monkeypatch.setenv('DAILY_RADAR_INTERNAL_TOKEN', 'test-readiness')
+    monkeypatch.setitem(app.dependency_overrides, get_db, lambda: db)
+    response = TestClient(app).post('/internal/daily-radar/readiness/compare?run_date=2026-06-30',
+        headers={'Authorization': 'Bearer test-readiness'},
+        json={'version': 'radar-gap-comparison-v1', 'as_of_date': '2026-06-30', 'hashes': ['invalid'] * 15000})
+    assert response.status_code == 422
+    assert len(response.content) < 256
+    assert response.json() == {'detail': 'invalid_validation_gap_baseline'}
