@@ -203,3 +203,23 @@ def test_stale_empty_probe_after_final_page_cannot_pause_ready_windows(tmp_path)
         return status(url)
     result=exercise(tmp_path,write,limit=4)
     assert committed.is_set() and result['errors']==[]
+
+
+def test_http_failure_records_status_without_transferring_response_stream(tmp_path):
+    import pickle
+    from urllib.error import HTTPError
+    from radar_window_driver import _advance
+    from time import monotonic
+    def fail(*args, **kwargs):
+        raise HTTPError('https://example.invalid', 503, 'private body', {}, open(__file__, 'rb'))
+    def invoke(url, *args, **kwargs):
+        return _advance(fail, url, 'token', 10, monotonic() + 10)
+    result = exercise(tmp_path, invoke, limit=1)
+    error, = result['errors']
+    assert error['error_type'] == 'HTTPError' and error['http_status'] == 503
+    assert error['slot'] == 'normal'
+    assert 'private' not in str(error)
+    try:
+        invoke('https://example.invalid')
+    except Exception as exc:
+        assert type(pickle.loads(pickle.dumps(exc))) is type(exc)

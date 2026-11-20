@@ -65,6 +65,7 @@ def _manual(candidate, row, calendar):
         'historical_repair', 'official_rights_recovery', 'reviewed_rights_recovery', 'official_corporate_action', 'split_event'))
     eligible = target is not None and (state in {'input_unverified', 'invalid_window'}
                                       or reason == 'conflicting_price_records'
+                                      or reason == 'terminal_evidence_unverified' and row.get('skip_reason') == 'stock_split_in_window'
                                       or owned and state not in {'validated', 'terminal', 'immature'})
     return eligible, reason
 
@@ -272,7 +273,21 @@ def _verify_after(candidate, after, calendar, *, prior=None, require_official=Tr
             raise ValueError('next_open_repair_metrics_invalid')
 
 
-def build_repair_plan(bind, request, *, calendar, evidence):
+def _check_legacy_split(before, after):
+    if before.get('skip_reason') != 'stock_split_in_window' or before['outcome'].get('split_event'):
+        return
+    outcome = after['outcome']
+    if after.get('skip_reason') == 'stock_split_in_window' and outcome.get('split_event'):
+        return
+    # A stock dividend also produces a split marker. The official distribution
+    # verifier replays the matching ratio, date, cash, and every stock/index bar.
+    from ai_stock_sentinel.calibration import official_corporate_actions as actions
+    if after.get('skip_reason') == actions.STOCK_DISTRIBUTION and outcome.get(actions.PROVENANCE_KEY):
+        return
+    raise ValueError('next_open_official_split_unverified')
+
+
+def build_repair_plan(bind, request, *, calendar, evidence, errors=None):
     if (evidence.get('version') != CAPTURE_VERSION
             or evidence.get('validation_version') != RESEARCH_VALIDATION_VERSION
             or evidence.get('calendar_sha256') != fingerprint(calendar.payload())
@@ -296,7 +311,17 @@ def build_repair_plan(bind, request, *, calendar, evidence):
         if row is None:
             raise ValueError('next_open_repair_incomplete')
         after = before | {k: row[k] for k in MUTABLE_FIELDS}
-        _verify_after(candidates[before['candidate_id']], after, calendar, prior=before['outcome'])
+        try:
+            _check_legacy_split(before, after)
+            _verify_after(candidates[before['candidate_id']], after, calendar, prior=before['outcome'])
+        except ValueError as exc:
+            if errors is None:
+                raise
+            reason = str(exc)
+            if (row['outcome'].get('official_repair_error') or reason == 'next_open_repair_incomplete'):
+                reason = (row['outcome'].get('official_repair_error') or {}).get('code') or row.get('skip_reason') or reason
+            errors.append({'id': entry['id'], 'reason': reason})
+            continue
         after['outcome'] = after['outcome'] | {'historical_repair': {
             'version': VERSION, 'repair_id': repair_id, 'operation': 'recompute',
             'calendar_sha256': fingerprint(calendar.payload()), 'capture_sha256': evidence['sha256'],
@@ -317,6 +342,9 @@ def apply_repair_plan(session, plan, *, expected_sha256, rollback=False):
             or plan['prepared']['before'] != {CALENDAR_STEP: calendar.payload()}
             or plan['prepared']['after'] != plan['prepared']['before']):
         raise ValueError('next_open_repair_manifest_scope_invalid')
+    if not rollback:
+        for entry in plan['results']:
+            _check_legacy_split(entry['before'], entry['after'])
     priors = {(entry['before']['candidate_id'], entry['before']['window_days']): entry['before']['outcome']
               for entry in plan['results']}
     return _apply_result_manifest(session, plan, expected_sha256=expected_sha256, rollback=rollback,

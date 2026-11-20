@@ -47,11 +47,28 @@ def inventory_input_revision(db, *, as_of_date):
                         'runs': _digest(db, run_query, run_columns, DailyRadarRun.id)})
 
 
-def candidate_page(db, *, start_date, as_of_date, after, limit):
+def due_in_interval(item, after, through):
+    target = item['expected_target_date']
+    return (item['reason'] != 'non_trading_signal_date' and target is not None
+            and str(after) < target <= str(through))
+
+
+def maturity_signal_dates(calendar, *, after, through):
+    """Signal sessions with a horizon ending in the open interval (after, through]."""
+    from ai_stock_sentinel.daily_radar.constants import DAILY_RADAR_VALIDATION_WINDOWS
+    days = calendar.sessions
+    return {days[index - window] for index, day in enumerate(days) if after < day <= through
+            for window in DAILY_RADAR_VALIDATION_WINDOWS if index >= window}
+
+
+def candidate_page(db, *, start_date, as_of_date, after, limit, include_dates=None):
     query = select(DailyRadarCandidate.id).where(
         DailyRadarCandidate.run_id.in_(canonical_radar_run_ids(
             market='TW', start_date=start_date, end_date=as_of_date)),
         taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
+    if include_dates is not None:
+        query = query.join(DailyRadarRun, DailyRadarRun.id == DailyRadarCandidate.run_id)
+        query = query.where(DailyRadarRun.run_date.in_(include_dates))
     if after is not None:
         query = query.where(DailyRadarCandidate.id > after)
     return list(db.scalars(query.order_by(DailyRadarCandidate.id).limit(limit + 1)))

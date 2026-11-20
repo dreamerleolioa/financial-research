@@ -149,10 +149,14 @@ def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=Non
                 yield item
 
 
-def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100, known_hashes=None):
+def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100, known_hashes=None, due_after=None):
     calendar = load_calendar(session, start_date=as_of_date, as_of_date=as_of_date)
     reports = {basis: {"validation_version": version, "counts": Counter(), "reasons": Counter(), "gaps": []}
         for basis, version in (("signal_close", FORWARD_VALIDATION_VERSION), ("next_open", RESEARCH_VALIDATION_VERSION))}
+    from ai_stock_sentinel.daily_radar.planning_inventory import due_in_interval
+    if due_after is not None:
+        for report in reports.values():
+            report['due_interval'] = {'after': due_after, 'through': str(as_of_date), 'unresolved_count': 0}
     seen_windows = set()
     if known_hashes is not None:
         for report in reports.values():
@@ -163,6 +167,8 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
         report["counts"][item["state"]] += 1
         if item["state"] not in {"validated", "terminal", "immature"}:
             report["reasons"][item["reason"]] += 1
+            if due_after is not None and due_in_interval(item, due_after, as_of_date):
+                report['due_interval']['unresolved_count'] += 1
             if known_hashes is not None:
                 window = (item['candidate_id'], item['return_basis'], item['window_days'])
                 if window in seen_windows:
@@ -250,13 +256,13 @@ def _live_margin_blocker(blocker):
 
 
 def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False,
-                   scope='all', audit_completed_score=False):
+                   scope='all', audit_completed_score=False, due_after=None):
     """Caller holds a read-only/no-autoflush session; never fetches providers."""
     if scope == 'validation':
         return {'version': 'radar-readiness-v1', 'scope': scope, 'market': 'TW',
                 'requested_run_date': str(run_date), 'effective_run_date': str(run_date),
                 'validation': validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
-                    sample_limit=None if include_all_validation_gaps else 100), 'data_ready': None}
+                    sample_limit=None if include_all_validation_gaps else 100, due_after=due_after), 'data_ready': None}
     if scope not in {'all', 'publication'}:
         raise ValueError('invalid_readiness_scope')
     from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled

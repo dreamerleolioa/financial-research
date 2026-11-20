@@ -3,18 +3,32 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from multiprocessing import get_context
 from time import monotonic
+from urllib.error import HTTPError
 
 from daily_radar_http import post, request_deadline
+
+
+class AdvanceRequestError(Exception):
+    """Only send serializable diagnostics from the network process."""
 
 
 def _advance(write, url, token, seconds, deadline):
     timeout = min(seconds, deadline - monotonic())
     if timeout <= 0:
         raise TimeoutError('radar_driver_budget_exhausted')
-    if write is post:
-        with request_deadline(timeout):
-            return write(url, token, {}, timeout=timeout)
-    return write(url, token, {}, timeout=timeout)
+    try:
+        if write is post:
+            with request_deadline(timeout):
+                return write(url, token, {}, timeout=timeout)
+        return write(url, token, {}, timeout=timeout)
+    except AdvanceRequestError:
+        raise
+    except Exception as exc:
+        status = None
+        if isinstance(exc, HTTPError):
+            status = exc.code
+            exc.close()
+        raise AdvanceRequestError(type(exc).__name__, status) from None
 
 
 def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, clock, record, submitted, owner=None):

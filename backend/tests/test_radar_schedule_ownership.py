@@ -417,3 +417,16 @@ def test_dated_binding_survives_later_adoption_of_older_pure_job(db):
     later=NOW+timedelta(hours=2)
     assert earlier.id in {r['job_id'] for r in jobs.resume_jobs(db,owner='validation',now=later)}
     assert jobs.create_job(db,run_date=day,lanes=lanes,owner='validation',now=later).id==bound.id
+
+
+def test_bounded_resume_includes_newest_dated_validation_and_oldest_due(db):
+    jobs_by_day = []
+    for day in (1, 2, 3, 4):
+        row = RadarJob(job_key=f'dated-{day}', market='TW', lanes=['signal_close'],
+            run_date=date(2026, 11, day), next_attempt_at=NOW, state='pending',
+            scope={'scheduler_owner':'validation', 'dated_registration':True})
+        db.add(row)
+        jobs_by_day.append(row)
+    db.commit()
+    refs = jobs.resume_jobs(db, owner='validation', now=NOW, limit=2)
+    assert [r['job_id'] for r in refs] == [jobs_by_day[-1].id, jobs_by_day[0].id]

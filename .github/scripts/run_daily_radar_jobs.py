@@ -158,7 +158,16 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         nonlocal internal_failure_seen
         in_flight.pop((job['job_id'], slot), None)
         if error is not None:
-            errors.append({'job_id': job['job_id'], 'error_type': type(error).__name__})
+            from radar_window_driver import AdvanceRequestError
+            details = {'job_id': job['job_id'], 'slot': slot, 'error_type': type(error).__name__}
+            if isinstance(error, AdvanceRequestError):
+                details['error_type'], status_code = error.args
+                if status_code is not None:
+                    details['http_status'] = status_code
+            elif isinstance(error, HTTPError):
+                details['http_status'] = error.code
+                error.close()
+            errors.append(details)
         else:
             previous = summaries.get(job['job_id'])
             internal_failure_seen |= any(lane.get('states', {}).get('failed_internal', 0)
