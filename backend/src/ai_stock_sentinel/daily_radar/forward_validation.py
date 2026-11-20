@@ -587,6 +587,7 @@ def upsert_forward_validation_results(
     calendar=None,
     expected_revisions: Mapping[tuple, str | None] | None = None,
 ) -> dict[str, int]:
+    from ai_stock_sentinel.daily_radar.dividend_anchor import check_published_inputs
     from ai_stock_sentinel.daily_radar.price_acceptance import (
         PRICE_EVIDENCE, RETRYABLE_PRICE_REASONS, verify_price_lock,
     )
@@ -650,6 +651,7 @@ def upsert_forward_validation_results(
             )
         research_window = outcome["validation_version"] == rights.RESEARCH_VERSION
         verify_price_lock(outcome, symbol=candidate_symbol, basis="next_open" if research_window else "signal_close")
+        check_published_inputs(session, candidate_id, outcome)
         statement = select(DailyRadarForwardValidationResult).where(
             DailyRadarForwardValidationResult.candidate_id == int(candidate_id),
             DailyRadarForwardValidationResult.window_days == int(outcome["window_days"]),
@@ -762,7 +764,7 @@ def upsert_forward_validation_results(
             event_date = _parse_date(event.get("effective_date"))
             if (not research_window or candidate_market != "TW" or benchmark_symbol != "TAIEX"
                     or outcome.get("status") != "skipped" or event.get("symbol") != candidate_symbol
-                    or proof.get("evidence_version") != corporate_actions.EVIDENCE_VERSION
+                    or not corporate_actions.valid_precision_version(proof, event, outcome["skip_reason"])
                     or not target or not cutoff or not event_date or not signal_date < event_date <= target <= cutoff
                     or (existing is not None and (existing.status != "skipped"
                                                    or existing.skip_reason in terminal_skip_reasons

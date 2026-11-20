@@ -84,7 +84,7 @@ def terminal_evidence_matches(candidate, row, *, basis, sessions, as_of_date):
     ratio, previous, cash = (number(event.get(k)) for k in ('share_ratio', 'previous_close', 'cash_per_share'))
     sources = proof.get('sources')
     adjusted = proof.get('yahoo_adjusted_dates')
-    if (proof.get('evidence_version') != actions.EVIDENCE_VERSION or proof.get('session_dates') != days
+    if (not actions.valid_precision_version(proof, event, reason) or proof.get('session_dates') != days
             or event.get('symbol') != candidate['symbol'] or effective not in sessions
             or previous is None or previous <= 0 or ratio is None or cash is None or cash < 0
             or not isinstance(sources, list) or not sources or not all(_source(s) for s in sources)

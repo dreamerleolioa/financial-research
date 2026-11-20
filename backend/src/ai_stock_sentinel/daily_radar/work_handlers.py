@@ -465,6 +465,11 @@ class WorkHandlers:
                         raise RuntimeError('forward_price_provider_returned_no_data')
                     return {'rows': list(rows)}
                 _, proof = self.store.capture_sdk(operation=operation, params=params, fetch=fetch)
+            elif request.get('provider') == 'mops_rights':
+                from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
+                target = date(int(params['year']) + 1911, int(params['month']), int(params['e_date']))
+                _, proof = RecoveringResearchPriceProvider(source_store=self.store).capture_rights_disclosures(
+                    params['co_id'] + '.TW', target)
             elif 'url' in request:
                 getter = yahoo_getter if request['provider'] == 'yahoo_chart_events' else self.getter
                 getter(request['url'], params=params, timeout=20)

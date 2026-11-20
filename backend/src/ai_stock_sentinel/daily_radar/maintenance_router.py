@@ -346,6 +346,12 @@ def run_daily_radar_forward_validation_endpoint(
         db.commit()
         return DailyRadarForwardValidationRunResponse(**result)
     from ai_stock_sentinel.daily_radar.validation_execution import run_signal_close_validation
+    from ai_stock_sentinel.calibration.price_provider import YFinanceForwardPriceProvider
+    if collector is not None and type(price_provider) is YFinanceForwardPriceProvider:
+        from ai_stock_sentinel.daily_radar.durable_providers import CachedForwardPrices
+        from ai_stock_sentinel.daily_radar.source_snapshots import store_for_session
+        if (store := store_for_session(db)) is not None:
+            price_provider = CachedForwardPrices(db, store=store, provider=price_provider)
     try:
         return run_signal_close_validation(db, request, as_of_date=as_of_date,
             price_provider=price_provider, calendar_provider=calendar_provider,

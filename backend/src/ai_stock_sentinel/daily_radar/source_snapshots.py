@@ -53,7 +53,9 @@ class SourceSnapshotStore:
 
     def capture(self, *, provider, url, params, fetch, parser_version=PARSER_VERSION):
         parsed = urlsplit(url)
-        if (parsed.scheme != "https" or parsed.hostname not in {
+        from ai_stock_sentinel.daily_radar.disclosed_rights import URL as mops_rights_url
+        mops = provider == "mops_rights" and url == mops_rights_url
+        if (parsed.scheme != "https" or not mops and parsed.hostname not in {
                 "www.twse.com.tw", "www.tpex.org.tw", "query1.finance.yahoo.com"}
                 or parsed.username or parsed.password or parsed.query or parsed.fragment
                 or parsed.port not in (None, 443)):
