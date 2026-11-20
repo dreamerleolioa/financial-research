@@ -14,7 +14,7 @@ from ai_stock_sentinel.daily_radar.research_validation import (
 )
 from ai_stock_sentinel.daily_radar.terminal_integrity import _source
 from ai_stock_sentinel.daily_radar.validation_inputs import PROOF_KEY
-from ai_stock_sentinel.daily_radar import next_open_action_scope as action_scope
+from ai_stock_sentinel.daily_radar import next_open_action_scope as action_scope, reviewed_distribution_basis
 
 KEY = 'reviewed_official_window'
 VERSION = 'next-open-reviewed-official-window-v1'
@@ -108,15 +108,24 @@ def collect_window(candidate, before, row, *, calendar, provider):
             result = _recover_rights_window(candidate, event_row, stock_rows, marked_rows, benchmark_rows,
                 calendar.sessions, as_of_date=target, scoped=True, provider=provider, reviewed=True,
                 later_sessions=later_sessions)
+        elif kind == reviewed_distribution_basis.KEY:
+            result = reviewed_distribution_basis.classify(event_row, stock_rows, marked_rows, benchmark_rows,
+                calendar=calendar, provider=provider)
         else:
             result = _classify_corporate_action(event_row, stock_rows, marked_rows, benchmark_rows,
                 as_of_date=target, provider=provider)
         frozen = {'kind': kind, 'row': deepcopy(event_row), 'yahoo': deepcopy(stock_rows),
             'marked': deepcopy(marked_rows), 'benchmark': deepcopy(benchmark_rows),
             'capabilities': list(provider.capabilities), 'calls': deepcopy(provider.calls[start:provider.position()])}
+        if kind == reviewed_distribution_basis.KEY:
+            frozen['kind'] = 'corporate'
+            frozen['distribution_verification'] = reviewed_distribution_basis.VERSION
         if kind == 'rights':
             frozen['rights_verification'] = POST_WINDOW_RIGHTS_VERIFICATION if later_sessions else RIGHTS_VERIFICATION
         return result, frozen
+    basis_candidate = (getattr(provider, 'review_distribution_basis', False) and symbol.endswith('.TW')
+                       and target < calendar.through and reviewed_distribution_basis.matching_event(yahoo, signal, target)
+                       and 'rights' not in kind)
     if 'rights' in kind:
         # Explicit scope makes prior official rights evidence mandatory even
         # when today's Yahoo rows have no conflict flags. Existing precision,
@@ -126,6 +135,8 @@ def collect_window(candidate, before, row, *, calendar, provider):
             raise ValueError('next_open_official_rights_unverified')
     elif 'corporate' in kind:
         row, event_replay = event('corporate', yahoo, benchmark, marked)
+        if row is None and basis_candidate:
+            row, event_replay = event(reviewed_distribution_basis.KEY, yahoo, benchmark, marked)
         if row is None:
             raise ValueError('next_open_official_action_unverified')
     elif scope and any(e['family'] == 'reduction' for e in scope['current_events']):
@@ -168,6 +179,10 @@ def collect_window(candidate, before, row, *, calendar, provider):
                     if recovered is not None:
                         event_replay = frozen
             row = recovered or row
+    if (event_replay is None and basis_candidate and
+            (row.get('skip_reason') == rights.CONFLICT_REASON or row.get('skip_reason') == 'stock_split_in_window'
+             and any(r.get('ohlc_conflict_fields') for r in marked if str(signal) < r['date'] <= str(target)))):
+        row, event_replay = event(reviewed_distribution_basis.KEY, yahoo, benchmark, marked)
     row = deepcopy(row); row['evaluation_as_of_date'] = str(calendar.through)
     if 'split' in kind and (row['status'] != 'skipped' or row.get('skip_reason') not in {'stock_split_in_window', *actions.TERMINAL_REASONS}):
         raise ValueError('next_open_official_split_unverified')
@@ -301,6 +316,16 @@ def _verify_event(candidate, after, frozen, kind, calendar, target):
         result = _recover_rights_window(candidate, row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
             calendar.sessions, as_of_date=target, scoped=True, provider=replay,
             reviewed=mode is not None, later_sessions=later)
+    elif 'distribution_verification' in frozen:
+        if frozen['distribution_verification'] != reviewed_distribution_basis.VERSION:
+            raise ValueError('next_open_official_event_verification_invalid')
+        action_scope._check_calls([c for c in frozen['calls'] if c['request']['method'] == 'capture_twse_report'])
+        histories = [c['value'] for c in frozen['calls'] if c['request']['method'] == 'official_research_history'
+                     and c['request']['args'] == [candidate['symbol']] and not c.get('failed')]
+        if not histories or any(rows != after['outcome'][KEY]['stock'] for rows in histories):
+            raise ValueError('reviewed_distribution_official_history_changed')
+        result = reviewed_distribution_basis.classify(row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
+            calendar=calendar, provider=replay)
     else:
         result = _classify_corporate_action(row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
             as_of_date=target, provider=replay)

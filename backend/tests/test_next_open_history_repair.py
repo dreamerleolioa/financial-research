@@ -683,3 +683,32 @@ def test_shadow_sibling_can_apply_when_selected_window_is_rejected(db):
     plan = tool.build_repair_plan(db.get_bind(), request, calendar=cal, evidence=capture, errors=[])
     assert [r['id'] for r in plan['results']] == [copy.id]
     assert tool.apply_repair_plan(db, plan, expected_sha256=plan['sha256'])['written'] == 1
+
+
+def test_malformed_reviewed_distribution_does_not_block_sibling_windows(db, monkeypatch):
+    from ai_stock_sentinel.calibration import official_corporate_actions as actions
+
+    cal, candidate, _, _ = seed(db)
+    request = api().inventory(db, calendar=cal)
+    symbol = candidate.symbol
+    provider = Prices(cal)
+    official = Prices(cal)
+    provider.official_research_history = official.official_research_history
+    provider.capture_split_day = lambda *args: ({}, {})
+    provider.capture_twse_report = lambda *args: ({}, {})
+    event_day = str(provider.days[6])
+    def fetch(symbols, **kwargs):
+        rows = official.fetch(symbols, **kwargs)
+        for bar in rows.get(symbol, []):
+            if bar['date'] == event_day:
+                bar.update(stock_splits=1.02, dividends=1.091692, high=bar['high'] + 2)
+        return rows
+    provider.fetch = fetch
+    def malformed(*args):
+        raise TypeError("unhashable type: 'list'")
+    monkeypatch.setattr(actions, '_twse_action', malformed)
+    evidence = api().capture_evidence(db.get_bind(), request, calendar=cal, provider=provider)
+    errors = []
+    plan = api().build_repair_plan(db.get_bind(), request, calendar=cal, evidence=evidence, errors=errors)
+    assert [r['after']['window_days'] for r in plan['results']] == [5]
+    assert len(errors) == 4 and {r['reason'] for r in errors} == {'reviewed_distribution_invalid_input'}
