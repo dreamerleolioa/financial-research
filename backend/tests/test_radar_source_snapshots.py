@@ -238,3 +238,59 @@ def test_forward_quotes_with_unknown_open_origin_are_not_reused(archive):
     store._capture_request(req, fetch=lambda:{"rows":[{"date":"2026-11-16","open":12,"close":12}]})
     for start in ("2026-11-01", "2026-11-16"):
         assert store.lookup_sdk(operation="forward-adjusted-history",params=params | {"start_date":start}) is None
+
+
+def test_scored_signal_retains_exact_quote_and_accepted_history(archive, monkeypatch):
+    from copy import deepcopy
+    import pandas as pd
+    from ai_stock_sentinel.daily_radar.raw_data import YFinanceBatchTechnicalFetcher
+    from ai_stock_sentinel.daily_radar.data_loader import load_daily_radar_cache_records
+    from ai_stock_sentinel.daily_radar.scoring import score_daily_radar_record
+    from test_daily_radar_technical_repair import _frame
+
+    day = date(2026, 9, 15)
+    frame = _frame(end=str(day))
+    monkeypatch.setattr('ai_stock_sentinel.daily_radar.raw_data.yf.download',
+                        lambda *args, **kwargs: pd.concat({'2330.TW': frame}, axis=1))
+    technical = YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None, source_store=SourceSnapshotStore(archive)).fetch(
+        ['2330.TW'], run_date=day)['2330.TW']
+    [record] = load_daily_radar_cache_records([dict(symbol='2330.TW', record_date=day, technical=technical, institutional={}, fundamental={})])
+    snapshot = score_daily_radar_record(record)['input_snapshot']
+    quote = snapshot['signal_quote']
+    assert quote['symbol'] == '2330.TW' and quote['trade_date'] == str(day)
+    assert quote['provider'] == 'yfinance' and quote['price_basis'] == 'adjusted_price'
+    source = technical['source_provenance']['accepted_adjusted_history']
+    assert quote['captured_at'] == source['captured_at']
+    assert quote['history_receipt'] == source
+    assert quote['ohlcv'] == {k: technical['ohlcv'][k] for k in ('open','high','low','close','volume')}
+    assert snapshot['replay_input']['record']['signal_quote'] == quote
+    old_price = quote['ohlcv']['close']
+    technical['ohlcv']['close'] = old_price + 1
+    assert quote['ohlcv']['close'] == old_price
+    invalid = deepcopy(record)
+    from types import SimpleNamespace
+    from ai_stock_sentinel.daily_radar.raw_data import current_daily_radar_raw_rows
+    raw = SimpleNamespace(symbol='2330.TW', record_date=day, technical=technical)
+    assert not current_daily_radar_raw_rows([raw], run_date=day)
+    raw.technical = {**technical, 'ohlcv': [1]}
+    assert not current_daily_radar_raw_rows([raw], run_date=day)
+    invalid['symbol'] = '1808.TW'
+    with pytest.raises(ValueError, match='signal_quote'):
+        score_daily_radar_record(invalid)
+
+
+def test_repaired_signal_retains_official_price_provider_and_adjustment(monkeypatch):
+    import pandas as pd
+    from ai_stock_sentinel.daily_radar.raw_data import YFinanceBatchTechnicalFetcher
+    from test_daily_radar_technical_repair import _repair_fixture, RUN_DATE
+    original, raw, official = _repair_fixture(factor=0.95)
+    monkeypatch.setattr('ai_stock_sentinel.daily_radar.raw_data.yf.download',
+                        lambda symbols, **kw: pd.concat({'2330.TW': raw if kw.get('auto_adjust') is False else original}, axis=1))
+    [technical] = YFinanceBatchTechnicalFetcher(
+        name_resolver=lambda _: None, official_bar_loader=lambda *a, **kw: {'2330.TW': official},
+    ).fetch(['2330.TW'], run_date=RUN_DATE).values()
+    quote = technical['signal_quote']
+    assert quote['provider'] == 'twse'
+    assert quote['adjustment']['adjustment_factor'] == pytest.approx(0.95)
+    assert datetime.fromisoformat(quote['captured_at']).tzinfo is not None
+    assert quote['ohlcv']['close'] == technical['ohlcv']['close']

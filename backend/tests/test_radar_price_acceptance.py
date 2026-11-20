@@ -125,7 +125,10 @@ def test_next_open_refuses_a_non_proportional_mismatch_between_sources():
 
 def test_publication_does_not_accept_correct_trade_date_with_wrong_close(monkeypatch):
     from ai_stock_sentinel.daily_radar import market_bar_repository
+    from datetime import datetime, timezone
     archived = SimpleNamespace(symbol="5880.TW", source_dataset="TWSE_MI_INDEX",
+                               source_provider="twse", adjustment_mode="unadjusted", volume=1000,
+                               fetched_at=datetime(2026, 11, 19, tzinfo=timezone.utc),
                                open=100, high=105, low=95, close=102)
     monkeypatch.setattr(market_bar_repository, "get_taiwan_daily_bars", lambda *args, **kw: [archived])
     technical = {"data_dates": {"ohlcv": str(SIGNAL)}, "ohlcv": {
@@ -134,9 +137,13 @@ def test_publication_does_not_accept_correct_trade_date_with_wrong_close(monkeyp
     row = SimpleNamespace(symbol="5880.TW", technical=technical)
     assert verify_signal_bars(None, [row], run_date=SIGNAL) == ({}, {"5880.TW": "official_signal_bar_mismatch"})
     technical["ohlcv"]["close"] = 102
-    accepted, rejected = verify_signal_bars(None, [row], run_date=SIGNAL)
+    accepted, rejected = verify_signal_bars(None, [row], run_date=SIGNAL, include_quote=True)
     assert not rejected
     assert accepted["5880.TW"]["sha256"] and accepted["5880.TW"]["raw_ohlcv"]["close"] == 102
+    assert accepted["5880.TW"]["official_quote"]["captured_at"] == archived.fetched_at.isoformat()
+    assert accepted["5880.TW"]["official_quote"]["ohlcv"]["volume"] == 1000
+    refresh, _ = verify_signal_bars(None, [row], run_date=SIGNAL)
+    assert "official_quote" not in refresh["5880.TW"]
 
 
 def test_official_collection_retains_a_waiting_source_when_no_halt_is_proven(monkeypatch):
@@ -273,3 +280,65 @@ def test_reviewed_next_open_lock_versions_terms_and_retains_full_receipt_integri
     replay["yahoo"][0]["close"] = 120.0
     with pytest.raises(ValueError, match="invalid_validation_price_lock"):
         verify_price_lock(batched, symbol="5880.TW", basis="next_open")
+
+
+def test_local_vendor_receipt_preserves_lock_and_traces_the_candles():
+    stock = [bar(SIGNAL, 100), bar(TARGET, 101)]
+    receipt = dict(provider='yfinance', source_operation='local-adjusted-history',
+                   snapshot_sha256='a'*64, captured_at='2026-06-05T00:00:00+00:00')
+    prices = [r | {'price_source':'yfinance'} for r in stock]
+    before = accept_signal_close_prices(CANDIDATE, DAYS, prices, official(stock))
+    after = accept_signal_close_prices(CANDIDATE, DAYS, [r | {'source_capture':receipt} for r in prices], official(stock))
+    assert not after.reason and after.proof == before.proof
+    saved = after.with_proof({'signal_date': str(SIGNAL), 'target_date':str(TARGET),
+                              'status':'validated', 'window_days':1, 'outcome': {}})
+    assert saved['outcome']['vendor_capture'] == receipt
+    verify_price_lock(saved, symbol=CANDIDATE['symbol'], basis='signal_close')
+    saved['outcome']['vendor_capture'] = receipt | {'snapshot_sha256': 'f'*64}
+    with pytest.raises(ValueError, match='invalid_validation_price_lock'):
+        verify_price_lock(saved, symbol=CANDIDATE['symbol'], basis='signal_close')
+
+
+def test_exact_and_covering_event_replay_share_price_lock():
+    from urllib.parse import urlencode
+    from ai_stock_sentinel.calibration import twse_rights_recovery as t
+    from ai_stock_sentinel.daily_radar.price_acceptance import lock_reviewed_next_open
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+
+    params = dict(response='json', startDate='20260604', endDate='20260604')
+    url = t.TWSE + t.EX_RIGHTS
+    request = {'method':'capture_twse_report','args':[t.EX_RIGHTS, params], 'kwargs':{}}
+    def outcome(end, term):
+        actual = params | {'endDate': end}
+        data = [['5880','115年06月04日',term]]
+        if end != params['endDate']:
+            data.append(['6173','115年06月08日','unrelated'])
+        report = dict(stat='OK', params=actual, fields=['股票代號','資料日期','權/息'], data=data)
+        receipt = {'source_url': url+'?'+urlencode(actual), 'snapshot_sha256': fingerprint(report),
+                   'captured_at':'2026-07-01T12:00:00+00:00'}
+        if actual != params:
+            receipt['requested_subrange'] = params
+        return lock_reviewed_next_open({'symbol':'5880.TW','signal_date':str(SIGNAL),'outcome':{
+            'official_corporate_action':{'sources':[receipt]},
+            'reviewed_official_window':{'session_dates':[str(TARGET)], 'event_replay':{
+                'calls':[{'request':request, 'value':[report,receipt]}]}}}}, official([bar(TARGET,100)]))['outcome']
+    exact = outcome('20260604','權')
+    covering = outcome('20260630','權')
+    assert exact[PRICE_EVIDENCE] == covering[PRICE_EVIDENCE]
+    assert exact['reviewed_official_window_sha256'] != covering['reviewed_official_window_sha256']
+    assert exact[PRICE_EVIDENCE] != outcome('20260630','息')[PRICE_EVIDENCE]
+
+    from ai_stock_sentinel.daily_radar.price_acceptance import _reviewed_inputs_sha256, same_reviewed_price_version
+    old = deepcopy(exact)
+    old[PRICE_EVIDENCE].pop('reviewed_input_scope')
+    old[PRICE_EVIDENCE]['reviewed_inputs_sha256'] = _reviewed_inputs_sha256({'outcome':old})
+    old[PRICE_EVIDENCE]['sha256'] = fingerprint({k:v for k,v in old[PRICE_EVIDENCE].items() if k!='sha256'})
+    assert same_reviewed_price_version(old,covering)
+    assert not same_reviewed_price_version(old,outcome('20260630','息'))
+    forged = deepcopy(exact)
+    raw, receipt = forged['reviewed_official_window']['event_replay']['calls'][0]['value']
+    receipt['source_url'] = receipt['source_url'].replace(t.EX_RIGHTS, t.FACE_VALUE)
+    forged['official_corporate_action']['sources'] = [receipt]
+    forged['reviewed_official_window_sha256'] = fingerprint(forged['reviewed_official_window'])
+    with pytest.raises(ValueError):
+        verify_price_lock({'signal_date':str(SIGNAL),'outcome':forged}, symbol='5880.TW', basis='next_open')

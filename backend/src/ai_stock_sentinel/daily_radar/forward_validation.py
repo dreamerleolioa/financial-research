@@ -721,8 +721,12 @@ def upsert_forward_validation_results(
         if saved_lock is not None:
             incoming_lock = _mapping(outcome.get("outcome")).get(PRICE_EVIDENCE)
             if incoming_lock is not None and incoming_lock["sha256"] != saved_lock["sha256"]:
-                from ai_stock_sentinel.daily_radar.price_acceptance import same_official_inputs_without_vendor
-                if not same_official_inputs_without_vendor(existing.outcome, _mapping(outcome.get("outcome"))):
+                from ai_stock_sentinel.daily_radar.price_acceptance import (
+                    same_official_inputs_without_vendor, same_reviewed_price_version,
+                )
+                incoming = _mapping(outcome.get("outcome"))
+                if not (same_official_inputs_without_vendor(existing.outcome, incoming)
+                        or same_reviewed_price_version(existing.outcome, incoming)):
                     raise ValidationAcceptanceConflict("validation_price_version_changed")
             continue
         if existing is not None and existing.status == "validated" and outcome.get("skip_reason") in RETRYABLE_PRICE_REASONS:

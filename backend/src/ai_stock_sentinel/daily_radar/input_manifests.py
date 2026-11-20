@@ -77,7 +77,7 @@ def reusable_public_run(db, manifest):
 
 
 def collect_execution_inputs(db, *, run_date, market, records, market_context,
-                             background_contexts, history_candidates=None, input_context=None, candidate_limit=100):
+                             background_contexts, history_candidates=None, input_context=None, candidate_limit=100, signal_anchors=None):
     records = list(records)
     symbols = [str(row["symbol"]) for row in records]
     history = list(history_candidates) if history_candidates is not None else get_symbol_candidate_history(
@@ -89,6 +89,14 @@ def collect_execution_inputs(db, *, run_date, market, records, market_context,
         "execution_options": {"candidate_limit": candidate_limit},
         "versions": {"scoring": SCORING_VERSION, "rules": RULE_VERSION,
                      "config": SCORING_CONFIG_VERSION, "selection": SELECTION_VERSION}})
+    if signal_anchors is not None:
+        # A changed candle or source is a new input. Re-reading the same
+        # official bar preserves the original publication and capture time.
+        payload['official_signal_anchors'] = {
+            symbol: {k: v for k, v in anchor.items() if k not in ('sha256', 'official_quote')} | {
+                'official_quote': {k: v for k, v in anchor['official_quote'].items()
+                                   if k not in ('sha256', 'captured_at')}}
+            for symbol, anchor in signal_anchors.items()}
     return payload
 
 

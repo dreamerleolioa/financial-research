@@ -280,3 +280,140 @@ def test_conflict_retry_refreshes_complete_quotes_once(processor, tmp_path, monk
         == retry.receipt('2330.TW')['rows']
         == [{'date': '2026-01-06', 'close': 2}]
     )
+
+
+def test_local_adjusted_prices_keep_the_receipt_used_for_the_window(processor, tmp_path):
+    from datetime import date
+
+    symbol = '5434.TW'
+    receipt = {'symbol': symbol, 'basis': 'signal_close', 'source': 'yfinance', 'start': '2026-11-03',
+               'end': '2026-11-17', 'captured_at': '2026-11-19T09:00:00+00:00', 'error': None,
+               'rows': [{'date': '2026-11-03', 'open': 9, 'close': 10}]}
+    receipt['sha256'] = processor.fingerprint(receipt)
+    processor.save(tmp_path / 'prices/signal_close' / (symbol + '.json.gz'), receipt)
+    prices = processor.MarketPrices(tmp_path, 'signal_close', {symbol: receipt['start']}, date(2026, 11, 17))
+    [observed] = prices.fetch([symbol], start_date=date(2026, 11, 3), end_date=date(2026, 11, 17))[symbol]
+    assert observed['source_capture']['snapshot_sha256'] == receipt['sha256']
+    assert observed['source_capture']['captured_at'] == receipt['captured_at']
+    assert 'source_capture' not in prices.receipt(symbol)['rows'][0]
+
+
+def test_local_reuses_full_exchange_report_without_relabelling_dates(processor, tmp_path, monkeypatch):
+    from datetime import date, datetime, timezone
+    from urllib.parse import urlencode
+    from ai_stock_sentinel.calibration import twse_rights_recovery as rights
+
+    url = rights.TWSE + rights.EX_RIGHTS
+    initial = dict(response='json', startDate='20260701', endDate='20260731')
+    wanted = initial | {'startDate': '20260702', 'endDate': '20260710'}
+    payload = {'stat': 'OK', 'params': initial, 'fields': ['股票代號','資料日期'],
+               'data': [['2330','115年07月03日'], ['2330','115年07月24日']]}
+    proof = {'source_url': url + '?' + urlencode(initial), 'captured_at': datetime.now(timezone.utc).isoformat(),
+             'snapshot_sha256': processor.fingerprint(payload)}
+    request = {'url': url, 'params': initial}
+    processor.save(tmp_path / 'exchange-reports' / (processor.fingerprint(request) + '.json.gz'),
+                   dict(request=request, proof=proof, payload=payload))
+    market = processor.MarketPrices(tmp_path, 'next_open', {}, date(2026, 7, 31))
+    provider = processor.BatchResearchPrices(market, None)
+    monkeypatch.setattr(provider, 'archived_report', lambda request: None)
+    got, source = provider.capture_twse_report(rights.EX_RIGHTS, wanted)
+    assert got == payload and source['source_url'] == proof['source_url']
+    read = lambda obj, ref: rights.dated_market_rows(obj, wanted, '資料日期', [], path=rights.EX_RIGHTS, source=ref)
+    assert [d for d,_ in read(got, source)] == [date(2026,7,3)]
+    for invalid in (source | {'snapshot_sha256': '0'*64},
+                    source | {'source_url': source['source_url']+'&stockNo=2330'},
+                    source | {'source_url': source['source_url'].replace('TWT49U', 'TWTB8U')}):
+        with pytest.raises(ValueError):
+            read(got, invalid)
+    with pytest.raises(ValueError):
+        read(got | {'data': []}, source)
+    filtered = got | {'params': initial | {'stockNo': '2330'}}
+    with pytest.raises(ValueError):
+        read(filtered, source | {'snapshot_sha256': processor.fingerprint(filtered)})
+
+
+def test_overlapping_reports_ignore_only_later_fund_filings(processor, tmp_path):
+    from datetime import date, datetime, timezone
+    from urllib.parse import urlencode
+    from ai_stock_sentinel.calibration import twse_rights_recovery as rights
+
+    url = rights.TWSE + rights.EX_RIGHTS
+    fields = ['股票代號', '資料日期', '除權息前收盤價', '最近一次申報資料 季別/日期', '最近一次申報每股 (單位)淨值']
+    def store(end, price, quarter, nav):
+        params = dict(response='json', startDate='20260701', endDate=end)
+        request = dict(url=url, params=params)
+        payload = {'stat': 'OK', 'params': params, 'fields': fields,
+                   'data': [['2330', '115年07月03日', price, quarter, nav]]}
+        proof = {'source_url': url + '?' + urlencode(params), 'captured_at': datetime.now(timezone.utc).isoformat(),
+                 'snapshot_sha256': processor.fingerprint(payload)}
+        processor.save(tmp_path / 'exchange-reports' / (processor.fingerprint(request) + '.json.gz'),
+                       dict(request=request, proof=proof, payload=payload))
+
+    store('20260730', '90', 'Q2', '30')
+    store('20260731', '90', 'Q3', '32')
+    request = dict(url=url, params=dict(response='json', startDate='20260702', endDate='20260710'))
+    def match():
+        return processor.MarketPrices(tmp_path, 'next_open', {}, date(2026, 7, 31)).covering_report(request)
+    payload, proof = match()
+    assert payload['data'][0][-2:] == ['Q2', '30']
+    assert proof['snapshot_sha256'] == processor.fingerprint(payload)
+    store('20260731', '91', 'Q3', '32')
+    with pytest.raises(ValueError, match='conflicting_exchange_range_reports'):
+        match()
+
+
+def test_covering_cache_isolated_from_corruption_and_replaced_after_refresh(processor, tmp_path, monkeypatch):
+    from datetime import date, datetime, timezone
+    from urllib.parse import urlencode
+    from ai_stock_sentinel.calibration import twse_rights_recovery as t
+
+    url = t.TWSE + t.EX_RIGHTS
+    base = dict(response='json', startDate='20260701', endDate='20260731')
+    narrow = base | dict(startDate='20260702', endDate='20260707')
+    folder = tmp_path / 'exchange-reports'
+    folder.mkdir()
+    (folder / ('0'*64 + '.json.gz')).write_bytes(b'broken')
+    market = processor.MarketPrices(tmp_path, 'next_open', {}, date(2026,7,31))
+    provider = processor.BatchResearchPrices(market, None)
+    monkeypatch.setattr(provider, 'archived_report', lambda request: None)
+    def response(params, stock):
+        payload = {'stat': 'OK', 'params': params, 'fields': ['股票代號','資料日期'],
+                   'data': [[stock,'115年07月03日']]}
+        return payload, {'source_url': url+'?'+urlencode(params), 'captured_at': datetime.now(timezone.utc).isoformat(),
+                         'snapshot_sha256': processor.fingerprint(payload)}
+    answers = iter(['1808', '5434', None, '9999'])
+    def capture(prov, origin, path, params):
+        stock = next(answers)
+        if stock is None:
+            prov.budget_limit = 'request_limit'
+            raise TimeoutError()
+        return response(params, stock)
+    monkeypatch.setattr(processor.RecoveringResearchPriceProvider, '_capture_report', capture)
+    get = lambda p: provider.capture_twse_report(t.EX_RIGHTS,p)[0]['data'][0][0]
+    assert get(base) == get(narrow) == '1808'
+    assert any(e.get('type') == 'invalid_exchange_cache' for e in provider.report_errors)
+    market.refresh = True
+    market.refreshed_reports.clear()
+    assert get(base) == get(narrow) == '5434'
+    assert get(narrow) == '9999'
+
+
+def test_bad_exact_and_overlapping_cache_recover_from_valid_archived_report(processor, tmp_path, monkeypatch):
+    from datetime import date, datetime, timezone
+    from urllib.parse import urlencode
+    from ai_stock_sentinel.calibration import twse_rights_recovery as t
+    url = t.TWSE + t.EX_RIGHTS
+    base = dict(response='json', startDate='20260701', endDate='20260731')
+    narrow = base | {'endDate':'20260710'}
+    def cache(params):
+        return tmp_path / 'exchange-reports' / (processor.fingerprint(dict(url=url, params=params)) + '.json.gz')
+    for params, fields in [(base, ['股票代號','資料日期']), (base | {'endDate':'20260730'}, ['foo','bar'])]:
+        raw = dict(stat='OK', params=params, fields=fields, data=[['1808','115年07月03日']])
+        source = dict(source_url=url+'?'+urlencode(params), captured_at=datetime.now(timezone.utc).isoformat(),
+                      snapshot_sha256=processor.fingerprint(raw))
+        processor.save(cache(params),dict(request=dict(url=url,params=params),payload=raw,proof=source))
+    cache(narrow).write_bytes(b'truncated')
+    provider = processor.BatchResearchPrices(processor.MarketPrices(tmp_path,'next_open',{},date(2026,7,31)),None)
+    monkeypatch.setattr(provider, 'archived_report', lambda request: None)
+    assert provider.capture_twse_report(t.EX_RIGHTS,narrow)[0]['fields'] == ['股票代號','資料日期']
+    assert len({v['file'] for v in provider.report_errors}) == 2

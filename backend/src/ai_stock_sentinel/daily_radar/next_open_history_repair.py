@@ -284,6 +284,24 @@ def _check_legacy_split(before, after):
     from ai_stock_sentinel.calibration import official_corporate_actions as actions
     if after.get('skip_reason') == actions.STOCK_DISTRIBUTION and outcome.get(actions.PROVENANCE_KEY):
         return
+    if after.get('skip_reason') == actions.CASH_REDUCTION_HALT:
+        from ai_stock_sentinel.daily_radar.next_open_official_repair import KEY
+        proof = outcome.get(actions.PROVENANCE_KEY) or {}
+        event = proof.get('event') or {}
+        replay = (outcome.get(KEY) or {}).get('event_replay') or {}
+        if event.get('type') == 'cash_reduction' and replay.get('kind') == 'corporate':
+            precision = proof.get('reduction_precision')
+            for bar in replay.get('yahoo', []):
+                day, split = bar.get('date'), bar.get('stock_splits')
+                if (day not in {event.get('halt_start'), event.get('effective_date')} or not split
+                        or not bar.get('dividends') or bar['dividends'] != event.get('cash_per_share')):
+                    continue
+                if split == event.get('share_ratio'):
+                    return
+                if (actions.verified_reduction_precision(precision, event) and day == precision['date']
+                        and actions.reduction_precision(precision['chart'],event['symbol'],date.fromisoformat(day),
+                            precision['official_shares_per_thousand'],split,bar['dividends'])):
+                    return
     raise ValueError('next_open_official_split_unverified')
 
 

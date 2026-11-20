@@ -6,12 +6,14 @@ translate them to the signal-date basis only with a verified adjustment.
 from dataclasses import dataclass, field, replace
 from math import isclose
 from statistics import median
+import re
 from collections.abc import Mapping
-from datetime import timedelta
-from urllib.parse import urlsplit
+from datetime import datetime, timedelta
+from urllib.parse import parse_qsl, urlsplit
 
 from ai_stock_sentinel.calibration.forward_validation import OHLC_PRICE_FIELDS, number
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+from ai_stock_sentinel.daily_radar.signal_quote import capture_quote, archive_time
 
 PRICE_EVIDENCE = "validation_price_evidence"
 VENDOR_UNAVAILABLE = "supplementary_vendor_unavailable"
@@ -56,9 +58,14 @@ class AcceptedPrices:
     benchmark: list = field(default_factory=list)
     proof: dict = field(default_factory=dict)
     reason: str | None = None
+    vendor_capture: dict | None = None
 
     def with_proof(self, row):
-        return row | {"outcome": row["outcome"] | {PRICE_EVIDENCE: self.proof}}
+        evidence = {PRICE_EVIDENCE: self.proof}
+        if self.vendor_capture:
+            evidence["vendor_capture"] = self.vendor_capture
+            evidence["vendor_capture_sha256"] = fingerprint([self.proof['sha256'], self.vendor_capture])
+        return row | {"outcome": row["outcome"] | evidence}
 
 
 def quotes_match(actual, expected):
@@ -70,7 +77,7 @@ def quotes_match(actual, expected):
     )
 
 
-def verify_signal_bars(db, rows, *, run_date):
+def verify_signal_bars(db, rows, *, run_date, include_quote=False):
     from ai_stock_sentinel.daily_radar.market_bar_repository import get_taiwan_daily_bars
 
     archived = get_taiwan_daily_bars(db, symbols=[row.symbol for row in rows],
@@ -89,13 +96,23 @@ def verify_signal_bars(db, rows, *, run_date):
             continue
         evidence = {"version": VERSION, "symbol": row.symbol, "date": str(run_date),
                     "raw_ohlcv": quote, "source": bar.source_dataset}
+        if include_quote:
+            evidence["official_quote"] = capture_quote(
+                symbol=row.symbol, trade_date=run_date, ohlcv=quote | {"volume": bar.volume},
+                provider=bar.source_provider, basis=bar.adjustment_mode, captured_at=archive_time(bar.fetched_at),
+            )
         accepted[row.symbol] = evidence | {"sha256": fingerprint(evidence)}
     return accepted, rejected
 
 
-def signal_price_gaps(db, rows, *, run_date):
+def current_signal_bars(db, rows, *, run_date, include_quote=False):
     from ai_stock_sentinel.daily_radar.raw_data import current_daily_radar_raw_rows
-    return verify_signal_bars(db, current_daily_radar_raw_rows(rows, run_date=run_date), run_date=run_date)[1]
+    return verify_signal_bars(db, current_daily_radar_raw_rows(rows, run_date=run_date),
+                              run_date=run_date, include_quote=include_quote)
+
+
+def signal_price_gaps(db, rows, *, run_date):
+    return current_signal_bars(db, rows, run_date=run_date)[1]
 
 
 def _quote(row):
@@ -184,8 +201,11 @@ def _event_evidence(official, dates):
 def _price_lock(candidate, basis, stock, benchmark, official, *, vendor=(), factors=(), rights_terms=(), vendor_benchmark=(), basis_evidence=None):
     source_versions = {row["price_source"] for row in [*stock, *benchmark]}
     events, reports = _event_evidence(official, {row["date"] for row in stock[1:]})
+    local_receipt = next((r["source_capture"] for r in vendor
+                          if (r.get("source_capture") or {}).get("source_operation") == "local-adjusted-history"), None)
     vendor_rows = [{"date": row["date"], **_quote(row), "price_source": row.get("price_source"),
-                    "source": _source_identity(row.get("source_capture") or {})}
+                    "source": {} if local_receipt and row.get("source_capture") == local_receipt
+                              else _source_identity(row.get("source_capture") or {})}
                    for row in sorted(vendor, key=lambda row: row["date"])]
     data = {
         "version": VERSION, "return_basis": basis, "symbol": candidate["symbol"],
@@ -203,7 +223,7 @@ def _price_lock(candidate, basis, stock, benchmark, official, *, vendor=(), fact
                 [r['date'], r.get('stock_splits'), r.get('dividends')] for r in vendor])
             data['rights_vendor_benchmark_sha256'] = fingerprint([
                 [r['date'], _quote(r), _source_identity(r.get('source_capture') or {})] for r in vendor_benchmark])
-    return AcceptedPrices(stock, benchmark, data | {"sha256": fingerprint(data)})
+    return AcceptedPrices(stock, benchmark, data | {"sha256": fingerprint(data)}, vendor_capture=local_receipt)
 
 
 def _cash_dividends(events, dates):
@@ -386,7 +406,47 @@ def _stable_reviewed_input(value, detail_paths):
     return value
 
 
-def _reviewed_inputs_sha256(row):
+def _scoped_replay_inputs(calls, event, symbol):
+    from ai_stock_sentinel.calibration import twse_rights_recovery as rights
+    from urllib.parse import urlencode
+    from ai_stock_sentinel.daily_radar.terminal_integrity import _source
+
+    scoped, sources = [], {}
+    for call in calls:
+        req = call.get('request', {})
+        args = req.get('args', [])
+        if (req.get('method') != 'capture_twse_report' or len(args) != 2 or call.get('failed')
+                or args[0] not in (rights.EX_RIGHTS, rights.REDUCTION, rights.FACE_VALUE)):
+            scoped.append(call)
+            continue
+        path, params = args
+        raw, source = call['value']
+        url = urlsplit(source.get('source_url', ''))
+        if (not _source(source) or source.get('snapshot_sha256') != fingerprint(raw)
+                or url._replace(query='').geturl() != rights.TWSE + path
+                or ('requested_subrange' not in source and sorted(parse_qsl(url.query, keep_blank_values=True))
+                    != sorted(params.items()))):
+            raise ValueError('invalid_validation_price_lock')
+        field = '資料日期' if path == rights.EX_RIGHTS else '恢復買賣日期'
+        parsed = rights.dated_market_rows(raw, params, field, [], path=path, source=source,
+                                         allow_empty_status=path == rights.REDUCTION)
+        facts = sorted((rights.market_event_facts(path, r) for _, r in parsed
+                        if str(r['股票代號']).strip() == symbol.split('.')[0]), key=fingerprint)
+        scoped.append({'request': req, 'market_events': facts})
+        sources[fingerprint(source)] = {k: v for k, v in source.items() if k != 'requested_subrange'} | {
+            'source_url': rights.TWSE + path + '?' + urlencode(sorted(params.items()))}
+    def scope_source(value):
+        if isinstance(value, list):
+            return [scope_source(v) for v in value]
+        if isinstance(value, dict):
+            if 'snapshot_sha256' in value and fingerprint(value) in sources:
+                return sources[fingerprint(value)]
+            return {k: scope_source(v) for k, v in value.items()}
+        return value
+    return scoped, scope_source(event)
+
+
+def _reviewed_inputs_sha256(row, *, scoped=False):
     from ai_stock_sentinel.calibration import official_corporate_actions, twse_rights_recovery
     outcome = row["outcome"]
     evidence = outcome["reviewed_official_window"]
@@ -402,8 +462,26 @@ def _reviewed_inputs_sha256(row):
     version_input["event"] = {key: outcome[key] for key in (
         official_corporate_actions.PROVENANCE_KEY, twse_rights_recovery.PROVENANCE_KEY, "split_event",
     ) if key in outcome}
+    if scoped:
+        version_input['replay_calls'], version_input['event'] = _scoped_replay_inputs(
+            version_input['replay_calls'], version_input['event'], row['symbol'])
     detail_paths = {twse_rights_recovery.RIGHTS_DETAIL, official_corporate_actions.TWSE_REDUCTION_DETAIL}
     return fingerprint(_stable_reviewed_input(version_input, detail_paths))
+
+
+def same_reviewed_price_version(saved, incoming):
+    left, right = (item.get(PRICE_EVIDENCE) or {} for item in (saved, incoming))
+    if ('reviewed_inputs_sha256' not in left or 'reviewed_inputs_sha256' not in right
+            or {left.get('reviewed_input_scope'), right.get('reviewed_input_scope')} != {None, 'window-events-v1'}):
+        return False
+    versions = []
+    for payload, lock in ((saved, left), (incoming, right)):
+        row = {'outcome': payload, 'symbol': lock['symbol'], 'signal_date': lock['signal_date']}
+        verify_price_lock(row, symbol=lock['symbol'], basis='next_open')
+        comparable = {k:v for k,v in lock.items() if k not in ('sha256','reviewed_input_scope')}
+        comparable['reviewed_inputs_sha256'] = _reviewed_inputs_sha256(row, scoped=True)
+        versions.append(comparable)
+    return versions[0] == versions[1]
 
 
 def lock_reviewed_next_open(row, official):
@@ -412,7 +490,8 @@ def lock_reviewed_next_open(row, official):
     evidence = outcome["reviewed_official_window"]
     events, reports = _event_evidence(official, set(evidence["session_dates"]))
     lock = {"version": VERSION, "return_basis": "next_open", "symbol": row["symbol"],
-            "signal_date": row["signal_date"], "reviewed_inputs_sha256": _reviewed_inputs_sha256(row),
+            "signal_date": row["signal_date"], "reviewed_inputs_sha256": _reviewed_inputs_sha256(row, scoped=True),
+            "reviewed_input_scope": "window-events-v1",
             "events": events, "event_reports": reports}
     return row | {"outcome": outcome | {
         PRICE_EVIDENCE: lock | {"sha256": fingerprint(lock)},
@@ -429,6 +508,18 @@ def verify_price_lock(row, *, symbol, basis):
             or proof.get("return_basis") != basis or proof.get("signal_date") != row.get("signal_date")
             or proof.get("sha256") != fingerprint({key: value for key, value in proof.items() if key != "sha256"})):
         raise ValueError("invalid_validation_price_lock")
+    if 'vendor_capture' in outcome or 'vendor_capture_sha256' in outcome:
+        source = outcome.get('vendor_capture')
+        if (not isinstance(source, dict) or source.get('provider') != 'yfinance'
+                or source.get('source_operation') != 'local-adjusted-history'
+                or re.fullmatch('[0-9a-f]{64}', str(source.get('snapshot_sha256'))) is None
+                or outcome.get('vendor_capture_sha256') != fingerprint([proof['sha256'], source])):
+            raise ValueError('invalid_validation_price_lock')
+        try:
+            if datetime.fromisoformat(source['captured_at']).tzinfo is None:
+                raise ValueError('missing timezone')
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError('invalid_validation_price_lock') from exc
     if "reviewed_official_window_sha256" in proof:
         if proof["reviewed_official_window_sha256"] != fingerprint(outcome.get("reviewed_official_window")):
             raise ValueError("invalid_validation_price_lock")
@@ -438,7 +529,9 @@ def verify_price_lock(row, *, symbol, basis):
 
         if (not isinstance(outcome.get("reviewed_official_window"), dict)
                 or outcome.get("reviewed_official_window_sha256") != fingerprint(outcome["reviewed_official_window"])
-                or proof["reviewed_inputs_sha256"] != _reviewed_inputs_sha256(row)):
+                or proof.get("reviewed_input_scope") not in (None, "window-events-v1")
+                or proof["reviewed_inputs_sha256"] != _reviewed_inputs_sha256(
+                    row | {'symbol': symbol}, scoped=proof.get("reviewed_input_scope") == "window-events-v1")):
             raise ValueError("invalid_validation_price_lock")
         replay = outcome["reviewed_official_window"].get("event_replay", {})
         verify_event_report_receipts(replay.get("calls", []))

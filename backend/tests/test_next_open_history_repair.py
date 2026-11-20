@@ -488,7 +488,7 @@ def test_prior_distribution_and_reduction_keep_fresh_full_window_proof(replay,mo
     with Session(engine) as db:
         row=db.scalar(select(Result))
         original_dates = row.outcome['official_corporate_action']['session_dates']
-        if legacy_label and reason == 'stock_distribution_in_window':
+        if legacy_label:
             row.skip_reason, row.outcome = 'stock_split_in_window', {'skip_reason':'stock_split_in_window'}
         before=result_snapshot(row)
         candidate=db.get(DailyRadarCandidate,row.candidate_id);candidate.observation_score+=1
@@ -498,6 +498,16 @@ def test_prior_distribution_and_reduction_keep_fresh_full_window_proof(replay,mo
         evidence=tool.capture_evidence(engine,request,calendar=cal,provider=provider)
         plan=tool.build_repair_plan(engine,request,calendar=cal,evidence=evidence)
         assert plan['results'][0]['after']['skip_reason']==reason
+        if legacy_label and case == 2:
+            changed = deepcopy(plan)
+            after = changed['results'][0]['after']
+            rows = after['outcome']['reviewed_official_window']['event_replay']['yahoo']
+            for bar in rows:
+                bar['stock_splits'] = 0
+            changed['sha256'] = tool.fingerprint({k:v for k,v in changed.items() if k!='sha256'})
+            with pytest.raises(ValueError, match='next_open_official_split_unverified'):
+                tool.apply_repair_plan(db,changed,expected_sha256=changed['sha256'])
+            db.rollback()
         if case in (0,1):
             for defect in ('remove_precision','loosen_precision'):
                 changed=deepcopy(plan);proof=changed['results'][0]['after']['outcome']['official_corporate_action']

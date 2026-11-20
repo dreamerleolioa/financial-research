@@ -2,6 +2,7 @@
 
 from datetime import date
 from math import isclose
+from urllib.parse import parse_qs, urlsplit
 import re
 
 from ai_stock_sentinel.calibration.forward_validation import number
@@ -54,6 +55,40 @@ def _dated_rows(payload, params, date_field, fields, *, allow_empty_status=False
     return results
 
 
+def market_event_facts(path, row):
+    # TWT49U displays the latest filing next to the original event terms.
+    latest_filing = {'最近一次申報資料 季別/日期', '最近一次申報每股 (單位)淨值', '最近一次申報每股 (單位)盈餘'}
+    return {key: value for key, value in row.items() if path != EX_RIGHTS or key not in latest_filing}
+
+
+def dated_market_rows(payload, params, date_field, fields, *, path, source, allow_empty_status=False):
+    """Replay an intact market-wide report, selecting only the requested dates."""
+    if not source or 'requested_subrange' not in source:
+        return _dated_rows(payload, params, date_field, fields, allow_empty_status=allow_empty_status)
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+
+    parsed = urlsplit(source.get('source_url', ''))
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if (path not in (EX_RIGHTS, REDUCTION, FACE_VALUE) or parsed._replace(query='').geturl() != TWSE + path
+            or set(params) != {'response', 'startDate', 'endDate'} or params['response'] != 'json'
+            or set(query) != set(params) or any(len(values) != 1 for values in query.values())
+            or query['response'] != ['json'] or source['requested_subrange'] != params
+            or source.get('snapshot_sha256') != fingerprint(payload)):
+        raise ValueError('twse_rights_unverified_report_range')
+    actual = {k: v[0] for k, v in query.items()}
+    echoed = payload.get('params')
+    if echoed is not None and (
+            not isinstance(echoed, dict) or set(echoed) - set(actual) - {'controller', 'action', 'lang'}
+            or echoed.get('response', 'json') != 'json'):
+        raise ValueError('twse_rights_unverified_report_range')
+    bounds = [actual['startDate'], params['startDate'], params['endDate'], actual['endDate']]
+    if not all(re.fullmatch(r'[0-9]{8}', d) for d in bounds) or bounds != sorted(bounds):
+        raise ValueError('twse_rights_unverified_report_range')
+    # For a covering report require echoed bounds, even when it contains no events.
+    rows = _dated_rows(payload, actual, date_field, fields)
+    return [(day, row) for day, row in rows if params['startDate'] <= day.strftime('%Y%m%d') <= params['endDate']]
+
+
 def _amount(cell, unit):
     match = re.fullmatch(r"(\d+(?:,\d{3})*(?:\.\d+)?)\s+" + re.escape(unit), str(cell).strip())
     value = number(match[1].replace(",", "")) if match else None
@@ -67,8 +102,8 @@ def _rights_issue(symbol, sessions, capture):
     params = {"response": "json", "startDate": sessions[0].strftime("%Y%m%d"),
               "endDate": sessions[-1].strftime("%Y%m%d")}
     listing, listing_source = capture(EX_RIGHTS, params)
-    events = [(day, row) for day, row in _dated_rows(listing, params, "資料日期",
-              ["除權息前收盤價", "權/息", "詳細資料"]) if str(row["股票代號"]).strip() == code]
+    events = [(day, row) for day, row in dated_market_rows(listing, params, "資料日期",
+              ["除權息前收盤價", "權/息", "詳細資料"], path=EX_RIGHTS, source=listing_source) if str(row["股票代號"]).strip() == code]
     if len(events) != 1 or events[0][0] not in sessions or events[0][1]["權/息"] != "權":
         raise ValueError("twse_rights_single_cash_issue_required")
     ex_date, notice = events[0]
@@ -96,7 +131,7 @@ def _rights_issue(symbol, sessions, capture):
     action_sources = [listing_source]
     for report in (REDUCTION, FACE_VALUE):
         payload, source = capture(report, params)
-        rows = _dated_rows(payload, params, "恢復買賣日期", [], allow_empty_status=report == REDUCTION)
+        rows = dated_market_rows(payload, params, "恢復買賣日期", [], path=report, source=source, allow_empty_status=report == REDUCTION)
         if any(str(row["股票代號"]).strip() == code for _, row in rows):
             raise ValueError("twse_rights_other_corporate_action")
         action_sources.append(source)

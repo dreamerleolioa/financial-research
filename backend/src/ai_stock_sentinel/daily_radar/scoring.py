@@ -17,6 +17,7 @@ from ai_stock_sentinel.daily_radar.relative_strength import (
     DEFAULT_RELATIVE_STRENGTH_LOOKBACK_DAYS,
     calculate_relative_strength,
 )
+from ai_stock_sentinel.daily_radar.signal_quote import checked_quote
 from ai_stock_sentinel.daily_radar.types import DailyRadarBucket, DailyRadarRiskLabel
 from ai_stock_sentinel.technical.metrics import normalize_price_value_pct
 
@@ -223,6 +224,13 @@ def score_daily_radar_record(
     active_config = config or ScoringConfig()
     excluded = excluded_rule_codes or frozenset()
     normalized = _normalize_record(record)
+    price_input = _mapping(record.get("source_record")) or record
+    quote_fields = {}
+    if price_input.get("signal_quote") is not None:
+        quote_fields["signal_quote"] = checked_quote(
+            price_input["signal_quote"], symbol=normalized["symbol"],
+            trade_date=normalized["record_date"], ohlcv=normalized["ohlcv"],
+        )
     ohlcv = normalized["ohlcv"]
     indicators = normalized["indicators"]
     technical_profile = normalized["technical_profile"]
@@ -382,6 +390,7 @@ def score_daily_radar_record(
         },
         "data_dates": _candidate_data_dates(normalized["data_dates"], market_context, relative_strength_component),
         "input_snapshot": {
+            **quote_fields,
             "versions": {
                 "scoring_version": SCORING_VERSION,
                 "rule_version": RULE_VERSION,
@@ -405,6 +414,7 @@ def score_daily_radar_record(
             "replay_input": {
                 "schema_version": DAILY_RADAR_REPLAY_INPUT_VERSION,
                 "record": {
+                    **quote_fields,
                     "symbol": normalized["symbol"],
                     "name": normalized["name"],
                     "record_date": normalized["record_date"],

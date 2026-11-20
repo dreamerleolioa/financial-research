@@ -31,7 +31,7 @@ from ai_stock_sentinel.daily_radar.dependencies import (
     get_phase1_avwap_daily_price_provider,
 )
 from ai_stock_sentinel.daily_radar.market_context import MarketIndexContextProvider
-from ai_stock_sentinel.daily_radar.price_acceptance import signal_price_gaps
+from ai_stock_sentinel.daily_radar.price_acceptance import current_signal_bars
 from ai_stock_sentinel.daily_radar.pipeline_support import (
     _capped_daily_radar_universe,
     _full_margin_contexts_by_symbol,
@@ -110,7 +110,7 @@ def execute_prepared_scoring(db, *, payload, commit=True):
         selected_symbols=selected_symbols,
         run_date=run_date,
     )
-    _require_official_signal_prices(db, cache_rows, market=request.market, run_date=run_date)
+    signal_anchors = _require_official_signal_prices(db, cache_rows, market=request.market, run_date=run_date)
     background_contexts_by_symbol = get_shared_background_context_trace_by_symbol(
         db,
         symbols=selected_symbols,
@@ -135,6 +135,7 @@ def execute_prepared_scoring(db, *, payload, commit=True):
         background_contexts_by_symbol=background_contexts_by_symbol,
         allow_fixture_fallback=False,
         input_context=_scoring_input_context(prepared, cache_rows),
+        signal_anchors=signal_anchors,
     )
     prepared.status = "scored"
     freeze_discovery_summary(run, (prepared.step_statuses.get("prepare-universe") or {}).get("market_exploration"))
@@ -152,10 +153,11 @@ def _scoring_input_context(prepared, rows):
 def _require_official_signal_prices(db, rows, *, market, run_date):
     if market != "TW" or not snapshots_enabled():
         return
-    rejected = signal_price_gaps(db, rows, run_date=run_date)
+    accepted, rejected = current_signal_bars(db, rows, run_date=run_date, include_quote=True)
     if rejected:
         raise HTTPException(409, detail={"code": "daily_radar_raw_data_incomplete",
             "run_date": str(run_date), "missing_symbols": sorted(rejected), "price_reasons": rejected})
+    return accepted
 
 
 @router.post(
@@ -266,7 +268,7 @@ def run_daily_radar_endpoint(
             selected_symbols=selected_symbols,
             run_date=run_date,
         )
-        _require_official_signal_prices(db, cache_rows, market=market, run_date=run_date)
+        signal_anchors = _require_official_signal_prices(db, cache_rows, market=market, run_date=run_date)
         if market == "TW":
             attach_official_turnover(db, cache_rows, run_date=run_date)
         failure_stage = "daily_radar_service"
@@ -275,6 +277,7 @@ def run_daily_radar_endpoint(
             market,
             session=db,
             cache_rows=cache_rows,
+            signal_anchors=signal_anchors,
             market_context=market_context,
             background_contexts_by_symbol=background_contexts_by_symbol,
             allow_fixture_fallback=False,

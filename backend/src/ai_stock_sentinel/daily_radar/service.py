@@ -48,6 +48,7 @@ def run_daily_radar(
     candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
     allow_fixture_fallback: bool = True,
     input_context: Mapping[str, Any] | None = None,
+    signal_anchors: Mapping[str, dict] | None = None,
 ) -> DailyRadarRun:
     if session is not None:
         return _run_daily_radar_with_session(
@@ -63,6 +64,7 @@ def run_daily_radar(
             candidate_limit=candidate_limit,
             allow_fixture_fallback=allow_fixture_fallback,
             input_context=input_context,
+            signal_anchors=signal_anchors,
         )
 
     with _managed_session() as managed_session:
@@ -79,6 +81,7 @@ def run_daily_radar(
             candidate_limit=candidate_limit,
             allow_fixture_fallback=allow_fixture_fallback,
             input_context=input_context,
+            signal_anchors=signal_anchors,
         )
         managed_session.commit()
         return run
@@ -98,6 +101,7 @@ def _run_daily_radar_with_session(
     candidate_limit: int,
     allow_fixture_fallback: bool,
     input_context: Mapping[str, Any] | None = None,
+    signal_anchors: Mapping[str, dict] | None = None,
 ) -> DailyRadarRun:
     manifest, phase1_contexts = None, None
     if snapshots_enabled() and not allow_fixture_fallback:
@@ -109,7 +113,8 @@ def _run_daily_radar_with_session(
                                 allow_fixture_fallback=False)
         manifest, frozen = freeze_execution_inputs(session, run_date=run_date, market=market, records=records,
             market_context=market_context, background_contexts=background_contexts_by_symbol,
-            history_candidates=history_candidates, input_context=input_context, candidate_limit=candidate_limit)
+            history_candidates=history_candidates, input_context=input_context, candidate_limit=candidate_limit,
+            signal_anchors=signal_anchors)
         if (existing := reusable_public_run(session, manifest)) is not None:
             return existing
         records, market_context = frozen["records"], frozen["market_context"]
@@ -215,7 +220,11 @@ def _run_daily_radar_with_session(
             key=lambda candidate: (-int(candidate["observation_score"]), str(candidate["symbol"]))
         )
 
-        replace_run_candidates(session, run, [*final_candidates, *final_shadow_candidates])
+        published = [*final_candidates, *final_shadow_candidates]
+        if signal_anchors is not None:
+            for candidate in published:
+                candidate["input_snapshot"]["official_signal_anchor"] = signal_anchors[candidate["symbol"]]
+        replace_run_candidates(session, run, published)
         status = _final_status(
             universe_count=len(loaded_records),
             accepted_count=len(accepted_prefilters),

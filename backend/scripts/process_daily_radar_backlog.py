@@ -6,13 +6,15 @@ as text), system_identifier (pg_control_system().system_identifier as text)
 as_of_date (YYYY-MM-DD), and restore_id (a UUID issued for the restore). The runner only reads this receipt."""
 
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tempfile import NamedTemporaryFile
 from threading import Lock
 from datetime import date, datetime, time, timedelta, timezone
 import fcntl
 import gzip
+import zlib
+from hashlib import sha256
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -27,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from sqlalchemy import URL, create_engine, event, select
 from sqlalchemy.orm import Session
 
+from ai_stock_sentinel.calibration import twse_rights_recovery as twse
 from ai_stock_sentinel.calibration.price_provider import YFinanceForwardPriceProvider
 from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
 from ai_stock_sentinel.daily_radar import history_repair, next_open_history_repair
@@ -141,6 +144,73 @@ class MarketPrices:
         self.report_locks = [Lock() for _ in range(32)]
         self.refreshed_reports = set()
         self.failed_reports = {}
+        self.coverage_lock = Lock()
+        self.coverage = None
+        self.covering_hits = {}
+
+    def _index_report(self, file, entry):
+        request, proof, payload = entry['request'], entry['proof'], entry['payload']
+        if file.name != fingerprint(request) + '.json.gz' or proof['snapshot_sha256'] != fingerprint(payload):
+            raise ValueError('exchange_report_identity_changed')
+        url, q = request['url'], request['params']
+        eligible = {twse.TWSE + p for p in (twse.EX_RIGHTS, twse.FACE_VALUE, twse.REDUCTION)}
+        if (url not in eligible or set(q) != {'startDate','endDate','response'} or q['response'] != 'json'):
+            return
+        # Replace the previous revision, including when the new response cannot prove coverage.
+        self.coverage[url].pop(file.name, None)
+        self.covering_hits.clear()
+        if payload.get('stat') != 'OK' or not same_report(proof['source_url'], url, q):
+            return
+        captured = datetime.fromisoformat(proof['captured_at'])
+        after = datetime.combine(self.cutoff, time(13, 30), ZoneInfo('Asia/Taipei'))
+        if captured.tzinfo is not None and after <= captured <= datetime.now(timezone.utc):
+            path = urlsplit(url).path
+            field = '資料日期' if path == twse.EX_RIGHTS else '恢復買賣日期'
+            twse.dated_market_rows(payload, q, field, [], path=path, source=proof | {'requested_subrange': q})
+            self.coverage[url][file.name] = (q['startDate'], q['endDate'], entry)
+
+    def covering_report(self, request, *, errors=None):
+        params, url = request['params'], request['url']
+        path = urlsplit(url).path
+        if url != twse.TWSE + path or path not in (twse.EX_RIGHTS, twse.FACE_VALUE, twse.REDUCTION):
+            return None
+        if set(params) != {'startDate', 'endDate', 'response'} or params['response'] != 'json':
+            return None
+        identity = (url, params['startDate'], params['endDate'])
+        with self.coverage_lock:
+            if identity in self.covering_hits:
+                return self.covering_hits[identity]
+            if self.coverage is None:
+                self.coverage = defaultdict(dict)
+                for file in (self.folder / 'exchange-reports').glob('*.json.gz'):
+                    try:
+                        self._index_report(file, load(file))
+                    except (KeyError, TypeError, ValueError, OSError, EOFError, AttributeError, zlib.error):
+                        if errors is not None:
+                            errors.append({'type': 'invalid_exchange_cache', 'file': file.name})
+            return self._select_covering_report(url, path, params, identity)
+
+    def _select_covering_report(self, url, path, params, identity):
+        matches = []
+        field = '資料日期' if path == twse.EX_RIGHTS else '恢復買賣日期'
+        for start, end, entry in self.coverage[url].values():
+            if start <= params['startDate'] <= params['endDate'] <= end:
+                proof = entry['proof'] | {'requested_subrange': dict(params)}
+                rows = twse.dated_market_rows(entry['payload'], params, field, [], path=path, source=proof)
+                # TWT49U also displays the latest NAV filing, which is updated
+                # after the event. Preserve the full receipt, comparing every
+                # event field across reports and ignoring only these filing cells.
+                signature = sorted(fingerprint(twse.market_event_facts(path, row)) for _, row in rows)
+                matches.append((signature, start, end, entry['payload'], proof))
+        if not matches:
+            return None
+        if any(item[0] != matches[0][0] for item in matches):
+            raise ValueError('conflicting_exchange_range_reports')
+        # Prefer the latest start and then the earliest end, with the original URL and hash.
+        latest = max(m[1] for m in matches)
+        match = min((m for m in matches if m[1] == latest), key=lambda m: m[2])
+        self.covering_hits[identity] = (match[3], match[4])
+        return self.covering_hits[identity]
 
     def receipt(self, symbol, *, start_date=None):
         if symbol != 'TAIEX' and not is_supported_taiwan_symbol(symbol):
@@ -216,7 +286,14 @@ class MarketPrices:
             item = self.receipt(symbol, start_date=start_date)
             if str(start_date) < item['start'] or str(end_date) > item['end']:
                 raise ValueError('price_capture_range_mismatch')
-            result[symbol] = [r for r in item['rows'] if str(start_date) <= r['date'] <= str(end_date)]
+            rows = [r for r in item['rows'] if str(start_date) <= r['date'] <= str(end_date)]
+            if self.basis == 'signal_close':
+                # The verification of a pre-rights adjustment needs one recorded
+                # vendor response for every candle in the window.
+                proof = {'provider': item['source'], 'source_operation': 'local-adjusted-history',
+                         'snapshot_sha256': item['sha256'], 'captured_at': item['captured_at']}
+                rows = [dict(row, source_capture=row.get('source_capture') or proof) for row in rows]
+            result[symbol] = rows
         return result
 
 
@@ -275,24 +352,32 @@ class BatchResearchPrices(RecoveringResearchPriceProvider):
             raise ValueError('exchange_report_fetch_failed')
         refresh = self.market_prices.refresh and digest not in self.market_prices.refreshed_reports
         after = datetime.combine(self.market_prices.cutoff, time(13, 30), ZoneInfo('Asia/Taipei'))
+        entry = None
         if cache.exists():
-            entry = load(cache)
-            if (
-                entry['request'] != request
-                or entry['proof']['snapshot_sha256'] != fingerprint(entry['payload'])
-                or not same_report(entry['proof']['source_url'], origin + path, params)
-            ):
-                raise ValueError('exchange_report_identity_changed')
-            captured = datetime.fromisoformat(entry['proof']['captured_at'])
-            if (
-                not refresh
-                and captured.tzinfo is not None
-                and after <= captured <= datetime.now(timezone.utc)
-            ):
+            try:
+                decoded = load(cache)
+                if (decoded['request'] != request or decoded['proof']['snapshot_sha256'] != fingerprint(decoded['payload'])
+                        or not same_report(decoded['proof']['source_url'], origin + path, params)):
+                    raise ValueError('exchange_report_identity_changed')
+                captured = datetime.fromisoformat(decoded['proof']['captured_at'])
+                entry = decoded
+            except (KeyError, TypeError, ValueError, OSError, EOFError, AttributeError, zlib.error):
+                self.report_errors.append({'type': 'invalid_exchange_cache', 'file': cache.name})
+                damaged = cache.read_bytes()
+                archive = self.market_prices.folder / 'exchange-captures' / (sha256(damaged).hexdigest() + '.invalid')
+                archive.parent.mkdir(exist_ok=True, parents=True)
+                if not archive.exists():
+                    archive.write_bytes(damaged)
+        if entry is not None:
+            if not refresh and captured.tzinfo is not None and after <= captured <= datetime.now(timezone.utc):
                 return entry['payload'], entry['proof']
             save(self.market_prices.folder / 'exchange-captures' / (fingerprint(entry) + '.json.gz'), entry)
+        archived = None if refresh else self.archived_report(request)
+        if not refresh and archived is None:
+            covering = self.market_prices.covering_report(request, errors=self.report_errors)
+            if covering is not None:
+                return covering
         try:
-            archived = None if refresh else self.archived_report(request)
             payload, proof = archived or super()._capture_report(origin, path, params)
             captured = datetime.fromisoformat(proof['captured_at'])
             if captured.tzinfo is None or not after <= captured <= datetime.now(timezone.utc):
@@ -306,12 +391,19 @@ class BatchResearchPrices(RecoveringResearchPriceProvider):
                 'budget_limit': self.budget_limit,
             }
             self.report_errors.append(failure)
+            if refresh and entry is None:
+                covering = self.market_prices.covering_report(request, errors=self.report_errors)
+                if covering is not None:
+                    return covering
             if not self.budget_limit and not getattr(exc, 'local_budget_exhausted', False):
                 self.market_prices.failed_reports[digest] = failure
             raise
         entry = {'request': request, 'payload': payload, 'proof': proof}
         save(self.market_prices.folder / 'exchange-captures' / (fingerprint(entry) + '.json.gz'), entry)
-        save(cache, entry)
+        with self.market_prices.coverage_lock:
+            save(cache, entry)
+            if self.market_prices.coverage is not None:
+                self.market_prices._index_report(cache, entry)
         return payload, proof
 
 

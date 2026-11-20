@@ -134,7 +134,15 @@ def collect_window(candidate, before, row, *, calendar, provider):
         row, event_replay = event('corporate', yahoo, benchmark, marked)
         if row is None:
             raise ValueError('next_open_official_action_unverified')
-    else:
+    elif before.get('skip_reason') == 'stock_split_in_window' and any(
+            str(signal) < bar['date'] <= str(target) and 0 < (rights.number(bar.get('stock_splits')) or 0) < 1
+            and (rights.number(bar.get('dividends')) or 0) > 0 for bar in yahoo):
+        # A cash reduction can produce a reverse split and a cash payment on
+        # the same day. Prove its halt before requiring trades on closed days.
+        recovered, replay = event('corporate', yahoo, benchmark, marked)
+        if recovered is not None and recovered.get('skip_reason') == actions.CASH_REDUCTION_HALT:
+            row, event_replay = recovered, replay
+    if event_replay is None:
         stock = provider.official_research_history(symbol, start_date=signal, end_date=target)
         index = provider.official_research_history('TAIEX', start_date=signal, end_date=target)
         stock_index = _prices(stock, [signal, *sessions], symbol)

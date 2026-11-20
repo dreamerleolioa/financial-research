@@ -22,7 +22,8 @@ def _parse_suspension(provider, symbol, target):
     if symbol.endswith('.TW'):
         params = {'response':'json','startDate':target.strftime('%Y%m%d'),'endDate':end.strftime('%Y%m%d')}
         raw, source = provider.capture_twse_report(rights.REDUCTION, params)
-        rows = rights._dated_rows(raw, params, '恢復買賣日期', [], allow_empty_status=True)
+        rows = rights.dated_market_rows(raw, params, '恢復買賣日期', [], path=rights.REDUCTION,
+                                       source=source, allow_empty_status=True)
         matches = [(d,r) for d,r in rows if str(r['股票代號']).strip()==symbol.split('.')[0]]
         if len(matches)!=1: return None
         resume, notice=matches[0]
@@ -155,8 +156,9 @@ def matches(proof, *, symbol, target):
             if not _source(source) or fingerprint(raw) != source["snapshot_sha256"]:
                 raise ValueError("suspension_snapshot_mismatch")
             url = urlsplit(source["source_url"])
+            covering = path == rights.REDUCTION and host == 'www.twse.com.tw' and source.get('requested_subrange') == params
             if (url.netloc != host or url.path != path or url.fragment
-                    or sorted(parse_qsl(url.query,keep_blank_values=True)) != sorted(params.items())):
+                    or not covering and sorted(parse_qsl(url.query,keep_blank_values=True)) != sorted(params.items())):
                 raise ValueError("suspension_request_mismatch")
             return raw, source
         replay = SimpleNamespace(capture_twse_report=lambda p,q: read("www.twse.com.tw",p,q),
