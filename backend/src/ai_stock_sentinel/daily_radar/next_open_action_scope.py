@@ -89,7 +89,8 @@ def _events(symbol, start, end, provider, *, record_detail=None, record_rights=N
                 (rights.REDUCTION, '恢復買賣日期', 'reduction', []),
                 (rights.FACE_VALUE, '恢復買賣日期', 'face_value', [])):
             raw, source = provider.capture_twse_report(path, params)
-            rows = rights._dated_rows(raw, params, field, fields, allow_empty_status=path == rights.REDUCTION)
+            rows = rights.dated_market_rows(raw, params, field, fields, path=path, source=source,
+                                           allow_empty_status=path == rights.REDUCTION)
             for day, row in rows:
                 if str(row['股票代號']).strip() != code:
                     continue
@@ -253,6 +254,10 @@ def _check_calls(calls):
         path, params = request['args']
         parsed = urlsplit(source.get('source_url', '')); query = parse_qs(parsed.query)
         host = 'www.twse.com.tw' if request['method'] == 'capture_twse_report' else 'www.tpex.org.tw'
+        if 'requested_subrange' in source and request['method'] == 'capture_twse_report' and _source(source):
+            field = '資料日期' if path == rights.EX_RIGHTS else '恢復買賣日期'
+            rights.dated_market_rows(raw, params, field, [], path=path, source=source)
+            continue
         if (not _source(source) or source['snapshot_sha256'] != fingerprint(raw) or parsed.path != path
                 or parsed.hostname != host
                 or any(query.get(k) != [str(v)] for k, v in params.items())):

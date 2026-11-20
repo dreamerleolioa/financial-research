@@ -92,7 +92,7 @@ def diagnostic_origin_changed(candidate, diagnostic, origin):
     return (diagnostic.get("status") == "not_first_observation") == first
 
 
-def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
+def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence, errors=None):
     calendar = TradingCalendar.parse(calendar.payload())
     requested = request.get("results", [])
     run_ids = request.get("invalid_run_ids", [])
@@ -162,6 +162,9 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
             raise ValueError("repair_window_not_mature")
         target = days[-1]
         if operation == "diagnostic" and (row.target_date != target or before["outcome"].get("target_date", str(target)) != str(target)):
+            if errors is not None:
+                errors.append({'id':row.id, 'reason':'repair_calendar_mismatch_requires_recompute'})
+                continue
             raise ValueError("repair_calendar_mismatch_requires_recompute")
         existing_diag = before["outcome"].get("observation_diagnostic") or {}
         origin = origins.get((c["symbol"], strategy_cohort(c)))
@@ -215,6 +218,9 @@ def build_repair_plan(session, request, *, calendar: TradingCalendar, evidence):
                                               window_days=row.window_days, as_of_date=calendar.through)
             if price_reason and diagnostic["status"] not in ("already_broken_out", "already_invalidated", "not_first_observation"):
                 diagnostic = diagnostic | {"status": "insufficient_data", "missing_reason": price_reason}
+            if operation == 'diagnostic' and errors is not None and diagnostic.get('missing_reason'):
+                errors.append({'id': row.id, 'reason': diagnostic['missing_reason']})
+                continue
             after["outcome"]["observation_diagnostic"] = diagnostic
         after["outcome"]["historical_repair"] = {"repair_id": repair_id, "operation": operation,
             "as_of_date": str(calendar.through), "before_sha256": fingerprint(before),
@@ -397,8 +403,12 @@ def _apply_result_manifest(session, plan, *, expected_sha256, rollback, manifest
                 if fingerprint(candidate_snapshot(c,run)) != entry["candidate_sha256"]:
                     raise ValueError("repair_candidate_changed")
                 context = contexts[row.candidate_id]
-                if (run.id not in current_public or current_origins.get((context["symbol"],strategy_cohort(context)))
-                        != entry["observation_origin"]):
+                # Like validation_candidate_revision, next-open shadow returns do
+                # not depend on which selected siblings happened to share a batch.
+                from ai_stock_sentinel.daily_radar.research_validation import RESEARCH_VALIDATION_VERSION
+                uses_origin = result_version != RESEARCH_VALIDATION_VERSION or c.selection_status != 'shadow'
+                if (run.id not in current_public or uses_origin and
+                        current_origins.get((context["symbol"],strategy_cohort(context))) != entry["observation_origin"]):
                     raise ValueError("repair_observation_origin_changed")
                 expected_revision = entry.get('validation_candidate_revision')
                 proof = entry['after']['outcome'].get(PROOF_KEY)

@@ -52,6 +52,7 @@ class DailyRadarJoinedRecord:
     expected_bucket_seed: str | None = None
     source: str = "fixture"
     debug: dict[str, Any] = field(default_factory=dict)
+    signal_quote: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +60,7 @@ class DailyRadarJoinedRecord:
             "name": self.name,
             "record_date": self.record_date,
             "ohlcv": dict(self.ohlcv),
+            **({"signal_quote": self.signal_quote} if self.signal_quote is not None else {}),
             "indicators": dict(self.indicators),
             "technical_profile": dict(self.technical_profile),
             "price_history": list(self.price_history),
@@ -117,6 +119,7 @@ def load_daily_radar_cache_records(rows: Iterable[Any]) -> list[dict[str, Any]]:
                 indicators=dict(_as_mapping(technical.get("indicators"))),
                 technical_profile=dict(_as_mapping(technical.get("technical_profile"))),
                 price_history=list(_as_list(technical.get("price_history"))),
+                signal_quote=technical.get("signal_quote"),
                 institutional_flow=_normalize_institutional_flow(institutional_payload),
                 margin=dict(_as_mapping(fundamental.get("margin"))),
                 data_dates=_merge_mapping_data_dates(technical, institutional_payload, fundamental),

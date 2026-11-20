@@ -467,7 +467,8 @@ def test_signal_level_skip_also_releases_private_reader_before_official_io(db):
 
 
 @pytest.mark.parametrize('case',[0,1,2])
-def test_prior_distribution_and_reduction_keep_fresh_full_window_proof(replay,monkeypatch,case):
+@pytest.mark.parametrize('legacy_label',[False, True])
+def test_prior_distribution_and_reduction_keep_fresh_full_window_proof(replay,monkeypatch,case,legacy_label):
     from datetime import timedelta
     from test_next_open_corporate_actions import CASES,TARGET,_iso_roc
     from ai_stock_sentinel.db.models import TaiwanDailyBar,DailyRadarCandidate
@@ -485,7 +486,11 @@ def test_prior_distribution_and_reduction_keep_fresh_full_window_proof(replay,mo
     cal=calendar(signal,TARGET,closed)
     TaiwanDailyBar.__table__.create(engine,checkfirst=True)
     with Session(engine) as db:
-        row=db.scalar(select(Result));before=result_snapshot(row)
+        row=db.scalar(select(Result))
+        original_dates = row.outcome['official_corporate_action']['session_dates']
+        if legacy_label:
+            row.skip_reason, row.outcome = 'stock_split_in_window', {'skip_reason':'stock_split_in_window'}
+        before=result_snapshot(row)
         candidate=db.get(DailyRadarCandidate,row.candidate_id);candidate.observation_score+=1
         db.add(DailyRadarPreparedRun(run_date=TARGET,market='TW',symbol_count=0,selected_symbols=[],universe=[],
             step_statuses={'validation-calendar':cal.payload()}));db.commit()
@@ -493,6 +498,16 @@ def test_prior_distribution_and_reduction_keep_fresh_full_window_proof(replay,mo
         evidence=tool.capture_evidence(engine,request,calendar=cal,provider=provider)
         plan=tool.build_repair_plan(engine,request,calendar=cal,evidence=evidence)
         assert plan['results'][0]['after']['skip_reason']==reason
+        if legacy_label and case == 2:
+            changed = deepcopy(plan)
+            after = changed['results'][0]['after']
+            rows = after['outcome']['reviewed_official_window']['event_replay']['yahoo']
+            for bar in rows:
+                bar['stock_splits'] = 0
+            changed['sha256'] = tool.fingerprint({k:v for k,v in changed.items() if k!='sha256'})
+            with pytest.raises(ValueError, match='next_open_official_split_unverified'):
+                tool.apply_repair_plan(db,changed,expected_sha256=changed['sha256'])
+            db.rollback()
         if case in (0,1):
             for defect in ('remove_precision','loosen_precision'):
                 changed=deepcopy(plan);proof=changed['results'][0]['after']['outcome']['official_corporate_action']
@@ -503,7 +518,7 @@ def test_prior_distribution_and_reduction_keep_fresh_full_window_proof(replay,mo
                     tool.apply_repair_plan(db,changed,expected_sha256=changed['sha256'])
                 db.rollback()
         tool.apply_repair_plan(db,plan,expected_sha256=plan['sha256']);db.commit();db.refresh(row)
-        assert row.outcome['official_corporate_action']['session_dates']==before['outcome']['official_corporate_action']['session_dates']
+        assert row.outcome['official_corporate_action']['session_dates']==original_dates
         tool.apply_repair_plan(db,plan,expected_sha256=plan['sha256'],rollback=True);db.commit();db.refresh(row)
         assert result_snapshot(row)==before
 
@@ -615,3 +630,56 @@ def test_newly_discovered_distribution_cannot_be_changed_to_a_validated_return(r
         with pytest.raises(ValueError,match='next_open_official_event_identity_invalid'):
             tool.apply_repair_plan(db,changed,expected_sha256=changed['sha256'])
         assert result_snapshot(row)==before
+
+
+def test_proofless_legacy_split_requires_reconstructed_event(db):
+    cal, candidate, ids, _ = seed(db)
+    row = db.get(Result, ids[0])
+    row.status, row.skip_reason, row.outcome = 'skipped', 'stock_split_in_window', {}
+    db.commit()
+    request = api().inventory(db, calendar=cal)
+    assert row.id in {entry['id'] for entry in request['results']}
+    request['results'] = [{'id': row.id, 'operation': 'recompute'}]
+    evidence = api().capture_evidence(db.get_bind(), request, calendar=cal, provider=Prices(cal))
+    with pytest.raises(ValueError):
+        api().build_repair_plan(db.get_bind(), request, calendar=cal, evidence=evidence)
+    assert db.get(Result, row.id).skip_reason == 'stock_split_in_window'
+
+
+def test_batch_keeps_verified_windows_when_one_old_split_has_no_proof(db):
+    cal, candidate, ids, _ = seed(db)
+    split = db.get(Result, ids[0])
+    split.status, split.skip_reason, split.outcome = 'skipped', 'stock_split_in_window', {}
+    db.commit()
+    request = api().inventory(db, calendar=cal)
+    request['results'] = [r for r in request['results'] if r['id'] in ids[:2]]
+    evidence = api().capture_evidence(db.get_bind(), request, calendar=cal, provider=Prices(cal))
+    errors = []
+    plan = api().build_repair_plan(db.get_bind(), request, calendar=cal, evidence=evidence, errors=errors)
+    assert [r['id'] for r in plan['results']] == [ids[1]]
+    assert errors == [{'id': split.id, 'reason': 'next_open_official_split_unverified'}]
+
+
+def test_shadow_sibling_can_apply_when_selected_window_is_rejected(db):
+    from datetime import timedelta
+    cal, selected, ids, _ = seed(db)
+    run = add_run(db, SIGNAL + timedelta(days=1))
+    shadow = add_candidate(db, run, selected.symbol)
+    shadow.selection_status, shadow.shadow_cohort = 'shadow', 'comparable'
+    shadow.data_dates = {'ohlcv': str(run.run_date)}
+    shadow.input_snapshot = deepcopy(selected.input_snapshot)
+    first = db.get(Result, ids[0])
+    first.status, first.skip_reason, first.outcome = 'skipped', 'stock_split_in_window', {}
+    copy = Result(candidate_id=shadow.id, window_days=5, validation_version=first.validation_version,
+        status='validated', signal_date=run.run_date, target_date=next(d for d in cal.sessions if d > first.target_date),
+        benchmark_symbol='TAIEX', evaluation_as_of_date=DAY,
+        outcome={'historical_repair':{'fixture':'prior'}, 'return_basis':'next_open'})
+    db.add(copy)
+    db.commit()
+    tool = api()
+    request = tool.inventory(db, calendar=cal)
+    request['results'] = [r for r in request['results'] if r['id'] in {first.id, copy.id}]
+    capture = tool.capture_evidence(db.get_bind(), request, calendar=cal, provider=Prices(cal))
+    plan = tool.build_repair_plan(db.get_bind(), request, calendar=cal, evidence=capture, errors=[])
+    assert [r['id'] for r in plan['results']] == [copy.id]
+    assert tool.apply_repair_plan(db, plan, expected_sha256=plan['sha256'])['written'] == 1

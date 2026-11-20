@@ -27,10 +27,21 @@ def test_live_scoring_freezes_inputs_replays_and_versions_execution_options(monk
     monkeypatch.setenv('DAILY_RADAR_SOURCE_SNAPSHOTS_ENABLED', 'true')
     with Session(engine) as db:
         kwargs = dict(session=db, records=records, market_context=context, allow_fixture_fallback=False)
-        first = run_daily_radar(date(2026, 5, 29), 'TW', **kwargs)
+        anchors = {r['symbol']: {'symbol': r['symbol'], 'official_quote': {'ohlcv': {'volume': 20}, 'captured_at': 'first'}} for r in records}
+        first = run_daily_radar(date(2026, 5, 29), 'TW', signal_anchors=anchors, **kwargs)
         db.commit()
         assert first.status == 'completed'
-        assert run_daily_radar(date(2026, 5, 29), 'TW', **kwargs).id == first.id
+        published = list(db.scalars(select(DailyRadarCandidate).where(DailyRadarCandidate.run_id == first.id)))
+        assert published
+        assert all(c.input_snapshot['official_signal_anchor'] == anchors[c.symbol] for c in published)
+        same = deepcopy(anchors)
+        for value in same.values():
+            value['official_quote']['captured_at'] = 'later'
+        assert run_daily_radar(date(2026, 5, 29), 'TW', signal_anchors=same, **kwargs).id == first.id
+        for value in same.values():
+            value['official_quote']['ohlcv']['volume'] = 21
+        revised = run_daily_radar(date(2026, 5, 29), 'TW', signal_anchors=same, **kwargs)
+        assert revised.id != first.id
         db.commit()
         second = run_daily_radar(date(2026, 5, 29), 'TW', **kwargs, candidate_limit=1)
         db.commit()
@@ -38,7 +49,7 @@ def test_live_scoring_freezes_inputs_replays_and_versions_execution_options(monk
         assert second.candidate_count == 1
         assert records == before
         links = list(db.scalars(select(RadarRunInput)))
-        assert len(links) == 2
+        assert len(links) == 3
     engine.dispose()
 
 
@@ -103,6 +114,13 @@ def test_readiness_detects_current_inputs_changed_after_publication(monkeypatch)
         first = read_readiness(db, run_date=day)
         assert first['scoring']['ready'] is True
         assert first['publication']['input_manifest']['matches_current_inputs'] is True
+        from ai_stock_sentinel.daily_radar.signal_quote import capture_quote
+        original = deepcopy(raw.technical)
+        raw.technical = original | {'signal_quote': capture_quote(symbol=raw.symbol,trade_date=day,
+            ohlcv=original['ohlcv'],provider='twse',basis='raw',captured_at='2026-06-01T12:00:00+00:00')}
+        db.commit()
+        assert read_readiness(db,run_date=day)['publication']['input_manifest']['matches_current_inputs']
+        raw.technical = original
         changed = deepcopy(raw.technical)
         changed['ohlcv']['open'] += 1
         raw.technical = changed

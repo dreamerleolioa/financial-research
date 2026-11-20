@@ -580,3 +580,28 @@ def test_apply_serializes_origin_check_against_new_public_revisions(tmp_path,mon
         assert committed_during_check==[False]
     finally:
         worker.join(timeout=3);engine.dispose()
+
+
+def test_batched_diagnostic_records_missing_evidence_without_changing_the_return(db):
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan, result_snapshot
+    _, _, row = stored(db)
+    before = result_snapshot(row)
+    errors = []
+    plan = build_repair_plan(db, {'results':[{'id':row.id, 'operation':'diagnostic'}]},
+                             calendar=calendar(), evidence={}, errors=errors)
+    assert plan['results'] == []
+    assert errors == [{'id':row.id, 'reason':'historical_price_evidence_missing'}]
+    assert result_snapshot(row) == before
+
+
+def test_diagnostic_batch_preserves_mismatched_return_target_for_recomputation(db):
+    from ai_stock_sentinel.daily_radar.history_repair import build_repair_plan
+    _, _, row = stored(db)
+    row.outcome = dict(row.outcome, target_date='2026-09-22')
+    db.commit()
+    request={'results':[{'id':row.id,'operation':'diagnostic'}]}
+    errors=[]
+    plan=build_repair_plan(db,request,calendar=calendar(),evidence=evidence_for(row.id),errors=errors)
+    assert not plan['results'] and errors==[{'id':row.id,'reason':'repair_calendar_mismatch_requires_recompute'}]
+    with pytest.raises(ValueError,match='repair_calendar_mismatch_requires_recompute'):
+        build_repair_plan(db,request,calendar=calendar(),evidence=evidence_for(row.id))

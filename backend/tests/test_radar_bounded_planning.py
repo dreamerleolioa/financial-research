@@ -335,3 +335,89 @@ def test_late_page_preserves_earliest_result_audit_for_repaired_outcomes(db):
     jobs.reconcile_job(db, job.id, now=later)
     assert work.state == 'ready'
     assert job.scope['window_planning']['processed_candidates'] == 5
+
+
+def test_first_dated_validation_registers_due_windows_before_old_candidates(db):
+    seed(db, 20)
+    recent = add_candidate(db, add_run(db, date(2026, 10, 30)), '2615.TW')
+    db.commit()
+    job = jobs.create_job(db, run_date=DAY, lanes=['signal_close', 'next_open'], owner='validation', now=NOW)
+    assert {(w.lane, w.scope['window_days']) for w in active(db, job)
+            if w.scope['candidate_id'] == recent.id} == {('signal_close', 5), ('next_open', 5)}
+    finish_plan(db, job)
+    assert len(active(db, job)) == 202
+
+
+def test_following_dated_job_picks_up_missed_sessions_and_skips_old_work(db):
+    seed(db, 20)
+    previous_day = date(2026, 11, 3)
+    db.add(DailyRadarPreparedRun(run_date=previous_day, market='TW', selected_symbols=[], universe=[],
+        symbol_count=0, step_statuses={'validation-calendar': calendar(previous_day-timedelta(days=364), previous_day).payload()}))
+    recent = [add_candidate(db, add_run(db, date(2026, 10, day)), f'23{day}.TW') for day in (28, 29, 30)]
+    db.commit()
+    previous = jobs.create_job(db, run_date=previous_day, lanes=['signal_close'], owner='validation', now=NOW)
+    job = jobs.create_job(db, run_date=DAY, lanes=['signal_close'], owner='validation', now=NOW)
+    finish_plan(db, job)
+    assert {(w.scope['candidate_id'], w.scope['window_days'], w.scope['expected_target_date'])
+            for w in active(db, job)} == {(c.id, 5, f'2026-11-0{i}') for i, c in enumerate(recent, 4)}
+    assert len(active(db, previous)) > 0
+    assert jobs.create_job(db, run_date=DAY, lanes=['signal_close'], owner='validation', now=NOW).id == job.id
+
+
+def test_daily_intent_can_finish_while_global_audit_retains_old_gaps(db):
+    from ai_stock_sentinel.db.models import RadarJob
+    seed(db, 2)
+    previous = RadarJob(job_key='predecessor', market='TW', lanes=['signal_close'],
+        run_date=DAY-timedelta(days=1), state='pending',
+        scope={'scheduler_owner':'validation', 'dated_registration':True})
+    db.add(previous)
+    db.commit()
+    job = jobs.create_job(db, run_date=DAY, lanes=['signal_close'], owner='validation', now=NOW)
+    for work in db.scalars(select(RadarWorkItem)):
+        work.state = 'ready'
+    db.commit()
+    jobs.reconcile_job(db, job.id, now=NOW, audit=True)
+    status = jobs.job_status(db, job.id)
+    lane = status['last_audit']['validation']['signal_close']
+    assert status['intent_complete'] and not lane['ready'] and lane['unresolved_count'] == 10
+    assert lane['due_interval']['unresolved_count'] == 0
+    assert job.scope['window_plan'] == job.scope['window_planning']['revision']
+
+
+def test_bootstrap_does_not_mix_a_shorter_overdue_horizon_into_first_page(db):
+    seed(db, 4)
+    candidate = add_candidate(db, add_run(db, date(2026, 10, 23)), '2330.TW')
+    db.commit()
+    job = jobs.create_job(db, run_date=DAY, lanes=['signal_close'], owner='validation', now=NOW)
+    first = [w.scope['window_days'] for w in active(db, job) if w.scope['candidate_id']==candidate.id]
+    assert first == [10]
+    finish_plan(db, job)
+    assert {w.scope['window_days'] for w in active(db, job) if w.scope['candidate_id']==candidate.id} == {5, 10}
+
+
+def test_missed_session_candidates_do_not_fill_current_session_page(db):
+    from ai_stock_sentinel.db.models import RadarJob
+    seed(db, 4)
+    db.add(RadarJob(job_key='previous-date', market='TW', lanes=['signal_close'],
+                    run_date=date(2026, 11, 3), state='pending',
+                    scope={'scheduler_owner':'validation','dated_registration':True}))
+    catchup = add_run(db, date(2026, 10, 28), count=9)
+    for n in range(9):
+        add_candidate(db, catchup, f'{2500+n}.TW')
+    fresh = add_candidate(db, add_run(db, date(2026,10,30)), '2330.TW')
+    db.commit()
+    job = jobs.create_job(db,run_date=DAY,lanes=['signal_close'],owner='validation',now=NOW)
+    assert {w.scope['candidate_id'] for w in active(db,job)} == {fresh.id}
+    finish_plan(db, job)
+    assert len(active(db,job)) == 10
+
+
+def test_targetless_gap_stays_in_global_review_without_blocking_daily_interval(db):
+    from ai_stock_sentinel.daily_radar.readiness import validation_inventory
+    seed(db, 1)
+    add_candidate(db, add_run(db,date(2026,10,31)), '2330.TW')  # Saturday
+    db.commit()
+    report = validation_inventory(db,as_of_date=DAY,due_after='2026-11-05')['signal_close']
+    assert report['ready'] is False
+    assert any(g['reason']=='non_trading_signal_date' for g in report['gaps'])
+    assert report['due_interval']['unresolved_count'] == 0

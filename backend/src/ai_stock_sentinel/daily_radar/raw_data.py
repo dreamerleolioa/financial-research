@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from types import SimpleNamespace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import logging
 import math
 import os
@@ -22,6 +22,7 @@ from ai_stock_sentinel.daily_radar.data_quality import (
     technical_data_dates_match_record_date,
 )
 from ai_stock_sentinel.daily_radar.margin_applicability import margin_is_not_applicable
+from ai_stock_sentinel.daily_radar.signal_quote import archive_time, capture_quote, valid_raw_quote
 from ai_stock_sentinel.daily_radar.market_bar_provider import MarketDailyBar
 from ai_stock_sentinel.daily_radar.market_bar_repository import DEFAULT_MARKET_BAR_DATASET, get_taiwan_daily_bars
 from ai_stock_sentinel.daily_radar.repository import get_final_raw_data_rows_for_symbols
@@ -148,6 +149,14 @@ class YFinanceBatchTechnicalFetcher:
                         fetch=lambda: {"records": rows, "price_basis": "adjusted_price"}, reuse=False)
                     payload["source_provenance"] = dict(payload.get("source_provenance") or {}) | {
                         "accepted_adjusted_history": proof}
+                provenance = payload.get("source_provenance") or {}
+                history = provenance.get("accepted_adjusted_history")
+                payload["signal_quote"] = capture_quote(
+                    symbol=symbol, trade_date=payload["data_dates"]["ohlcv"], ohlcv=payload["ohlcv"],
+                    provider=provenance.get("provider", "yfinance"), basis="adjusted_price",
+                    captured_at=history["captured_at"] if history else datetime.now(timezone.utc).isoformat(),
+                    history_receipt=history, adjustment=provenance.get("repair"),
+                )
                 payloads[symbol] = payload
         return payloads
 
@@ -392,6 +401,12 @@ class LocalFirstBatchTechnicalFetcher:
                 name=symbol_rows[-1].name or self._safe_resolve_name(symbol),
             )
             if payload is not None:
+                source = symbol_rows[-1]
+                payload["signal_quote"] = capture_quote(
+                    symbol=symbol, trade_date=source.trade_date, ohlcv=payload["ohlcv"],
+                    provider=source.source_provider, basis=source.adjustment_mode,
+                    captured_at=archive_time(source.fetched_at),
+                )
                 payloads[symbol] = payload
 
         if self._provider_mode == "official_first":
@@ -527,7 +542,8 @@ def reusable_daily_radar_raw_rows(rows: Iterable[StockRawData]) -> list[StockRaw
     return [
         row
         for row in rows
-        if not missing_daily_radar_candidate_technical_fields(
+        if valid_raw_quote(_mapping(row.technical), row.symbol, row.record_date)
+        and not missing_daily_radar_candidate_technical_fields(
             _mapping(row.technical),
             record_date=row.record_date,
         )
@@ -560,6 +576,7 @@ def insufficient_history_daily_radar_raw_rows(
         count = quality.get("lookback_days_available")
         history = technical.get("price_history")
         if (row.record_date != run_date
+                or not valid_raw_quote(technical, row.symbol, run_date)
                 or not technical_data_dates_match_record_date(technical, record_date=run_date)
                 or type(count) is not int or not 0 < count < 60
                 or not isinstance(history, list) or len(history) != count
@@ -749,7 +766,8 @@ def _store_missing_rows(
             row.fundamental = {"margin": {}, "data_dates": {"margin": run_date.isoformat()}}
             session.add(row)
         row.technical = technical
-        row.raw_data_is_final = technical_data_dates_match_record_date(technical, record_date=run_date)
+        row.raw_data_is_final = (technical_data_dates_match_record_date(technical, record_date=run_date)
+                                 and valid_raw_quote(technical, symbol, run_date))
 
 
 def _normalize_technical_payload(symbol: str, payload: Mapping[str, Any]) -> dict[str, Any]:

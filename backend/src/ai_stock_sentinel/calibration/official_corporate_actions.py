@@ -98,14 +98,15 @@ def _twse_action(symbol, sessions, capture):
     params = {"response": "json", "startDate": sessions[0].strftime("%Y%m%d"),
               "endDate": sessions[-1].strftime("%Y%m%d")}
     listing, source = capture(rights.EX_RIGHTS, params)
-    events = [(day, row) for day, row in rights._dated_rows(listing, params, "資料日期",
-              ["除權息前收盤價", "權/息", "詳細資料"]) if str(row["股票代號"]).strip() == code]
+    events = [(day, row) for day, row in rights.dated_market_rows(listing, params, "資料日期",
+              ["除權息前收盤價", "權/息", "詳細資料"], path=rights.EX_RIGHTS, source=source) if str(row["股票代號"]).strip() == code]
     sources = [source]
     reductions = []
     for path in (rights.REDUCTION, rights.FACE_VALUE):
         report, report_source = capture(path, params)
         fields = ["停止買賣前收盤價格", "減資原因", "詳細資料"] if path == rights.REDUCTION else []
-        rows = rights._dated_rows(report, params, "恢復買賣日期", fields, allow_empty_status=path == rights.REDUCTION)
+        rows = rights.dated_market_rows(report, params, "恢復買賣日期", fields, path=path, source=report_source,
+                                      allow_empty_status=path == rights.REDUCTION)
         matched = [(day, row) for day, row in rows if str(row["股票代號"]).strip() == code]
         if path == rights.FACE_VALUE and matched:
             return None, []

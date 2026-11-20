@@ -147,7 +147,7 @@ def run_signal_close_validation(db, request, *, as_of_date, price_provider, cale
             db,
             market=request.market,
             start_date=start_date,
-            end_date=request.end_date or as_of_date,
+            end_date=request.end_date or as_of_date, candidate_ids=candidate_ids,
         )
         if candidate_ids is not None:
             candidates = [c for c in candidates if c["candidate_id"] in candidate_ids]

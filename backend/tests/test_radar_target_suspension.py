@@ -10,7 +10,7 @@ from test_radar_price_acceptance import CANDIDATE, DAYS, bar, official
 from test_radar_jobs import db
 
 
-def proof(target=DAYS[-1], resume="115/06/05"):
+def proof(target=DAYS[-1], resume="115/06/05", *, covering=False):
     from ai_stock_sentinel.calibration.official_corporate_actions import TWSE_REDUCTION_DETAIL
     from ai_stock_sentinel.calibration.twse_rights_recovery import REDUCTION
     from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
@@ -25,10 +25,14 @@ def proof(target=DAYS[-1], resume="115/06/05"):
     def capture(path,params):
         row = {REDUCTION:notice,TWSE_REDUCTION_DETAIL:detail}[path]
         raw = {'stat':'OK','fields':list(row),'data':[list(row.values())]}
+        requested = params
         if path == REDUCTION:
+            if covering:
+                params = params | {'startDate': '20260601', 'endDate': '20260731'}
             raw.update(strDate=params['startDate'],endDate=params['endDate'])
         return raw,{'source_url':'https://www.twse.com.tw'+path+'?'+urlencode(params),
-                    'captured_at':'2026-06-04T10:00:00+00:00','snapshot_sha256':fingerprint(raw)}
+                    'captured_at':'2026-06-04T10:00:00+00:00','snapshot_sha256':fingerprint(raw),
+                    **({'requested_subrange':requested} if requested != params else {})}
     return collect_target_suspension(SimpleNamespace(capture_twse_report=capture),CANDIDATE['symbol'],target)
 
 
@@ -42,8 +46,9 @@ def evaluate(evidence, fetched):
         collect_official=lambda *args:source,fetch_prices=fetch)[0]
 
 
-def test_proven_target_halt_closes_without_requesting_unusable_prices():
-    fetched=[];row=evaluate(proof(),fetched)
+@pytest.mark.parametrize('covering', [False, True])
+def test_proven_target_halt_closes_without_requesting_unusable_prices(covering):
+    fetched=[];row=evaluate(proof(covering=covering),fetched)
     assert row['skip_reason']==REASON
     assert row['target_date']==str(DAYS[-1])
     assert fetched==[]

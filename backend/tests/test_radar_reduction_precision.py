@@ -73,3 +73,16 @@ def test_stored_precision_receipt_survives_independent_readback(damage):
     if damage=="terms": event["share_ratio"]+=.001
     if damage=="version": proof["evidence_version"]=actions.EVIDENCE_VERSION
     assert actions.valid_precision_version(proof,event,actions.CASH_REDUCTION_HALT)==(damage is None)
+
+    if damage is None:
+        from ai_stock_sentinel.daily_radar.next_open_history_repair import _check_legacy_split
+        from ai_stock_sentinel.daily_radar.next_open_official_repair import KEY
+        row = {'date':str(DAY), 'stock_splits':.54204913, 'dividends':event['cash_per_share']}
+        before = {'skip_reason':'stock_split_in_window', 'outcome':{}}
+        after = {'skip_reason':actions.CASH_REDUCTION_HALT, 'outcome':{
+            actions.PROVENANCE_KEY:proof | {'event':event | {'type':'cash_reduction'}},
+            KEY:{'event_replay':{'kind':'corporate','yahoo':[row]}}}}
+        _check_legacy_split(before, after)
+        row['stock_splits'] = .54205
+        with pytest.raises(ValueError, match='next_open_official_split_unverified'):
+            _check_legacy_split(before, after)
