@@ -91,7 +91,9 @@ def terminal_evidence_matches(candidate, row, *, basis, sessions, as_of_date):
             or not isinstance(adjusted, list) or any(d not in days or d >= str(effective) for d in adjusted)):
         return False
     if reason == actions.STOCK_DISTRIBUTION:
-        return (event.get('type') == 'stock_distribution' and ratio > 1 and bool(adjusted)
+        from ai_stock_sentinel.daily_radar.reviewed_action_sequence import has_first_session_reference
+        return (event.get('type') == 'stock_distribution' and ratio > 1
+                and (bool(adjusted) or has_first_session_reference(proof, signal, days))
                 and event.get('halt_start') is None and proof.get('halt_dates') == [])
     halt = parse_date(event.get('halt_start'))
     return (event.get('type') == 'cash_reduction' and 0 < ratio < 1 and cash > 0

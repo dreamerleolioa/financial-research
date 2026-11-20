@@ -14,7 +14,7 @@ from ai_stock_sentinel.daily_radar.research_validation import (
 )
 from ai_stock_sentinel.daily_radar.terminal_integrity import _source
 from ai_stock_sentinel.daily_radar.validation_inputs import PROOF_KEY
-from ai_stock_sentinel.daily_radar import next_open_action_scope as action_scope, reviewed_distribution_basis
+from ai_stock_sentinel.daily_radar import next_open_action_scope as action_scope, reviewed_distribution_basis, reviewed_action_sequence
 
 KEY = 'reviewed_official_window'
 VERSION = 'next-open-reviewed-official-window-v1'
@@ -108,15 +108,29 @@ def collect_window(candidate, before, row, *, calendar, provider):
             result = _recover_rights_window(candidate, event_row, stock_rows, marked_rows, benchmark_rows,
                 calendar.sessions, as_of_date=target, scoped=True, provider=provider, reviewed=True,
                 later_sessions=later_sessions)
+        elif kind == reviewed_action_sequence.KEY:
+            result = reviewed_action_sequence.classify(event_row, stock_rows, marked_rows, benchmark_rows,
+                                                       calendar=calendar, provider=provider, require_inventory=True)
         elif kind == reviewed_distribution_basis.KEY:
             result = reviewed_distribution_basis.classify(event_row, stock_rows, marked_rows, benchmark_rows,
                 calendar=calendar, provider=provider)
         else:
             result = _classify_corporate_action(event_row, stock_rows, marked_rows, benchmark_rows,
                 as_of_date=target, provider=provider)
+        sequence_proved = False
+        if (kind == 'corporate' and result is None and getattr(provider,'review_action_sequence',False)
+                and any(str(signal) < r.get('date','') <= str(target) and
+                        (rights.number(r.get('stock_splits')) or 0) > 1 for r in stock_rows)):
+            start = provider.position()
+            result = reviewed_action_sequence.classify(event_row, stock_rows, marked_rows, benchmark_rows,
+                                                       calendar=calendar, provider=provider)
+            sequence_proved = result is not None
         frozen = {'kind': kind, 'row': deepcopy(event_row), 'yahoo': deepcopy(stock_rows),
             'marked': deepcopy(marked_rows), 'benchmark': deepcopy(benchmark_rows),
             'capabilities': list(provider.capabilities), 'calls': deepcopy(provider.calls[start:provider.position()])}
+        if sequence_proved or kind == reviewed_action_sequence.KEY:
+            frozen['kind'] = 'corporate'
+            frozen['sequence_verification'] = reviewed_action_sequence.VERSION
         if kind == reviewed_distribution_basis.KEY:
             frozen['kind'] = 'corporate'
             frozen['distribution_verification'] = reviewed_distribution_basis.VERSION
@@ -179,6 +193,12 @@ def collect_window(candidate, before, row, *, calendar, provider):
                     if recovered is not None:
                         event_replay = frozen
             row = recovered or row
+    if (event_replay is None and getattr(provider,'review_action_sequence',False) and
+            row.get('skip_reason') == 'stock_split_in_window' and
+            any(b['date'] == str(sessions[0]) and (rights.number(b.get('stock_splits')) or 0) > 1 for b in yahoo)):
+        recovered, frozen = event(reviewed_action_sequence.KEY, yahoo, benchmark, marked)
+        if recovered is not None:
+            row, event_replay = recovered, frozen
     if (event_replay is None and basis_candidate and
             (row.get('skip_reason') == rights.CONFLICT_REASON or row.get('skip_reason') == 'stock_split_in_window'
              and any(r.get('ohlc_conflict_fields') for r in marked if str(signal) < r['date'] <= str(target)))):
@@ -316,6 +336,12 @@ def _verify_event(candidate, after, frozen, kind, calendar, target):
         result = _recover_rights_window(candidate, row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
             calendar.sessions, as_of_date=target, scoped=True, provider=replay,
             reviewed=mode is not None, later_sessions=later)
+    elif 'sequence_verification' in frozen:
+        if frozen['sequence_verification'] != reviewed_action_sequence.VERSION:
+            raise ValueError('next_open_official_event_verification_invalid')
+        action_scope._check_calls([c for c in frozen['calls'] if c['request']['method'] == 'capture_twse_report'])
+        result = reviewed_action_sequence.classify(row, frozen['yahoo'], frozen['marked'], frozen['benchmark'],
+                                                  calendar=calendar, provider=replay)
     elif 'distribution_verification' in frozen:
         if frozen['distribution_verification'] != reviewed_distribution_basis.VERSION:
             raise ValueError('next_open_official_event_verification_invalid')
@@ -343,6 +369,10 @@ def _verify_event(candidate, after, frozen, kind, calendar, target):
     # with a separately consistent but contradictory result.
     histories = {call['request']['args'][0]: call['value'] for call in replay.calls
                  if call['request']['method'] == 'official_research_history' and not call.get('failed')}
+    if 'sequence_verification' in frozen:
+        histories = {c['request']['args'][0]:c['value'] for c in replay.calls
+                     if c['request']['method']=='official_research_history' and not c.get('failed')
+                     and c['request']['kwargs']=={'start_date':row['signal_date'],'end_date':str(target)}}
     if kind == 'rights' and mode == POST_WINDOW_RIGHTS_VERIFICATION:
         histories[candidate['symbol']] = [row for row in histories[candidate['symbol']] if row['date'] <= str(target)]
     proof = after['outcome'][KEY]

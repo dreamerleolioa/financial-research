@@ -92,6 +92,10 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar, requ
         state, reason = "invalid_window", "research_basis_mismatch"
     elif basis == "signal_close" and _needs_diagnostic(candidate):
         diagnostic = row["outcome"].get("observation_diagnostic") or {}
+        if diagnostic.get("status") == "target_session_suspended":
+            from ai_stock_sentinel.daily_radar.reviewed_publication_close import has_suspended_target
+            if has_suspended_target(candidate, row, target):
+                return "terminal", "target_session_suspended", target
         if (diagnostic.get("version") != OBSERVATION_DIAGNOSTIC_VERSION
                 or diagnostic.get("status") == "not_first_observation"
                 or diagnostic.get("first_seen_date") not in (None, candidate["record_date"])):
