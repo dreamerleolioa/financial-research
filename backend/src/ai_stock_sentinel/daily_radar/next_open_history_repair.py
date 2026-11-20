@@ -30,7 +30,8 @@ from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult as Res
 
 LEGACY_VERSION = 'daily-radar-next-open-repair-v1'
 VERSION = 'daily-radar-next-open-repair-v2'
-CAPTURE_VERSION = 'daily-radar-next-open-capture-v2'
+PREVIOUS_CAPTURE_VERSION = 'daily-radar-next-open-capture-v2'
+CAPTURE_VERSION = 'daily-radar-next-open-capture-v3'
 METHODS = ('fetch', 'repair', 'official_research_history', 'capture_twse_report', 'capture_tpex_report', 'capture_split_day')
 MAX_BYTES = 64 * 1024 * 1024
 
@@ -129,6 +130,7 @@ class _Tape:
     """Sequence replay preserves repeated calls and the provider's capabilities."""
     def __init__(self, provider=None, *, evidence=None):
         self.provider = provider
+        self.review_distribution_basis = evidence is None or evidence.get('version') == CAPTURE_VERSION
         self.capabilities = (list(evidence['capabilities']) if evidence is not None else
                              [m for m in METHODS if callable(getattr(provider, m, None))])
         if 'fetch' not in self.capabilities or any(m not in METHODS for m in self.capabilities):
@@ -137,6 +139,7 @@ class _Tape:
         self.offset = 0
         self.diagnostics = []
         self.fetched, self.repaired = {}, {}
+        self._charts = {}
 
     def _remember(self, name, value):
         if name in ('fetch', 'repair') and isinstance(value, dict):
@@ -161,7 +164,13 @@ class _Tape:
             if len(self.calls) >= 4096:
                 raise ValueError('next_open_capture_too_many_calls')
             try:
-                value = getattr(self.provider, name)(*args, **kwargs)
+                if name == 'capture_split_day':
+                    key = fingerprint(signature)
+                    if key not in self._charts:
+                        self._charts[key] = deepcopy(self.provider.capture_split_day(*args, **kwargs))
+                    value = deepcopy(self._charts[key])
+                else:
+                    value = getattr(self.provider, name)(*args, **kwargs)
             except (SourceDependencyBusy, LostLease):
                 raise
             except Exception:
@@ -204,7 +213,7 @@ def _evaluate(reader, context, calendar, tape):
                 'next_open_prior_action_scope_event_unresolved',
                 'next_open_official_source_identity_invalid', 'twse_rights_incomplete_price_window',
                 'twse_rights_invalid_price_row', 'next_open_captured_provider_failure'}
-            code = str(exc) if str(exc) in codes else 'next_open_official_evidence_unavailable'
+            code = str(exc) if str(exc) in codes or str(exc).startswith('reviewed_distribution_') else 'next_open_official_evidence_unavailable'
             row = dict(row) | {'status': 'skipped', 'skip_reason': 'next_open_official_evidence_incomplete',
                 'outcome': dict(row['outcome']) | {'official_repair_error': {'code': code}}}
         verified.append(row)
@@ -306,7 +315,7 @@ def _check_legacy_split(before, after):
 
 
 def build_repair_plan(bind, request, *, calendar, evidence, errors=None):
-    if (evidence.get('version') != CAPTURE_VERSION
+    if (evidence.get('version') not in (PREVIOUS_CAPTURE_VERSION, CAPTURE_VERSION)
             or evidence.get('validation_version') != RESEARCH_VALIDATION_VERSION
             or evidence.get('calendar_sha256') != fingerprint(calendar.payload())
             or evidence.get('sha256') != fingerprint({k:v for k,v in evidence.items() if k != 'sha256'})):
