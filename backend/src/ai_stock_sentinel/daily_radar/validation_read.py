@@ -67,7 +67,8 @@ def read_observation_validation(session: Session, *, market: str, as_of_date: da
     calendar_invalid = close_invalid + research_invalid
     report = observation_report(candidates, outcomes, windows, as_of_date=as_of_date,
                                 benchmark_prices=benchmark if calendar_usable else None)
-    comparisons = pool_comparisons(candidates, outcomes, windows,
+    from ai_stock_sentinel.daily_radar.reviewed_publication_close import performance_rows
+    comparisons = pool_comparisons(candidates, performance_rows(candidates,outcomes), windows,
                                    calendar=sorted(calendar_days) if calendar_usable else None)
     research_comparisons = research_pool_comparisons(candidates, research_outcomes, windows,
         calendar=sorted(research_calendar_days) if research_calendar_usable else None)

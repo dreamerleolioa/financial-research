@@ -169,7 +169,8 @@ def _build_report_from_outcomes(
     aggregation_scope: str,
     benchmark_prices: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    outcome_rows = [dict(outcome) for outcome in outcomes]
+    from ai_stock_sentinel.daily_radar.reviewed_publication_close import performance_rows
+    outcome_rows = performance_rows(candidates, [dict(outcome) for outcome in outcomes])
     valid_outcomes = [outcome for outcome in outcome_rows if outcome["status"] == "validated"]
     selected_valid_outcomes = [
         outcome for outcome in valid_outcomes if _selection_status(outcome) == "selected"

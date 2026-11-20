@@ -207,11 +207,17 @@ def _summarize(ranked, outcomes, window, calendar):
         if row is None:
             missing_outcomes += 1
             continue
+        diagnostic = (row.get("outcome") or {}).get("observation_diagnostic") or {}
+        if (diagnostic.get("status") == "target_session_suspended" and (row.get("status") == "validated"
+                or row.get("status") == "skipped" and row.get("skip_reason") == "target_session_suspended")):
+            from ai_stock_sentinel.daily_radar.reviewed_publication_close import has_suspended_target
+            if has_suspended_target(c,row,row.get("target_date")):
+                statuses["target_session_suspended"] += 1
+                continue
         if row.get("status") != "validated":
             skipped += 1
             missing[str(row.get("skip_reason") or "validation_not_available")] += 1
             continue
-        diagnostic = (row.get("outcome") or {}).get("observation_diagnostic") or {}
         # The current first signal cannot reuse a diagnostic that was computed
         # as a repeat of an older, now invalidated/superseded public origin.
         if (diagnostic.get("version") != OBSERVATION_DIAGNOSTIC_VERSION

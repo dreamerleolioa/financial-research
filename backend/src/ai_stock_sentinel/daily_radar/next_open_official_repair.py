@@ -110,7 +110,7 @@ def collect_window(candidate, before, row, *, calendar, provider):
                 later_sessions=later_sessions)
         elif kind == reviewed_action_sequence.KEY:
             result = reviewed_action_sequence.classify(event_row, stock_rows, marked_rows, benchmark_rows,
-                                                       calendar=calendar, provider=provider)
+                                                       calendar=calendar, provider=provider, require_inventory=True)
         elif kind == reviewed_distribution_basis.KEY:
             result = reviewed_distribution_basis.classify(event_row, stock_rows, marked_rows, benchmark_rows,
                 calendar=calendar, provider=provider)

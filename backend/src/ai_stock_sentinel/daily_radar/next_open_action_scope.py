@@ -350,11 +350,17 @@ def result_matches(scope, row):
                 return
         elif actions.PROVENANCE_KEY in payload:
             sequence = proof.get('reviewed_action_sequence') or {}
-            if sequence and (price_proof.get('event_replay') or {}).get('sequence_verification') == sequence.get('version'):
+            if sequence:
+                if (price_proof.get('event_replay') or {}).get('sequence_verification') != sequence['version']:
+                    raise ValueError('next_open_prior_action_scope_event_unresolved')
                 proved = [e for e in sequence['events'] if e['effective_date'] in scope['session_dates']]
-                if (len(proved) == len(events) and all(any(all(e.get(k) == v for k,v in item.items())
-                        for e in proved) for item in events)):
+                by_day = {e['effective_date']: e for e in proved}
+                reported_days = {item['effective_date'] for item in events}
+                if (len(proved) == len(by_day) == len(events) and by_day.keys() == reported_days
+                        and all(all(by_day[item['effective_date']].get(k) == v for k, v in item.items())
+                                for item in events)):
                     return
+                raise ValueError('next_open_prior_action_scope_event_unresolved')
             if matched and _inventory_agrees(events[0], event):
                 return
         else:
