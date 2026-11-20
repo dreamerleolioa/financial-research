@@ -349,6 +349,12 @@ def result_matches(scope, row):
                     and events[0]['previous_close'] == event.get('previous_close')):
                 return
         elif actions.PROVENANCE_KEY in payload:
+            sequence = proof.get('reviewed_action_sequence') or {}
+            if sequence and (price_proof.get('event_replay') or {}).get('sequence_verification') == sequence.get('version'):
+                proved = [e for e in sequence['events'] if e['effective_date'] in scope['session_dates']]
+                if (len(proved) == len(events) and all(any(all(e.get(k) == v for k,v in item.items())
+                        for e in proved) for item in events)):
+                    return
             if matched and _inventory_agrees(events[0], event):
                 return
         else:
