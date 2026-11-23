@@ -1,5 +1,5 @@
 """Durable Radar intent and dependency planning. No provider I/O here."""
-from collections import Counter
+from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -138,7 +138,38 @@ def unit(db, job, stage, *, generation=None, scope=None, deps=(), lane='publicat
 WINDOW_PLAN_CANDIDATES = 50
 
 
+class _WindowWorkBusy(Exception):
+    """Another transaction owns work needed to reconcile this page."""
+
+
+class _WindowInputsChanged(Exception):
+    """The page's candidate inputs or calendar changed before acceptance."""
+
+
 def plan_windows(db, job, scope, *, now, calendar_work=None):
+    page_scope = dict(scope)
+    try:
+        with db.begin_nested():
+            _plan_window_page(db, job, page_scope, now=now, calendar_work=calendar_work)
+    except _WindowWorkBusy:
+        # Roll back the page, including any membership retirement at the start
+        # of a replan. Keep its cursor for a retry after the work lock is free.
+        progress = scope.get('window_planning') or {}
+        scope.pop('window_plan', None)
+        scope['window_planning'] = (progress if progress.get('state') == 'planning' else
+                                    {'state': 'planning', 'revision': None, 'complete': False})
+    except _WindowInputsChanged:
+        db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
+            RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'window'))).values(active=False))
+        scope.pop('window_plan', None)
+        scope['window_planning'] = {'state': 'planning', 'revision': None, 'cursor': None,
+                                    'complete': False, 'processed_candidates': 0}
+    else:
+        scope.clear()
+        scope.update(page_scope)
+
+
+def _plan_window_page(db, job, scope, *, now, calendar_work):
     from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
     from ai_stock_sentinel.daily_radar.readiness import inventory_items
     from ai_stock_sentinel.daily_radar.planning_inventory import inventory_input_revision, candidate_page, maturity_signal_dates, due_in_interval
@@ -163,7 +194,7 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
     current_dates = maturity_signal_dates(calendar, after=yesterday, through=job.run_date) if daily else ()
     catchup_dates = maturity_signal_dates(calendar, after=since, through=yesterday) if since else ()
     second_pass = 'catchup' if since else 'history'
-    plan = fingerprint({'version': 'radar-dated-window-plan-v2' if daily else 'radar-window-plan-v3',
+    plan = fingerprint({'version': 'radar-dated-window-plan-v3' if daily else 'radar-window-plan-v4',
         **({'due_after': str(since)} if daily else {}), 'run_date': str(job.run_date),
         'inputs': inputs,
         'calendar': calendar.payload(), 'lanes': scope.get('inherited_plan_lanes', job.lanes)})
@@ -188,8 +219,9 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
         progress.update({'pass': second_pass, 'cursor': None})
         ids = load_page()
     page = ids[:WINDOW_PLAN_CANDIDATES]
-    completed_keys = []
-    for item in inventory_items(db, as_of_date=job.run_date, candidate_ids=page):
+    completed = defaultdict(list)
+    for item in inventory_items(db, as_of_date=job.run_date, candidate_ids=page,
+                                settle_later_results=True, lock_later_results=True):
         if item['return_basis'] not in job.lanes or item['state'] == 'immature':
             continue
         if daily:
@@ -199,71 +231,98 @@ def plan_windows(db, job, scope, *, now, calendar_work=None):
                     or progress['pass'] == 'history' and current_window):
                 continue
         progress['accounted_windows'] = progress.get('accounted_windows', 0) + 1
+        if item['reason'] == 'validation_result_locked':
+            raise _WindowWorkBusy
         identity = {k: item[k] for k in ('candidate_id', 'candidate_revision', 'calendar_revision', 'return_basis', 'validation_version', 'window_days', 'expected_target_date')}
         identity['policy'] = POLICY
         if item['state'] in {'validated', 'terminal'}:
             # Saved outcomes remain the authority. Do not copy the complete
             # historical inventory into the active queue on every date.
-            completed_keys.append(fingerprint(identity))
-            completed_keys.append(fingerprint(identity | {'cutoff': str(job.run_date)}))
+            keys = [fingerprint(identity), fingerprint(identity | {'cutoff': str(job.run_date)})]
+            proof = item.get('settled_by')
+            receipt = (proof['state'], proof['reason']) if proof else None
+            cutoff = proof['evaluation_as_of_date'] if proof else item.get('result_as_of_date')
+            completed[(cutoff, receipt)].extend(keys)
             continue
         previous = db.scalar(select(RadarWorkItem).where(RadarWorkItem.work_key == fingerprint(identity)))
-        if previous and date.fromisoformat(previous.scope['as_of_date']) > job.run_date:
-            identity['cutoff'] = str(job.run_date)
         # Legacy conflicts/events need one collection to retain concrete evidence.
         # The evaluator parks an event that the existing rules cannot resolve.
         collect_review_evidence = item['reason'] in {'conflicting_price_records', 'official_corporate_action_in_window'}
         manual = (item['state'] in {'invalid_window', 'missing_diagnostic', 'input_unverified'}
                   or (item['next_action'] == 'needs_review'
                       and not collect_review_evidence))
-        work = ensure_work(db, identity=identity, stage='window', lane=item['return_basis'], run_date=job.run_date,
-            scope=dict(item) | {'as_of_date': str(job.run_date)}, input_revision=fingerprint(identity),
-            state='needs_review' if manual else 'pending', retry_at=now,
-            priority=19 if daily and item['expected_target_date'] == str(job.run_date) else 20,
-            not_before=stage_time(job.run_date, 'window'))
+        def create_window(key):
+            return ensure_work(db, identity=key, stage='window', lane=item['return_basis'], run_date=job.run_date,
+                scope=dict(item) | {'as_of_date': str(job.run_date)}, input_revision=fingerprint(key),
+                state='needs_review' if manual else 'pending', retry_at=now,
+                priority=19 if daily and item['expected_target_date'] == str(job.run_date) else 20,
+                not_before=stage_time(job.run_date, 'window'))
+        work = previous or create_window(identity)
+        if date.fromisoformat(work.scope['as_of_date']) > job.run_date:
+            work = create_window(identity | {'cutoff': str(job.run_date)})
+        if item['reason'] == 'newer_validation_result_preserved':
+            locked_work = db.scalar(select(RadarWorkItem).where(RadarWorkItem.id == work.id)
+                .with_for_update(skip_locked=True).execution_options(populate_existing=True))
+            if locked_work is None:
+                raise _WindowWorkBusy
         if work.state != 'running' and work.reason != CONFLICT:
+            if 'settled_by' in (work.result or {}):
+                work.result = {'manual_repair_required': True} if manual else {}
             if (not manual and item['reason'] == 'official_corporate_action_in_window' and work.state == 'needs_review'
                     and not (work.result or {}).get('source_observations')):
                 work.state, work.reason, work.retry_at = 'pending', item['reason'], now
-            if manual and work.reason != 'source_revision_changed':
+            if manual and (work.reason != 'source_revision_changed' or item['reason'] == 'newer_validation_result_preserved'):
                 work.state, work.reason, work.retry_at = 'needs_review', item['reason'], None
             elif work.state in {'ready', 'terminal', 'superseded'}:
                 work.state, work.reason, work.retry_at = 'pending', item['reason'], now
         member(db, job, work)
-    if completed_keys:
+    if completed:
         # An input replan temporarily retires all memberships. Reattach an
         # unresolved contradiction when the same fixed window is still present.
         candidates = db.execute(select(RadarWorkItem.id, RadarWorkItem.identity).where(
             RadarWorkItem.state == 'needs_review', RadarWorkItem.reason == CONFLICT,
             RadarWorkItem.run_date <= job.run_date,
             RadarWorkItem.identity["candidate_id"].as_integer().in_(page))).all()
-        fixed_keys = set(completed_keys)
+        fixed_keys = {key for keys in completed.values() for key in keys}
         conflicts = [row.id for row in candidates if
                      fingerprint({k: v for k, v in row.identity.items() if k != 'cutoff'}) in fixed_keys]
         if conflicts:
             _upsert_members(db, job.id, conflicts, True)
-        db.execute(update(RadarWorkItem).where(RadarWorkItem.work_key.in_(completed_keys),
-            RadarWorkItem.state != 'running',
-            RadarWorkItem.reason.is_distinct_from(CONFLICT),
-            RadarWorkItem.id.in_(select(RadarJobWork.work_id).where(
-                RadarJobWork.job_id == job.id)))
-            .values(state='ready', reason=None, retry_at=None))
+        memberships = select(RadarJobWork.work_id).where(RadarJobWork.job_id == job.id)
+        # A page may be reconciling a row owned by another date. Hold the
+        # work lock through the membership decision or retain it for the next pass.
+        matching = select(RadarWorkItem.id).where(RadarWorkItem.work_key.in_(fixed_keys),
+            RadarWorkItem.id.in_(memberships)).order_by(RadarWorkItem.id)
+        member_ids = set(db.scalars(matching))
+        locked = db.execute(matching.add_columns(RadarWorkItem.state).with_for_update(skip_locked=True)).all()
+        if len(locked) < len(member_ids):
+            raise _WindowWorkBusy
+        idle_ids = {wid for wid, state in locked if state != 'running'}
+        retain = member_ids - idle_ids
+        if retain:
+            db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
+                RadarJobWork.work_id.in_(retain)).values(active=True, required=True))
+        for (cutoff, receipt), keys in completed.items():
+            finish = update(RadarWorkItem).where(RadarWorkItem.work_key.in_(keys),
+                RadarWorkItem.reason.is_distinct_from(CONFLICT), RadarWorkItem.id.in_(idle_ids))
+            if receipt:
+                state, reason = receipt
+                finish = finish.where(RadarWorkItem.run_date <= job.run_date).values(
+                    result={'settled_by': {'evaluation_as_of_date': cutoff, 'state': state, 'reason': reason}})
+            else:
+                # Passing today's ordinary inventory cannot certify shared work
+                # from before the result. Its original job must verify the later proof.
+                finish = finish.where(RadarWorkItem.run_date >= date.fromisoformat(cutoff)
+                                      if cutoff else RadarWorkItem.run_date == job.run_date)
+            db.execute(finish.values(state='ready', reason=None, retry_at=None))
         db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
             RadarJobWork.active.is_(True), RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(
-                RadarWorkItem.work_key.in_(completed_keys), RadarWorkItem.state != 'running',
-                RadarWorkItem.reason.is_distinct_from(CONFLICT))))
+                RadarWorkItem.id.in_(idle_ids), RadarWorkItem.reason.is_distinct_from(CONFLICT))))
             .values(active=False))
     latest_calendar = load_calendar(db, start_date=start, as_of_date=job.run_date)
     if (inventory_input_revision(db, as_of_date=job.run_date) != inputs or latest_calendar is None
             or latest_calendar.payload() != calendar.payload()):
-        # A page must not certify mixed input epochs. Keep work/attempt history,
-        # retire this intent's memberships, and restart within the next budget.
-        db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
-            RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'window'))).values(active=False))
-        scope.pop('window_plan', None)
-        scope['window_planning'] = {'state': 'planning', 'revision': None, 'cursor': None,
-                                   'complete': False, 'processed_candidates': 0}
-        return
+        raise _WindowInputsChanged
     if page:
         progress['cursor'] = page[-1]
     progress['processed_candidates'] += len(page)
@@ -545,7 +604,7 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
     if audit and required_done and not radar:
         from ai_stock_sentinel.daily_radar.readiness import read_readiness
         after = scope.get('window_due_after')
-        report = read_readiness(db, run_date=job.run_date, scope='validation', **({'due_after': after} if after else {}))
+        report = read_readiness(db, run_date=job.run_date, scope='validation', settle_later_results=True, **({'due_after': after} if after else {}))
         lanes = [report['validation'][lane] for lane in job.lanes]
         ready = (all(lane['calendar_ready'] and lane['due_interval']['unresolved_count'] == 0 for lane in lanes)
                  if after else all(lane['ready'] for lane in lanes))
@@ -556,7 +615,7 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
     elif audit and required_done:
         from ai_stock_sentinel.daily_radar.readiness import read_readiness
         report = read_readiness(db, run_date=job.run_date,
-            audit_completed_score=audit_completed_score, **(
+            audit_completed_score=audit_completed_score, settle_later_results=True, **(
             {'scope': 'publication'} if not set(job.lanes) & {'signal_close', 'next_open'} else {}))
         scope['audit'] = {'observed_at': now.isoformat(), 'data_ready': report['data_ready'],
             'publication': report['publication'], 'validation': report['validation']}
@@ -599,6 +658,10 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
     due = [max(aware(w.retry_at), aware(w.not_before)) for w, _ in members if w.state in {'pending', 'waiting_provider'} and w.retry_at]
     due += [aware(w.lease_expires_at) for w, _ in members if w.state == 'running']
     if planning_remaining(job, scope):
+        due.append(now)
+    elif audit and required_done and not scope.get('intent_complete') and any(
+            lane in job.lanes and report_lane.get('reasons', {}).get('validation_result_locked')
+            for lane, report_lane in scope['audit']['validation'].items()):
         due.append(now)
     job.next_attempt_at = min(due) if due else now + timedelta(hours=1)
     job.last_advanced_at = now

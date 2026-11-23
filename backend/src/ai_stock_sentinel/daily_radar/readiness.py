@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date, timedelta
+from functools import lru_cache
 
 from fastapi import HTTPException
 from sqlalchemy import select, func, inspect
@@ -26,7 +27,7 @@ from ai_stock_sentinel.daily_radar.repository import (
 from ai_stock_sentinel.daily_radar.research_validation import (
     RESEARCH_VALIDATION_VERSION, RESEARCH_TERMINAL_REASONS, RESEARCH_PRICE_BASIS,
 )
-from ai_stock_sentinel.daily_radar.trading_calendar import load_calendar
+from ai_stock_sentinel.daily_radar.trading_calendar import CalendarEvidenceIndex, load_calendar, stored_calendars
 from ai_stock_sentinel.daily_radar.terminal_integrity import terminal_evidence_matches
 from ai_stock_sentinel.daily_radar.validation_inputs import (
     validation_candidate_revision, validation_inputs_match, UNVERIFIED,
@@ -40,9 +41,9 @@ def recovery_action(reason):
     if reason in {"conflicting_price_records", "adjusted_history_changed", "price_basis_mismatch",
                   "research_basis_mismatch", "terminal_evidence_unverified", "calendar_evidence_conflict",
                   "signal_price_anchor_mismatch", "adjustment_factor_unverified", "official_corporate_action_in_window",
-                  'calendar_window_unverified', UNVERIFIED}:
+                  'calendar_window_unverified', 'newer_validation_result_preserved', UNVERIFIED}:
         return "needs_review"
-    if reason in {"research_recovery_budget_exhausted", "budget_exhausted"}:
+    if reason in {"research_recovery_budget_exhausted", "budget_exhausted", "validation_result_locked"}:
         return "resume"
     if reason in {"missing_observation_diagnostic", "observation_diagnostic_incomplete"}:
         return "repair_diagnostic"
@@ -110,7 +111,8 @@ def classify_window(candidate, row, *, basis, window, as_of_date, calendar, requ
     return state, reason, target
 
 
-def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=None, include_gap_revision=False):
+def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=None, include_gap_revision=False,
+                    settle_later_results=False, lock_later_results=False):
     """Yield every expected window, including absent outcomes and diagnostics.
 
     Scope is explicit. No price-derived fallback can prove a missing window is
@@ -123,26 +125,51 @@ def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=Non
     calendar = load_calendar(session, start_date=first, as_of_date=as_of_date)
     calendar_ready = calendar is not None and calendar.through >= as_of_date
     versions = {"signal_close": FORWARD_VALIDATION_VERSION, "next_open": RESEARCH_VALIDATION_VERSION}
+
+    from ai_stock_sentinel.daily_radar.later_validation import later_window_evidence, later_results
+    later_rows = later_results(session, candidates,
+        versions=versions.values(), windows=DAILY_RADAR_VALIDATION_WINDOWS, cutoff=as_of_date,
+        lock=lock_later_results) if settle_later_results else {}
+
+    @lru_cache(maxsize=8)
+    def later_calendars(cutoff):
+        return CalendarEvidenceIndex(stored_calendars(session, as_of_date=cutoff))
+
     for basis, version in versions.items():
         active = candidates if basis == "signal_close" else [c for c in candidates
             if c["selection_status"] == "selected"
             or (c["selection_status"] == "shadow" and c["shadow_cohort"] == "comparable")]
         saved = {(r["candidate_id"], r["window_days"]): r for r in persisted_forward_validation_outcomes(
             session, active, windows=DAILY_RADAR_VALIDATION_WINDOWS,
-            as_of_date=as_of_date, validation_version=version)
-            if not r.get("evaluation_as_of_date") or r["evaluation_as_of_date"] <= str(as_of_date)}
+            as_of_date=as_of_date, validation_version=version, evaluated_by_cutoff=True)}
         for candidate in active:
             signal = date.fromisoformat(candidate["record_date"])
             for window in DAILY_RADAR_VALIDATION_WINDOWS:
                 row = saved.get((candidate["candidate_id"], window))
-                state, reason, target = classify_window(candidate, row, basis=basis, window=window,
+                later = later_rows.get((candidate['candidate_id'], window, version))
+                state, reason, target = classify_window(candidate, None if later else row, basis=basis, window=window,
                     as_of_date=as_of_date, calendar=calendar)
+                settlement = None
+                if later and state == 'missing_outcome' and later.get('unavailable'):
+                    state, reason = 'retryable', 'validation_result_locked'
+                elif later and state == 'missing_outcome':
+                    cutoff = date.fromisoformat(later['evaluation_as_of_date'])
+                    settlement = later_window_evidence(candidate, later, basis=basis, window=window, calendar=calendar,
+                        target=target, later_calendar=later_calendars(cutoff).for_signal(signal))
+                    if settlement:
+                        state, reason = settlement['state'], settlement['reason']
+                    else:
+                        state, reason = 'input_unverified', 'newer_validation_result_preserved'
                 item = {"candidate_id": candidate["candidate_id"], "symbol": candidate["symbol"],
                     "candidate_revision": validation_candidate_revision(candidate),
                     "calendar_revision": fingerprint([str(d) for d in calendar.sessions if signal <= d <= target]) if target else None,
                     "signal_date": str(signal), "return_basis": basis, "validation_version": version,
                     "window_days": window, "expected_target_date": str(target) if target else None,
                     "state": state, "reason": reason, "next_action": recovery_action(reason) if reason else None}
+                if settlement:
+                    item['settled_by'] = settlement
+                elif settle_later_results and row and state in {'terminal', 'validated'}:
+                    item['result_as_of_date'] = row.get('evaluation_as_of_date')
                 if include_gap_revision and state not in {"validated", "terminal", "immature"}:
                     item["gap_revision"] = fingerprint({
                         "status": row["status"] if row else None,
@@ -153,7 +180,8 @@ def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=Non
                 yield item
 
 
-def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100, known_hashes=None, due_after=None):
+def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100, known_hashes=None, due_after=None,
+                         settle_later_results=False):
     calendar = load_calendar(session, start_date=as_of_date, as_of_date=as_of_date)
     reports = {basis: {"validation_version": version, "counts": Counter(), "reasons": Counter(), "gaps": []}
         for basis, version in (("signal_close", FORWARD_VALIDATION_VERSION), ("next_open", RESEARCH_VALIDATION_VERSION))}
@@ -166,7 +194,8 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
         for report in reports.values():
             report['comparison'] = {'known': 0, 'new': 0}
     for item in inventory_items(session, as_of_date=as_of_date, lookback_days=lookback_days,
-                                include_gap_revision=sample_limit is None or known_hashes is not None):
+                                include_gap_revision=sample_limit is None or known_hashes is not None,
+                                settle_later_results=settle_later_results, lock_later_results=settle_later_results):
         report = reports[item["return_basis"]]
         report["counts"][item["state"]] += 1
         if item["state"] not in {"validated", "terminal", "immature"}:
@@ -263,13 +292,14 @@ def _live_margin_blocker(blocker):
 
 
 def read_readiness(session, *, run_date: date, lookback_days=365, include_all_validation_gaps=False,
-                   scope='all', audit_completed_score=False, due_after=None):
+                   scope='all', audit_completed_score=False, due_after=None, settle_later_results=False):
     """Caller holds a read-only/no-autoflush session; never fetches providers."""
     if scope == 'validation':
         return {'version': 'radar-readiness-v1', 'scope': scope, 'market': 'TW',
                 'requested_run_date': str(run_date), 'effective_run_date': str(run_date),
                 'validation': validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
-                    sample_limit=None if include_all_validation_gaps else 100, due_after=due_after), 'data_ready': None}
+                    sample_limit=None if include_all_validation_gaps else 100, due_after=due_after,
+                    settle_later_results=settle_later_results), 'data_ready': None}
     if scope not in {'all', 'publication'}:
         raise ValueError('invalid_readiness_scope')
     from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
@@ -282,7 +312,8 @@ def read_readiness(session, *, run_date: date, lookback_days=365, include_all_va
         DailyRadarCandidate.run_id == run.id, DailyRadarCandidate.selection_status == "selected")) if run else None
     output_complete = bool(run and stored_selected_count == run.candidate_count)
     validation = (validation_inventory(session, as_of_date=run_date, lookback_days=lookback_days,
-                                      sample_limit=None if include_all_validation_gaps else 100)
+                                      sample_limit=None if include_all_validation_gaps else 100,
+                                      settle_later_results=settle_later_results)
                   if scope == 'all' else {})
     input_summary = None
     if run and snapshots_enabled():

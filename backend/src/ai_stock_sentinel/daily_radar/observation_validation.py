@@ -151,6 +151,30 @@ def evaluate_observation(candidate: Mapping[str, Any], *, price_series: Sequence
     return result
 
 
+def complete_window_diagnostic(candidate, diagnostic, sessions):
+    """Check the event day and waiting-risk fields consumed by the observation report."""
+    status = diagnostic.get('status')
+    if status in {'already_broken_out', 'already_invalidated'}:
+        immediate = evaluate_observation(candidate, price_series=(), benchmark_prices=(),
+            window_days=len(sessions), as_of_date=sessions[-1])
+        return immediate['status'] == status and all(diagnostic.get(key) is None for key in (
+            'confirmation_date', 'invalidation_date', 'waiting_end_date', 'lead_trading_days',
+            'waiting_max_adverse_excursion_pct'))
+    waiting = parse_date(diagnostic.get('waiting_end_date'))
+    adverse = diagnostic.get('waiting_max_adverse_excursion_pct')
+    if waiting not in sessions or type(adverse) not in (int, float) or number(adverse) is None or adverse > 0:
+        return False
+    confirmed = parse_date(diagnostic.get('confirmation_date'))
+    invalidated = parse_date(diagnostic.get('invalidation_date'))
+    if status == 'confirmed':
+        lead = diagnostic.get('lead_trading_days')
+        return (confirmed == waiting and invalidated is None and type(lead) is int
+                and lead >= 2 and lead == sessions.index(waiting) + 1)
+    if status == 'invalidated':
+        return invalidated == waiting and confirmed is None
+    return status == 'unconfirmed' and waiting == sessions[-1] and confirmed is None and invalidated is None
+
+
 def observation_report(candidates: Sequence[Mapping[str, Any]], outcomes: Sequence[Mapping[str, Any]],
                        windows: Sequence[int], *, as_of_date: date | None,
                        benchmark_prices: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:

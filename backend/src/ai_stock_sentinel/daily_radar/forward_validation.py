@@ -875,6 +875,7 @@ def persisted_forward_validation_outcomes(
     windows: Sequence[int],
     as_of_date: date,
     validation_version: str = FORWARD_VALIDATION_VERSION,
+    evaluated_by_cutoff: bool = False,
 ) -> list[dict[str, Any]]:
     candidate_by_id = {
         int(candidate["candidate_id"]): dict(candidate)
@@ -885,7 +886,7 @@ def persisted_forward_validation_outcomes(
         return []
     active_windows = _ordered_positive_values(windows)
     model = DailyRadarForwardValidationResult
-    results = session.execute(
+    query = (
         select(model.candidate_id, model.signal_date, model.window_days, model.validation_version,
                model.benchmark_symbol, model.evaluation_as_of_date, model.status, model.target_date,
                model.skip_reason, _summary_outcome(model.outcome, session.get_bind().dialect.name).label('outcome'),
@@ -901,6 +902,9 @@ def persisted_forward_validation_outcomes(
             DailyRadarForwardValidationResult.window_days.asc(),
         )
     )
+    if evaluated_by_cutoff:
+        query = query.where(or_(model.evaluation_as_of_date.is_(None), model.evaluation_as_of_date <= as_of_date))
+    results = session.execute(query)
     outcomes: list[dict[str, Any]] = []
     for result in results:
         candidate = candidate_by_id[result.candidate_id]
