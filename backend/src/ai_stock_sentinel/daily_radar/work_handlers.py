@@ -260,6 +260,7 @@ class WorkHandlers:
         from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs, upsert_forward_validation_results, persisted_forward_validation_outcomes, forward_validation_result_revision
         from ai_stock_sentinel.db.models import DailyRadarForwardValidationResult
         from ai_stock_sentinel.daily_radar.readiness import classify_window, recovery_action, validation_candidate_revision
+        from ai_stock_sentinel.daily_radar.later_validation import later_results, later_window_evidence
         from ai_stock_sentinel.daily_radar.validation_preparation import ValidationAcceptanceConflict
         scope = claim.scope
         signal, asof = date.fromisoformat(scope['signal_date']), date.fromisoformat(scope['as_of_date'])
@@ -285,18 +286,39 @@ class WorkHandlers:
                 DailyRadarForwardValidationResult.validation_version == scope['validation_version'])
                 .execution_options(populate_existing=True))
             return db.scalar(query.with_for_update() if lock else query)
+        existing = result_row(self.db)
         expected = {(scope['candidate_id'], scope['window_days'], scope['validation_version']):
-                    forward_validation_result_revision(result_row(self.db))}
-        provider = (CachedForwardPrices(self.db, store=self.store) if scope['return_basis'] == 'signal_close'
-                    else RecoveringResearchPriceProvider(session=self.db, source_store=self.store))
-        from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector
-        official_provider = (RecoveringResearchPriceProvider(session=None, source_store=self.store)
-                             if scope['return_basis'] == 'signal_close' else provider)
-        execute = run_signal_close_validation if scope['return_basis'] == 'signal_close' else run_research_validation
-        bundle = execute(self.db, request, as_of_date=asof, price_provider=provider,
-            calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar), candidate_ids=[scope['candidate_id']],
-            prepare_only=True, official_price_collector=OfficialPriceCollector(official_provider))
-        revision = [validation_candidate_revision(c) for c in bundle.candidates]
+                    forward_validation_result_revision(existing)}
+        bundle = None
+        if existing is None or not existing.evaluation_as_of_date or existing.evaluation_as_of_date <= asof:
+            provider = (CachedForwardPrices(self.db, store=self.store) if scope['return_basis'] == 'signal_close'
+                        else RecoveringResearchPriceProvider(session=self.db, source_store=self.store))
+            from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector
+            official_provider = (RecoveringResearchPriceProvider(session=None, source_store=self.store)
+                                 if scope['return_basis'] == 'signal_close' else provider)
+            execute = run_signal_close_validation if scope['return_basis'] == 'signal_close' else run_research_validation
+            bundle = execute(self.db, request, as_of_date=asof, price_provider=provider,
+                calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar), candidate_ids=[scope['candidate_id']],
+                prepare_only=True, official_price_collector=OfficialPriceCollector(official_provider))
+        revision = [validation_candidate_revision(c) for c in (bundle.candidates if bundle else candidates)]
+
+        def settle_later(db, existing, current, latest):
+            cutoff = existing.evaluation_as_of_date
+            # Claims predating the immutable window identity cannot certify a handoff.
+            evidence = None
+            if (scope.get('candidate_revision') == revision[0] and scope.get('calendar_revision') == calendar_revision
+                    and target and scope.get('expected_target_date') == str(target)):
+                rows = later_results(db, current, windows=request.windows,
+                    cutoff=asof, versions=[scope['validation_version']])
+                if row := rows.get((scope['candidate_id'], scope['window_days'], scope['validation_version'])):
+                    evidence = later_window_evidence(current[0], row, basis=scope['return_basis'],
+                        window=scope['window_days'], calendar=latest, target=target,
+                        later_calendar=load_calendar(db, start_date=signal, as_of_date=cutoff))
+            if evidence:
+                return {'state': 'ready', 'result': {'settled_by': evidence}}
+            return {'state': 'needs_review', 'reason': 'newer_validation_result_preserved',
+                    'result': {'manual_repair_required': True}}
+
         def apply(db):
             from ai_stock_sentinel.daily_radar.input_manifests import serialize_publication
             serialize_publication(db, market='TW', run_date=signal)
@@ -304,9 +326,14 @@ class WorkHandlers:
             current = [c for c in current if c['candidate_id'] == scope['candidate_id']]
             latest = load_calendar(db, start_date=signal, as_of_date=asof)
             latest_revision = fingerprint([str(d) for d in latest.sessions if signal <= d <= target]) if latest and target else None
-            if [validation_candidate_revision(c) for c in current] != revision or latest is None or latest.through < asof or latest_revision != calendar_revision:
+            if (len(current) != 1 or [validation_candidate_revision(c) for c in current] != revision
+                    or latest is None or latest.through < asof or latest_revision != calendar_revision):
                 raise LostLease('radar_window_inputs_changed')
             existing = result_row(db, lock=True)
+            if bundle is None:
+                if existing is None or not existing.evaluation_as_of_date or existing.evaluation_as_of_date <= asof:
+                    raise LostLease('radar_window_inputs_changed')
+                return settle_later(db, existing, current, latest)
             from ai_stock_sentinel.daily_radar.trading_status import CONFLICT, suspension_conflicts
             conflicts = [
                 {'candidate_id': scope['candidate_id'], 'window_days': scope['window_days'],
@@ -318,8 +345,7 @@ class WorkHandlers:
                 return {'state': 'needs_review', 'reason': CONFLICT,
                         'result': {'conflicts': conflicts, 'manual_repair_required': True}}
             if existing is not None and existing.evaluation_as_of_date and existing.evaluation_as_of_date > asof:
-                return {'state': 'needs_review', 'reason': 'newer_validation_result_preserved',
-                        'result': {'manual_repair_required': True}}
+                return settle_later(db, existing, current, latest)
             before = persisted_forward_validation_outcomes(db, current, windows=request.windows, as_of_date=asof,
                 validation_version=scope['validation_version'])
             for saved in before:
@@ -337,8 +363,7 @@ class WorkHandlers:
                         'result': {'manual_repair_required': True}}
             accepted = result_row(db)
             if accepted is not None and accepted.evaluation_as_of_date and accepted.evaluation_as_of_date > asof:
-                return {'state': 'needs_review', 'reason': 'newer_validation_result_preserved',
-                        'result': {'manual_repair_required': True}}
+                return settle_later(db, accepted, current, latest)
             save_calendar(db, calendar)
             db.flush()
             saved = persisted_forward_validation_outcomes(db, current, windows=request.windows, as_of_date=asof,

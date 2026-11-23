@@ -18,6 +18,8 @@ Daily Radar 的執行狀態、當日發布、兩種歷史 validation 與輔助�
 
 公開觀察診斷與兩種 validation 的 pool 統計，只有在可信日曆涵蓋信號日至查詢截止日、且未滿指定交易日數時，才將缺結果或已保存的 `skipped / window_not_mature` 歸為未成熟。窗口成熟後，舊 `window_not_mature` 重新列為待補缺口；其他失敗、已驗證結果及缺診斷不因較窄日曆而被隱藏。此分類只影響讀取，不改寫歷史結果。
 
+較新日期已有驗證結果時，durable validation 會分別核對舊待辦的候選輸入、兩個截止日所見的交易窗口、報酬口徑與已保存的結果證據。核對通過後，待辦記錄接手結果的截止日與結案原因；證據不足時維持 `needs_review`。這項判定只用於佇列及其完成檢查，依原截止日查詢的歷史報告仍呈現當時可用的結果。
+
 Legacy 的 signal_close／next_open 驗證在收集階段凍結完整 candidate／origin revision 與各窗口結果的 preimage（包含不存在的結果），取資料時不持有接受交易。接受時依 relation → result → prepared 的順序鎖定，在短交易內重新核對 canonical candidate、輸入版本、結果版本與計算截止日，再以 SAVEPOINT 原子保存結果與日曆。輸入變更回 HTTP 409 `validation_inputs_changed`，結果變更回 `validation_results_changed`，一般驗證遇到較新截止日則回 `newer_validation_result_preserved`；整批不寫入，也不回 `completed`。重跑須重新收集現況，正常且版本未變的 range 重算仍允許；已審核歷史覆寫仍走既有補修流程。Durable worker 保留原本的 lease 與接受版本保護。
 
 Workflow 以不同 lane 回報 publication、signal_close、next_open；repair 最後仍對整體完整度檢查。可讀取摘要與保存的 JSON 追查缺口，而非將 validation 缺口誤判為當日 scoring 失敗。
