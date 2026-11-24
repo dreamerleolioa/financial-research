@@ -329,7 +329,7 @@ def run_daily_radar_forward_validation_endpoint(
     from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector
     from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
 
-    collector = (OfficialPriceCollector(research_price_provider)
+    collector = (OfficialPriceCollector(research_price_provider, return_basis=request.return_basis)
                  if request.market == "TW" and request.benchmark_symbol == "TAIEX"
                  and request.conflict_recovery_symbols is None and snapshots_enabled() else None)
     if request.return_basis == "next_open":

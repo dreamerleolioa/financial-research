@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.calibration import twse_rights_recovery as twse
 from ai_stock_sentinel.calibration.price_provider import YFinanceForwardPriceProvider
-from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider
+from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider, ResearchSourceError
 from ai_stock_sentinel.daily_radar import history_repair, next_open_history_repair
 from ai_stock_sentinel.daily_radar.evidence_batches import evidence_batches
 from ai_stock_sentinel.daily_radar.forward_validation import forward_validation_candidates_from_runs
@@ -349,6 +349,9 @@ class BatchResearchPrices(RecoveringResearchPriceProvider):
         failure = self.market_prices.failed_reports.get(digest)
         if failure is not None:
             self.report_errors.append(dict(failure, repeated=True))
+            if 'retryable' in failure:
+                raise ResearchSourceError(failure['reason'], retryable=failure['retryable'], http_status=failure['http_status'],
+                                          retry_after=failure['retry_after'])
             raise ValueError('exchange_report_fetch_failed')
         refresh = self.market_prices.refresh and digest not in self.market_prices.refreshed_reports
         after = datetime.combine(self.market_prices.cutoff, time(13, 30), ZoneInfo('Asia/Taipei'))
@@ -390,6 +393,9 @@ class BatchResearchPrices(RecoveringResearchPriceProvider):
                 'http_status': getattr(exc, 'http_status', None),
                 'budget_limit': self.budget_limit,
             }
+            if isinstance(exc, (ResearchSourceError, OSError)):
+                failure.update(reason=str(exc), retryable=getattr(exc, 'retryable', isinstance(exc, OSError)),
+                               retry_after=getattr(exc, 'retry_after', None))
             self.report_errors.append(failure)
             if refresh and entry is None:
                 covering = self.market_prices.covering_report(request, errors=self.report_errors)
@@ -569,7 +575,7 @@ def prepare_batch(engine, batch, calendar, prices, official):
             prepare_only=True,
             calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar),
             price_provider=prices if basis == 'signal_close' else official,
-            official_price_collector=OfficialPriceCollector(official),
+            official_price_collector=OfficialPriceCollector(official, return_basis=basis),
         )
     rows = [r for r in bundle.outcomes if key(r) in wanted]
     if len(rows) != len(wanted) or {key(r) for r in rows} != wanted:

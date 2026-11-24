@@ -55,7 +55,8 @@ def terminal_evidence_matches(candidate, row, *, basis, sessions, as_of_date):
         from ai_stock_sentinel.daily_radar import signal_action_evidence
         return (row.get('status') == 'skipped' and evaluation >= target and parse_date(row.get('target_date')) == target
                 and signal_action_evidence.matches(payload.get(signal_action_evidence.KEY), reason,
-                                                   candidate['symbol'], list(map(str, [signal, *sessions]))))
+                                                   candidate['symbol'], list(map(str, [signal, *sessions])),
+                                                   published_close=((candidate.get('input_snapshot') or {}).get('ohlcv') or {}).get('close')))
     if (basis != 'next_open' or payload.get('return_basis') != 'next_open'
             or payload.get('price_basis') != 'unadjusted_price' or evaluation < target
             or parse_date(payload.get('expected_target_date')) != target):

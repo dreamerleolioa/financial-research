@@ -608,15 +608,15 @@ def upsert_forward_validation_results(
             run_date,
             str(benchmark_symbol or DEFAULT_BENCHMARK_SYMBOL),
             symbol,
-            market,
+            market, published_close,
         )
-        for candidate_id, run_date, benchmark_symbol, symbol, market in session.execute(
+        for candidate_id, run_date, benchmark_symbol, symbol, market, published_close in session.execute(
             select(
                 DailyRadarCandidate.id,
                 DailyRadarRun.run_date,
                 _candidate_benchmark_column(),
                 DailyRadarCandidate.symbol,
-                DailyRadarRun.market,
+                DailyRadarRun.market, DailyRadarCandidate.input_snapshot["ohlcv"]["close"].as_string(),
             )
             .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)
             .where(DailyRadarCandidate.id.in_(candidate_ids))
@@ -642,7 +642,7 @@ def upsert_forward_validation_results(
             raise ValueError(
                 f"Daily Radar validation candidate {candidate_id} does not exist"
             )
-        expected_signal_date, expected_benchmark_symbol, candidate_symbol, candidate_market = candidate_identity
+        expected_signal_date, expected_benchmark_symbol, candidate_symbol, candidate_market, published_close = candidate_identity
         if (
             signal_date != expected_signal_date
             or benchmark_symbol != expected_benchmark_symbol
@@ -693,13 +693,13 @@ def upsert_forward_validation_results(
                                            if incoming_cutoff else None)
             if signal_terminal and (outcome["validation_version"] != FORWARD_VALIDATION_VERSION or benchmark_symbol != "TAIEX"
                     or candidate_market != "TW" or not matches_calendar(outcome, action_calendar, symbol=candidate_symbol,
-                                                                         signal=signal_date, cutoff=incoming_cutoff)):
+                                                                         signal=signal_date, cutoff=incoming_cutoff, published_close=published_close)):
                 raise ValueError("invalid_signal_action_evidence")
             if saved_terminal:
                 saved = {"status": existing.status, "target_date": existing.target_date, "window_days": existing.window_days,
                          "skip_reason": existing.skip_reason, "outcome": existing.outcome}
                 saved_terminal = matches_calendar(saved, action_calendar, symbol=candidate_symbol,
-                                                  signal=signal_date, cutoff=existing.evaluation_as_of_date)
+                                                  signal=signal_date, cutoff=existing.evaluation_as_of_date, published_close=published_close)
             if signal_terminal and existing is not None and existing.skip_reason == "conflicting_price_records":
                 preserved_conflicts.append({"candidate_id": candidate_id, "window_days": outcome["window_days"],
                                             "target_date": str(existing.target_date), "reason": existing.skip_reason})
@@ -1008,7 +1008,8 @@ def exclude_persisted_daily_radar_windows(
     def complete_window(row):
         if validation_version == FORWARD_VALIDATION_VERSION and row['skip_reason'] in corporate_actions.TERMINAL_REASONS:
             from ai_stock_sentinel.daily_radar.signal_action_evidence import matches_calendar
-            return matches_calendar(row, calendar, symbol=row['symbol'], signal=row['run_date'], cutoff=row['evaluation_as_of_date'])
+            return matches_calendar(row, calendar, symbol=row['symbol'], signal=row['run_date'], cutoff=row['evaluation_as_of_date'],
+                                    published_close=row['published_close'])
         if row['skip_reason'] == 'target_session_suspended':
             from ai_stock_sentinel.daily_radar.trading_status import KEY, matches
             from ai_stock_sentinel.daily_radar.trading_status import expected_target
@@ -1043,6 +1044,7 @@ def exclude_persisted_daily_radar_windows(
                 DailyRadarCandidate.symbol,
                 DailyRadarRun.run_date,
                 _candidate_benchmark_column().label("candidate_benchmark"),
+                DailyRadarCandidate.input_snapshot["ohlcv"]["close"].as_string().label("published_close"),
             )
             .join(DailyRadarCandidate, DailyRadarForwardValidationResult.candidate_id == DailyRadarCandidate.id)
             .join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id)

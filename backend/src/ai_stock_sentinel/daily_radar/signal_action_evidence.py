@@ -12,6 +12,7 @@ from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 
 KEY = "signal_close_action_evidence"
 VERSION = "signal-close-exchange-action-v1"
+MIXED_VERSION = "signal-close-mixed-distribution-v2"
 
 
 def _covers_sources(sources, reason, symbol, day, halt, dates):
@@ -143,17 +144,22 @@ def _reported_action(proof, symbol, day, reason, dates):
             else actions._tpex_reduction(symbol, effective, row)
         )
         return _action_event(symbol, action) if action else None
-    if row["權/息"] not in {"權", "除權"} or listed and row["詳細資料"] != f"{code},{effective:%Y%m%d}":
+    notices = {"權", "除權", "權息"} if listed else {"權", "除權"}
+    if row["權/息"] not in notices or listed and row["詳細資料"] != f"{code},{effective:%Y%m%d}":
         return None
     terms = read_terms(symbol, effective, row, source, capture)
     if not terms or terms["kind"] != "stock_distribution":
         return None
+    return _distribution_action(symbol, day, actions._numeric(row["除權息前收盤價"]), terms)
+
+
+def _distribution_action(symbol, day, previous_close, terms):
     return {
         "symbol": symbol,
         "effective_date": day,
-        "cash_per_share": 0,
+        "cash_per_share": terms.get("cash_per_share", 0),
         "halt_start": None,
-        "previous_close": actions._numeric(row["除權息前收盤價"]),
+        "previous_close": previous_close,
         "share_ratio": 1 + terms["free_shares_per_thousand"] / 1000,
     }
 
@@ -187,14 +193,7 @@ def classify_action(candidate, sessions, official):
         action = event.get("action") or {}
         reason = actions.CASH_REDUCTION_HALT
     elif event["family"] == "rights" and terms.get("kind") == "stock_distribution":
-        action = {
-            "symbol": symbol,
-            "effective_date": effective,
-            "cash_per_share": 0,
-            "halt_start": None,
-            "previous_close": event["previous_close"],
-            "share_ratio": 1 + terms["free_shares_per_thousand"] / 1000,
-        }
+        action = _distribution_action(symbol, effective, event["previous_close"], terms)
         reason = actions.STOCK_DISTRIBUTION
     else:
         return None
@@ -224,8 +223,9 @@ def classify_action(candidate, sessions, official):
     distinct = {r["source_url"]: r for r in receipts}
     if any(r["snapshot_sha256"] != distinct[r["source_url"]]["snapshot_sha256"] for r in receipts):
         return None
+    mixed = reason == actions.STOCK_DISTRIBUTION and action["cash_per_share"] > 0
     proof = {
-        "version": VERSION,
+        "version": MIXED_VERSION if mixed else VERSION,
         "reason": reason,
         "action": action,
         "action_reports": {
@@ -239,14 +239,26 @@ def classify_action(candidate, sessions, official):
         "stock_closes": {r["date"]: r["close"] for r in stock},
         "sources": [distinct[k] for k in sorted(distinct)],
     }
+    if mixed:
+        from ai_stock_sentinel.daily_radar.mixed_distribution_evidence import MARKET_PATHS, PRICE_PATHS
+        proof["action_reports"] = {
+            r.source["source_url"]: r.payload for r in official.report_sources
+            if r.start_date <= dates[-1] and dates[0] <= r.end_date
+            and (urlsplit(r.source["source_url"]).path in MARKET_PATHS
+                 or r.detail and r.start_date == effective and urlsplit(r.source["source_url"]).path == twse.RIGHTS_DETAIL)
+        }
+        proof["price_reports"] = {url: official.price_reports.get(url) for url in distinct if urlsplit(url).path in PRICE_PATHS}
+        proof["sources"] = [r for r in proof["sources"] if r["source_url"] in proof["action_reports"]
+                            or r["source_url"] in proof["price_reports"]]
     proof["sha256"] = fingerprint(proof)
-    if matches(proof, reason, symbol, dates):
+    if matches(proof, reason, symbol, dates, published_close=anchor):
         return reason, proof
     return None
 
 
-def matches(proof, reason, symbol, dates):
-    if not isinstance(proof, dict) or proof.get("version") != VERSION or reason != proof.get("reason"):
+def matches(proof, reason, symbol, dates, *, published_close=None):
+    if (not isinstance(proof, dict) or proof.get("version") not in (VERSION, MIXED_VERSION)
+            or reason != proof.get("reason")):
         return False
     if proof.get("sha256") != fingerprint({k: v for k, v in proof.items() if k != "sha256"}):
         return False
@@ -268,7 +280,11 @@ def matches(proof, reason, symbol, dates):
         or None in (ratio, cash, previous)
     ):
         return False
-    if reason == actions.CASH_REDUCTION_HALT:
+    if proof["version"] == MIXED_VERSION:
+        if not (reason == actions.STOCK_DISTRIBUTION and symbol.endswith(".TW")
+                and halt is None and ratio > 1 and 0 < cash < previous):
+            return False
+    elif reason == actions.CASH_REDUCTION_HALT:
         if not (halt in dates[1:] and halt < day and 0 < ratio < 1 and cash > 0):
             return False
     elif reason != actions.STOCK_DISTRIBUTION or halt is not None or ratio <= 1 or cash != 0:
@@ -276,9 +292,16 @@ def matches(proof, reason, symbol, dates):
     active = [d for d in dates if not halt or not halt <= d < day]
     closes = proof.get("stock_closes") or {}
     try:
-        if _reported_action(proof, symbol, day, reason, dates) != action:
+        replay = proof
+        if proof["version"] == MIXED_VERSION:
+            from ai_stock_sentinel.daily_radar.mixed_distribution_evidence import verified_action_reports
+            reports = verified_action_reports(proof, symbol, dates, number(published_close))
+            if not reports:
+                return False
+            replay = proof | {"action_reports": reports}
+        if _reported_action(replay, symbol, day, reason, dates) != action:
             return False
-    except (KeyError, ValueError, TypeError, IndexError, AttributeError, OverflowError):
+    except (KeyError, ValueError, TypeError, IndexError, AttributeError, ArithmeticError):
         return False
     return (
         _covers_sources(proof["sources"], reason, symbol, day, halt, dates)
@@ -291,7 +314,7 @@ def matches(proof, reason, symbol, dates):
     )
 
 
-def matches_calendar(row, calendar, *, symbol, signal, cutoff):
+def matches_calendar(row, calendar, *, symbol, signal, cutoff, published_close=None):
     from ai_stock_sentinel.calibration.forward_validation import parse_date
 
     if (
@@ -310,6 +333,6 @@ def matches_calendar(row, calendar, *, symbol, signal, cutoff):
             (row.get("outcome") or {}).get(KEY),
             row["skip_reason"],
             symbol,
-            list(map(str, [signal, *sessions])),
+            list(map(str, [signal, *sessions])), published_close=published_close,
         )
     )

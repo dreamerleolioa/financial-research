@@ -299,7 +299,8 @@ class WorkHandlers:
             execute = run_signal_close_validation if scope['return_basis'] == 'signal_close' else run_research_validation
             bundle = execute(self.db, request, as_of_date=asof, price_provider=provider,
                 calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar), candidate_ids=[scope['candidate_id']],
-                prepare_only=True, official_price_collector=OfficialPriceCollector(official_provider))
+                prepare_only=True, official_price_collector=OfficialPriceCollector(
+                    official_provider, return_basis=request.return_basis))
         revision = [validation_candidate_revision(c) for c in (bundle.candidates if bundle else candidates)]
 
         def settle_later(db, existing, current, latest):
