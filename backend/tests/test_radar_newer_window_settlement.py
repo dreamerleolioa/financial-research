@@ -233,7 +233,8 @@ def test_contended_settlement_keeps_job_incomplete_until_rechecked(pg_engine, bu
             assert active(planner, job) == [work]
         if busy_row == 'result_during_replan':
             assert work.state == 'ready' and 'settled_by' in work.result
-            assert not job.scope['window_planning']['complete']
+            assert job.scope['window_planning']['complete']
+            assert not job.scope['window_result_audit']['complete']
         writer.rollback()
         reconcile_job(planner, job.id, now=NOW+timedelta(minutes=minute+1), audit=True)
         assert job.scope['intent_complete'] and work.state == 'ready'

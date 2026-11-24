@@ -569,6 +569,12 @@ React 前端 Daily Radar 頁定位為投資候選池，協助尋找與排序值�
 
 Phase 2A 另有獨立 workflow `.github/workflows/daily-radar-chip-context.yml`，可呼叫 `POST /internal/daily-radar/chip-context/update`。每日正式 Daily Radar pipeline 已把 `lending` / `full_margin` 拆成不同小時的 refresh endpoints，確保 FinMind 免費 token quota 不會被同一小時集中消耗；獨立 workflow 仍保留為 shared context 維護與週頻 `weekly_major_holders` 更新路徑。本機 script 只能作為除錯輔助，不是正式更新路徑。週頻 `weekly_major_holders` 在台灣時間週日 07:30 排程更新。
 
+#### Validation 續跑與稽核
+
+每輪 validation 續跑最多使用 150 次請求、20 分鐘。先讓各到期日獲得第一次一般請求，以便盤點或恢復資料來源。當多個日期仍可執行，每四次派工優先給最新日期兩次、最舊日期一次，另一次給本輪分配次數最少的日期。某日期暫時無法執行時，其他日期可使用空出的次數。後端保留一個一般執行位置與一個驗證窗口專用位置。支援批次的後端每次請求最多處理八個窗口。開始後滿 45 秒就停止領取下一個，進行中的窗口可繼續完成。每個窗口各自領取租約、核對證據並提交，逾時後可從尚未完成的窗口接續。
+
+初次盤點完成後，定期稽核保存自己的候選游標。跨輪稽核會保留已排入的窗口，候選輸入或交易日曆變更時才重新建立對應計畫。指定日期的 readiness 分別列出兩種報酬口徑當日到期數、其中已結案數、總缺口與最早尚未結案的目標日。交易日曆不足時，報表將當日到期數與結案數標為未知。續跑紀錄的 `settled_windows` 是該次工作收到伺服器確認的結案數。中斷時應以資料庫盤點核對剩餘量。
+
 ### 12.2 突破前觀察診斷
 
 現有 `daily-radar-forward-validation-v2` 的訊號日收盤價、5／10／20 交易日報酬、benchmark、MFE／MAE 定義維持原契約；Daily Radar 排程另擴充 40／60 日窗口並執行獨立的次日開盤研究口徑。Daily Radar adapter 在新 validated outcome 的 JSON 內另存 `observation_diagnostic`，其獨立版本為 `daily-radar-observation-v1`；一般分析 adapter 不加入此診斷，不新增資料表或 migration。

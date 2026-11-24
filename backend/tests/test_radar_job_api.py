@@ -22,6 +22,10 @@ def test_job_api_auth_capability_exact_date_and_allowlisted_scope(db,monkeypatch
         response=client.post('/internal/daily-radar/jobs',headers=headers,json={'run_date':'2026-11-06'})
         assert response.status_code==202 and response.json()['data_ready'] is False
         jid=response.json()['job_id']
+        advance = f'/internal/daily-radar/jobs/{jid}/advance'
+        for query in ('max_windows=2', 'owner=radar&max_windows=2',
+                      'owner=validation&max_windows=0', 'owner=validation&max_windows=9'):
+            assert client.post(advance + '?' + query, headers=headers).status_code == 422
         assert response.json()['requested_run_date']==response.json()['effective_run_date']=='2026-11-06'
         assert client.post('/internal/daily-radar/jobs',headers=headers,json={'run_date':'2026-11-06'}).json()['job_id']==jid
         assert client.get('/internal/daily-radar/jobs/999999',headers=headers).status_code==404

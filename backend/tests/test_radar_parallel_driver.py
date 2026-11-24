@@ -100,16 +100,17 @@ def test_failed_advance_spends_budget_and_is_journaled_before_post(tmp_path):
 def test_same_checkpoint_resume_accounts_for_an_interrupted_post(tmp_path):
     import json
     (tmp_path / 'jobs.json').write_text(json.dumps({
-        'status': 'in_progress', 'advanced_requests': 2,
+        'status': 'in_progress', 'advanced_requests': 2, 'settled_windows': 7,
         'in_flight': [{'job_id': '7', 'slot': 'normal', 'request_number': 2}],
     }))
     paths = []
     def write(url, token, payload, **kwargs):
         paths.append(url)
-        return status(url)
+        return status(url, settled_windows=3)
     result = exercise(tmp_path, write, limit=3, job_ids=('7', '8'))
     assert len(paths) == 1
     assert result['advanced_requests'] == 3
+    assert result['settled_windows'] == 10
     assert result['interrupted_requests'][0]['request_number'] == 2
 
 

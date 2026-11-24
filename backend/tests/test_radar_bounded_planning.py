@@ -334,7 +334,7 @@ def test_late_page_preserves_earliest_result_audit_for_repaired_outcomes(db):
     assert job.scope['window_inventory_audited_at'] == NOW.isoformat()
     jobs.reconcile_job(db, job.id, now=later)
     assert work.state == 'ready'
-    assert job.scope['window_planning']['processed_candidates'] == 5
+    assert job.scope['window_result_audit']['processed_candidates'] == 5
 
 
 def test_first_dated_validation_registers_due_windows_before_old_candidates(db):

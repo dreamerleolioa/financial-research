@@ -183,7 +183,8 @@ def inventory_items(session, *, as_of_date, lookback_days=365, candidate_ids=Non
 def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit=100, known_hashes=None, due_after=None,
                          settle_later_results=False):
     calendar = load_calendar(session, start_date=as_of_date, as_of_date=as_of_date)
-    reports = {basis: {"validation_version": version, "counts": Counter(), "reasons": Counter(), "gaps": []}
+    reports = {basis: {"validation_version": version, "counts": Counter(), "reasons": Counter(), "gaps": [],
+                       "flow": {"matured_on_run_date": 0, "settled_from_that_date": 0, "oldest_unresolved_target": None}}
         for basis, version in (("signal_close", FORWARD_VALIDATION_VERSION), ("next_open", RESEARCH_VALIDATION_VERSION))}
     from ai_stock_sentinel.daily_radar.planning_inventory import due_in_interval
     if due_after is not None:
@@ -198,8 +199,15 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
                                 settle_later_results=settle_later_results, lock_later_results=settle_later_results):
         report = reports[item["return_basis"]]
         report["counts"][item["state"]] += 1
+        flow = report["flow"]
+        target = item["expected_target_date"]
+        if target == str(as_of_date) and item["state"] not in {"immature", "unknown_maturity"}:
+            flow["matured_on_run_date"] += 1
+            flow["settled_from_that_date"] += int(item["state"] in {"validated", "terminal"})
         if item["state"] not in {"validated", "terminal", "immature"}:
             report["reasons"][item["reason"]] += 1
+            if target and (flow["oldest_unresolved_target"] is None or target < flow["oldest_unresolved_target"]):
+                flow["oldest_unresolved_target"] = target
             if due_after is not None and due_in_interval(item, due_after, as_of_date):
                 report['due_interval']['unresolved_count'] += 1
             if known_hashes is not None:
@@ -219,12 +227,16 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
                      "missing_outcome", "missing_diagnostic", "retryable", "input_unverified"):
             report[name + "_count"] = counts[name]
         gap_count = sum(report["reasons"].values())
+        report["flow"]["unresolved"] = gap_count
         report.update(ready=gap_count == 0, calendar_ready=bool(
             calendar and calendar.through >= as_of_date and not counts["unknown_maturity"]),
             expected_window_count=sum(counts.values()),
             mature_window_count=sum(counts.values()) - counts["immature"] - counts["unknown_maturity"],
             unresolved_count=gap_count, gaps_truncated=gap_count > len(report["gaps"]),
             reasons=dict(report["reasons"]))
+        report["flow"]["maturity_known"] = report["calendar_ready"]
+        if not report["calendar_ready"]:
+            report["flow"].update(matured_on_run_date=None, settled_from_that_date=None)
     return reports
 
 

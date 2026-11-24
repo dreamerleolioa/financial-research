@@ -1,6 +1,7 @@
-"""One bounded claim/collect/accept cycle. No background work after HTTP return."""
+"""Bounded foreground work, with a separate lease and commit for each claim."""
 from datetime import datetime, timedelta
 from copy import deepcopy
+from time import monotonic
 import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -69,7 +70,14 @@ def _reason(exc):
     return 'radar_provider_unavailable'
 
 
-def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner=None):
+MAX_VALIDATION_WINDOWS = 8
+BATCH_ADMISSION_SECONDS = 45
+
+
+def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner=None, max_windows=1):
+    if not 1 <= max_windows <= MAX_VALIDATION_WINDOWS or (max_windows > 1 and owner != 'validation'):
+        raise ValueError('radar_window_batch_scope_invalid')
+    deadline = monotonic() + BATCH_ADMISSION_SECONDS
     job = db.get(RadarJob, job_id)
     if job is None:
         raise ValueError('radar_job_not_found')
@@ -94,6 +102,32 @@ def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner
             reconcile_job(db, job_id, now=now, audit=True)
         status = job_status(db, job_id, include_observation=True) | {'advanced_count': 0, 'advance_slot_busy': busy}
         return status | observe_normal_slot(db, job_id, now)
+    advanced = settled = 0
+    while claim is not None:
+        state = _execute_claim(db, claim, handlers, now)
+        advanced += 1
+        settled += int(claim.stage == 'window' and state in {'ready', 'terminal'})
+        if (advanced >= max_windows or claim.stage != 'window' or state in (None, 'failed_internal', 'superseded')
+                or monotonic() >= deadline):
+            break
+        claim = claim_work(db, job_id=job_id, now=now, slot=slot, owner=owner, windows_only=True)
+        if claim is not None and monotonic() >= deadline:
+            db.rollback()
+            break
+        db.commit()
+    if not window_only and job.scope.get('inherit_cursor') is not None:
+        reconcile_job(db, job_id, now=now)
+        observation = observe_normal_slot(db, job_id, now)
+        return job_status(db, job_id, include_observation=True) | observation | {
+            'advanced_count': advanced, 'settled_windows': settled,
+            'handoff_advanced': True, 'advance_slot_busy': observation['normal_slot_busy']}
+    if not window_only:
+        reconcile_job(db, job_id, now=now, audit=True)
+    status = job_status(db, job_id, include_observation=True) | {'advanced_count': advanced, 'settled_windows': settled}
+    return status | observe_normal_slot(db, job_id, now)
+
+
+def _execute_claim(db, claim, handlers, now):
     try:
         # Domain acceptance owns db. Default collectors get a separate reader;
         # custom handlers using db remain subject to the same read-only guard.
@@ -135,6 +169,7 @@ def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner
             retry_at = max(retry_at, max(cooldowns, default=retry_at))
         finish_work(db, claim, state=state, result=result, reason=accepted.get('reason'), retry_at=retry_at, now=now)
         db.commit()
+        return state
     except LostLease as exc:
         db.rollback()
         # New input generation invalidates the old claim immediately; expiry
@@ -151,6 +186,7 @@ def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner
             db.commit()
         except LostLease:
             db.rollback()
+        return None
     except Exception as exc:
         db.rollback()
         reason = _reason(exc)
@@ -171,12 +207,5 @@ def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner
             db.commit()
         except LostLease:
             db.rollback()
-    if not window_only and job.scope.get('inherit_cursor') is not None:
-        reconcile_job(db, job_id, now=now)
-        observation = observe_normal_slot(db, job_id, now)
-        return job_status(db, job_id, include_observation=True) | observation | {
-            'advanced_count': 0, 'handoff_advanced': True, 'advance_slot_busy': observation['normal_slot_busy']}
-    if not window_only:
-        reconcile_job(db, job_id, now=now, audit=True)
-    status = job_status(db, job_id, include_observation=True) | {'advanced_count': 1}
-    return status | observe_normal_slot(db, job_id, now)
+            return None
+        return state

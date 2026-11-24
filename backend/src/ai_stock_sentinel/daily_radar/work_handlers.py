@@ -272,8 +272,8 @@ class WorkHandlers:
         calendar_revision = fingerprint([str(d) for d in calendar.sessions if signal <= d <= target]) if target else None
         if scope.get('calendar_revision') is not None and scope['calendar_revision'] != calendar_revision:
             raise LostLease('radar_window_inputs_changed')
-        candidates = forward_validation_candidates_from_runs(self.db, market='TW', start_date=signal, end_date=signal)
-        candidates = [c for c in candidates if c['candidate_id'] == scope['candidate_id']]
+        candidates = forward_validation_candidates_from_runs(self.db, market='TW', start_date=signal, end_date=signal,
+            candidate_ids=[scope['candidate_id']])
         if (len(candidates) != 1 or (scope.get('candidate_revision') is not None
                 and validation_candidate_revision(candidates[0]) != scope['candidate_revision'])):
             raise LostLease('radar_window_inputs_changed')
@@ -323,8 +323,8 @@ class WorkHandlers:
         def apply(db):
             from ai_stock_sentinel.daily_radar.input_manifests import serialize_publication
             serialize_publication(db, market='TW', run_date=signal)
-            current = forward_validation_candidates_from_runs(db, market='TW', start_date=signal, end_date=signal)
-            current = [c for c in current if c['candidate_id'] == scope['candidate_id']]
+            current = forward_validation_candidates_from_runs(db, market='TW', start_date=signal, end_date=signal,
+                candidate_ids=[scope['candidate_id']])
             latest = load_calendar(db, start_date=signal, as_of_date=asof)
             latest_revision = fingerprint([str(d) for d in latest.sessions if signal <= d <= target]) if latest and target else None
             if (len(current) != 1 or [validation_candidate_revision(c) for c in current] != revision
