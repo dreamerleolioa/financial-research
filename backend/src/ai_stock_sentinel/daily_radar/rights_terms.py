@@ -5,6 +5,7 @@ from ai_stock_sentinel.calibration.official_corporate_actions import _numeric
 
 
 def read_terms(symbol, day, row, receipt, capture):
+    mixed_notice = symbol.endswith(".TW") and row.get("權/息") == "權息"
     if symbol.endswith(".TW"):
         raw, receipt = capture(
             twse.RIGHTS_DETAIL,
@@ -29,6 +30,11 @@ def read_terms(symbol, day, row, receipt, capture):
         )
         if bonus:
             return None
+        if mixed_notice:
+            detail = {field.strip(): value for field, value in details[0].items()}
+            allocations = ("a. 公開承銷", "b. 員工認購", "c. 原股東認購")
+            if len(detail) != len(details[0]) or any(twse._amount(detail.get(k), "股") for k in allocations):
+                return None
     else:
         cash, free, issued, price, shares = (
             _numeric(row[field])
@@ -40,11 +46,11 @@ def read_terms(symbol, day, row, receipt, capture):
                 "按持股比例仟股認購",
             )
         )
-    if cash or min(free, issued, price, shares) < 0:
+    if (cash > 0) != mixed_notice or min(free, issued, price, shares) < 0:
         return None
     if free > 0 and issued == price == shares == 0:
         kind = "stock_distribution"
-    elif free == 0 and min(issued, price, shares) > 0:
+    elif not mixed_notice and free == 0 and min(issued, price, shares) > 0:
         kind = "cash_rights_issue"
     else:
         return None
@@ -52,6 +58,7 @@ def read_terms(symbol, day, row, receipt, capture):
         "symbol": symbol,
         "date": str(day),
         "kind": kind,
+        **({"cash_per_share": cash} if mixed_notice else {}),
         "free_shares_per_thousand": free,
         "subscription_price": price,
         "subscription_shares_per_thousand": shares,

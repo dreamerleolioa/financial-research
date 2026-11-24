@@ -417,3 +417,23 @@ def test_bad_exact_and_overlapping_cache_recover_from_valid_archived_report(proc
     monkeypatch.setattr(provider, 'archived_report', lambda request: None)
     assert provider.capture_twse_report(t.EX_RIGHTS,narrow)[0]['fields'] == ['股票代號','資料日期']
     assert len({v['file'] for v in provider.report_errors}) == 2
+
+def test_two_backlog_batches_share_a_retryable_detail_failure(processor, tmp_path, monkeypatch):
+    from datetime import date
+    from ai_stock_sentinel.calibration import twse_rights_recovery as twse
+    from ai_stock_sentinel.calibration.research_prices import RecoveringResearchPriceProvider, ResearchSourceError
+
+    market = processor.MarketPrices(tmp_path, 'next_open', {'3706.TW': '2026-08-24'}, date(2026, 11, 23))
+    attempts = []
+    def unavailable(*args):
+        attempts.append(1)
+        raise ResearchSourceError('exchange_unavailable', retryable=True, http_status=503, retry_after='30')
+
+    monkeypatch.setattr(RecoveringResearchPriceProvider, '_capture_report', unavailable)
+    monkeypatch.setattr(processor.BatchResearchPrices, 'archived_report', lambda *args: None)
+    for _ in range(2):
+        provider = processor.BatchResearchPrices(market, None)
+        with pytest.raises(ResearchSourceError) as exc:
+            provider.capture_twse_report(twse.RIGHTS_DETAIL, {'response': 'json', 'STK_NO': '3706', 'T1': '20260909'})
+        assert (exc.value.retryable, exc.value.http_status, exc.value.retry_after) == (True, 503, '30')
+    assert attempts == [1]

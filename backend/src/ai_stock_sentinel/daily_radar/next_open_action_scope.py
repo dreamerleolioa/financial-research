@@ -129,7 +129,7 @@ def _events(symbol, start, end, provider, *, record_detail=None, record_rights=N
                     item['cash_terms'] = actions._decimal_text(rows_detail[0][cash], '元／股')
                     if record_detail is not None:
                         record_detail(day, detail)
-                if record_rights and family == "rights" and notice in {"權", "除權"}:
+                if record_rights and family == "rights" and notice in {"權", "除權", "權息"}:
                     record_rights(symbol, day, row, source)
                 events.append(item)
     elif symbol.endswith('.TWO'):

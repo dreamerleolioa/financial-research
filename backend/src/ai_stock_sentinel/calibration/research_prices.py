@@ -1,4 +1,5 @@
 """Bounded repair of price-only research; never mix adjusted technical data."""
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
 import json
@@ -32,6 +33,12 @@ class ResearchSourceError(ValueError):
     def __init__(self, reason, *, retryable, http_status=None, retry_after=None):
         super().__init__(reason)
         self.retryable, self.http_status, self.retry_after = retryable, http_status, retry_after
+
+
+def report_failure(exc):
+    """Recreate a cached transport failure without retaining its traceback."""
+    return ResearchSourceError(str(exc), retryable=getattr(exc, "retryable", isinstance(exc, OSError)),
+                               http_status=getattr(exc, "http_status", None), retry_after=getattr(exc, "retry_after", None))
 
 
 def _budget_exhausted():
@@ -93,6 +100,7 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         self.deadline = None
         self.request_count = 0
         self.cache = {}
+        self.twse_price_reports = {}
         self._partial_twse_prices = set()
         self.diagnostics = []
         self.budget_limit = None
@@ -250,29 +258,55 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
                 raise _budget_exhausted()
             return payload
 
+    @contextmanager
+    def _cache_report_failure(self, key):
+        try:
+            yield
+        except (ResearchSourceError, OSError) as exc:
+            if getattr(exc, "local_budget_exhausted", False):
+                del self.cache[key]
+            else:
+                self.cache[key] = report_failure(exc)
+            raise
+        except ValueError as exc:
+            from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
+            from ai_stock_sentinel.daily_radar.work_queue import LostLease
+            if isinstance(exc, (SourceDependencyBusy, LostLease)):
+                del self.cache[key]
+            raise
+
+    def _cached_report(self, key):
+        value = self.cache[key]
+        if isinstance(value, ResearchSourceError):
+            raise report_failure(value)
+        return value
+
     def _official_month(self, symbol, month):
         key = ("prices", symbol, month)
         if key in self.cache:
-            return self.cache[key]
+            return self._cached_report(key)
         # Cache failed requests too: many candidate windows share a month.
         self.cache[key] = []
-        if symbol.endswith(".TWO"):
-            rows = self._tpex_stock_month(symbol, month)
-        else:
-            path = (INDEX_URL if symbol == "TAIEX" else STOCK_URL).removeprefix(TWSE)
-            payload, source = self.capture_twse_report(path, {
-                "response": "json", "date": month.strftime("%Y%m%d"),
-                **({} if symbol == "TAIEX" else {"stockNo": symbol.split(".")[0]}),
-            })
-            if (not isinstance(payload, dict) or payload.get("stat") != "OK"
-                    or str(payload.get("date", ""))[:6] != month.strftime("%Y%m")):
-                raise ValueError("official_research_date_or_status_mismatch")
-            if "total" in payload and (type(payload["total"]) is not int
-                    or not isinstance(payload.get("data"), list) or payload["total"] != len(payload["data"])):
-                raise ValueError("official_research_incomplete_month_report")
-            rows = [row | {"official_price_report": source} for row in self._twse_month_rows(symbol, payload)]
-            if symbol != "TAIEX":
-                self._remember_partial_twse_prices(symbol, month, payload, rows)
+        with self._cache_report_failure(key):
+            if symbol.endswith(".TWO"):
+                rows = self._tpex_stock_month(symbol, month)
+            else:
+                path = (INDEX_URL if symbol == "TAIEX" else STOCK_URL).removeprefix(TWSE)
+                payload, source = self.capture_twse_report(path, {
+                    "response": "json", "date": month.strftime("%Y%m%d"),
+                    **({} if symbol == "TAIEX" else {"stockNo": symbol.split(".")[0]}),
+                })
+                if (not isinstance(payload, dict) or payload.get("stat") != "OK"
+                        or str(payload.get("date", ""))[:6] != month.strftime("%Y%m")):
+                    raise ValueError("official_research_date_or_status_mismatch")
+                if "total" in payload and (type(payload["total"]) is not int
+                        or not isinstance(payload.get("data"), list) or payload["total"] != len(payload["data"])):
+                    raise ValueError("official_research_incomplete_month_report")
+                rows = [row | {"official_price_report": source} for row in self._twse_month_rows(symbol, payload)]
+                if source and (source_url := source.get("source_url")):
+                    self.twse_price_reports[source_url] = payload
+                if symbol != "TAIEX":
+                    self._remember_partial_twse_prices(symbol, month, payload, rows)
         days = [date.fromisoformat(row["date"]) for row in rows]
         if len(set(days)) != len(days) or any((day.year, day.month) != (month.year, month.month) for day in days):
             raise ValueError("official_research_row_dates_invalid")
@@ -361,21 +395,22 @@ class RecoveringResearchPriceProvider(YFinanceResearchPriceProvider):
         key = ("official_report", url, tuple(sorted(params.items())))
         if key not in self.cache:
             self.cache[key] = None
-            if self.source_store is not None:
-                captured = self.source_store.capture(provider="twse" if origin == TWSE else "tpex",
-                    url=url, params=params, fetch=lambda: self._request(self.official_getter, url, params=params))
-                self.cache[key] = captured
-                return captured
-            payload = self._request(self.official_getter, url, params=params)
-            if not isinstance(payload, dict):
-                raise ValueError("twse_rights_invalid_report")
-            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-            self.cache[key] = payload, {
-                "source_url": f"{url}?{urlencode(params)}",
-                "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-                "snapshot_sha256": sha256(encoded).hexdigest(),
-            }
-        captured = self.cache[key]
+            with self._cache_report_failure(key):
+                if self.source_store is not None:
+                    captured = self.source_store.capture(provider="twse" if origin == TWSE else "tpex",
+                        url=url, params=params, fetch=lambda: self._request(self.official_getter, url, params=params))
+                    self.cache[key] = captured
+                    return captured
+                payload = self._request(self.official_getter, url, params=params)
+                if not isinstance(payload, dict):
+                    raise ValueError("twse_rights_invalid_report")
+                encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+                self.cache[key] = payload, {
+                    "source_url": f"{url}?{urlencode(params)}",
+                    "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                    "snapshot_sha256": sha256(encoded).hexdigest(),
+                }
+        captured = self._cached_report(key)
         if captured is None:
             raise ValueError("twse_rights_report_unavailable")
         return captured

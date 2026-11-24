@@ -115,6 +115,10 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
                     continue
             if accepted.reason and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}:
                 reason = accepted.reason
+                if (reason == "official_corporate_action_in_window"
+                        and official.retryable_price_dates.intersection(session_dates)
+                        and any(official.rights_terms.get(str(day), {}).get("cash_per_share", 0) > 0 for day in days[1:])):
+                    reason = "validation_price_source_unavailable"
                 if not window_prices:
                     rights_need_quotes = reason == "official_corporate_action_in_window" and any(
                         official.rights_terms.get(str(day), {}).get("kind") == "cash_rights_issue"

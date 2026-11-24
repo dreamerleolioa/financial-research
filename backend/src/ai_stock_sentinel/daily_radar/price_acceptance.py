@@ -50,6 +50,8 @@ class OfficialPriceEvidence:
     rights_terms: Mapping = field(default_factory=dict)
     unavailable_terms: frozenset = frozenset()
     partial_stock_dates: frozenset = frozenset()
+    price_reports: Mapping = field(default_factory=dict)
+    retryable_price_dates: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -550,8 +552,9 @@ def verify_price_lock(row, *, symbol, basis):
 
 class OfficialPriceCollector:
     """Read official stock/TAIEX bars and event reports over a bounded range."""
-    def __init__(self, provider):
+    def __init__(self, provider, *, return_basis=None):
         self.provider = provider
+        self.return_basis = return_basis
         self.sources = []
         self.detail_payloads = {}
 
@@ -596,12 +599,15 @@ class OfficialPriceCollector:
         from ai_stock_sentinel.daily_radar.work_queue import LostLease
 
         unavailable = set()
+        retryable_prices = set()
 
         from ai_stock_sentinel.daily_radar.rights_terms import read_terms
         from ai_stock_sentinel.calibration.research_prices import ResearchSourceError
         terms, unavailable_terms = {}, set()
 
         def record_rights(ticker, day, row, source):
+            if row.get("權/息") == "權息" and self.return_basis != "signal_close":
+                return
             try:
                 result = read_terms(ticker, day, row, source, self.capture_twse_report)
             except LostLease:
@@ -620,16 +626,21 @@ class OfficialPriceCollector:
                 if ticker.endswith(".TW") and result["kind"] == "stock_distribution":
                     self._capture_event_detail(day, result["source"])
 
-        def add_unavailable(first, last):
-            unavailable.update(str(first + timedelta(days=i)) for i in range((last - first).days + 1))
+        def add_unavailable(first, last, *, retryable_price=False):
+            days = {str(first + timedelta(days=i)) for i in range((last - first).days + 1)}
+            unavailable.update(days)
+            if retryable_price:
+                retryable_prices.update(days)
 
         def collect_prices(ticker, first, last):
             try:
                 rows = self.provider.official_research_history(ticker, start_date=first, end_date=last)
             except LostLease:
                 raise
-            except (SourceDependencyBusy, ValueError, RuntimeError, OSError):
-                add_unavailable(first, last)
+            except (ValueError, RuntimeError, OSError) as exc:
+                retryable = isinstance(exc, (SourceDependencyBusy, OSError)) or (
+                    isinstance(exc, ResearchSourceError) and exc.retryable)
+                add_unavailable(first, last, retryable_price=retryable)
                 return {}
             return {row["date"]: row for row in rows}
 
@@ -659,7 +670,9 @@ class OfficialPriceCollector:
             if partial_quote is not None and partial_quote(symbol, day))
         return OfficialPriceEvidence(stock, benchmark, events, tuple(sources), frozenset(event_coverage),
                                      unavailable_dates=frozenset(unavailable), rights_terms=terms,
-                                     unavailable_terms=frozenset(unavailable_terms), partial_stock_dates=partial_stock_dates)
+                                     unavailable_terms=frozenset(unavailable_terms), partial_stock_dates=partial_stock_dates,
+                                     price_reports=getattr(self.provider, "twse_price_reports", {}),
+                                     retryable_price_dates=frozenset(retryable_prices))
 
     def recover_signal_basis(self, reason, candidate, days, vendor, official, load_snapshot=None):
         from ai_stock_sentinel.daily_radar import disclosed_rights
