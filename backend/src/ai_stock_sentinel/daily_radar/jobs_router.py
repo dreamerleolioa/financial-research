@@ -1,5 +1,5 @@
 """Internal durable execution API. Callers submit intent, never arbitrary work."""
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
@@ -9,7 +9,7 @@ from ai_stock_sentinel.daily_radar.work_queue import durable_enabled
 from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
 from ai_stock_sentinel.daily_radar.jobs import create_job, job_status, due_jobs, resume_jobs
 from ai_stock_sentinel.daily_radar.schemas import JobRequest
-from ai_stock_sentinel.daily_radar.work_executor import advance_job
+from ai_stock_sentinel.daily_radar.work_executor import advance_job, MAX_VALIDATION_WINDOWS
 
 router = APIRouter(prefix='/internal/daily-radar', dependencies=[Depends(require_daily_radar_internal_auth)])
 
@@ -21,7 +21,7 @@ def capabilities(db):
     migrated = {'radar_jobs', 'radar_work_items', 'radar_job_work', 'radar_work_attempts',
                 'radar_source_snapshots', 'radar_input_manifests', 'radar_run_inputs'} <= tables
     return {'version': 'radar-durable-v1', 'enabled': durable_enabled() and snapshots_enabled() and migrated,
-            'scoped_resume': True, 'parallel_window_advance': True, 'validation_gap_comparison': True,
+            'scoped_resume': True, 'parallel_window_advance': True, 'validation_window_batch': True, 'validation_gap_comparison': True,
             'durable_execution': durable_enabled(), 'source_snapshots': snapshots_enabled(), 'migrated': migrated}
 
 
@@ -74,9 +74,14 @@ def read_job(job_id: int, db: Session = Depends(get_db)):
 
 @router.post('/jobs/{job_id}/advance')
 def advance(job_id: int, db: Session = Depends(get_db), window_only: bool = False,
-            owner: Literal['radar', 'validation'] | None = None):
+            owner: Literal['radar', 'validation'] | None = None,
+            max_windows: Annotated[int, Query(ge=1, le=MAX_VALIDATION_WINDOWS)] = 1):
     require_enabled(db)
     try:
+        if max_windows > 1:
+            if owner != 'validation':
+                raise HTTPException(422, detail={'code': 'radar_window_batch_scope_invalid'})
+            return advance_job(db, job_id, window_only=window_only, owner=owner, max_windows=max_windows)
         if owner:
             return advance_job(db, job_id, window_only=window_only, owner=owner)
         return advance_job(db, job_id, window_only=window_only) if window_only else advance_job(db, job_id)

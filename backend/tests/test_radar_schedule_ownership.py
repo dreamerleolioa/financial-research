@@ -423,7 +423,7 @@ def test_bounded_resume_includes_newest_dated_validation_and_oldest_due(db):
     jobs_by_day = []
     for day in (1, 2, 3, 4):
         row = RadarJob(job_key=f'dated-{day}', market='TW', lanes=['signal_close'],
-            run_date=date(2026, 11, day), next_attempt_at=NOW, state='pending',
+            run_date=date(2026, 11, day), next_attempt_at=NOW-timedelta(minutes=day), state='pending',
             scope={'scheduler_owner':'validation', 'dated_registration':True})
         db.add(row)
         jobs_by_day.append(row)

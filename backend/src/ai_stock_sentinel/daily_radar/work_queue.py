@@ -112,7 +112,7 @@ def observe_normal_slot(db, job_id, now=None):
     return {'normal_slot_busy': occupied is not None, 'normal_observed_at': aware(observed).isoformat()}
 
 
-def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240, slot=None, owner=None):
+def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240, slot=None, owner=None, windows_only=False):
     now = database_now(db, now)
     due = or_(and_(RadarWorkItem.state.in_(CLAIMABLE), RadarWorkItem.retry_at <= now),
               and_(RadarWorkItem.state == "running", RadarWorkItem.lease_expires_at <= now))
@@ -123,10 +123,13 @@ def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240, sl
         query = query.where(RadarWorkItem.lane.in_(lanes))
     if slot is not None:
         # Serialize the claim decision while separate leases fence each work item.
-        db.scalar(select(RadarJob.id).where(RadarJob.id == job_id).with_for_update())
+        job = db.scalar(select(RadarJob.id).where(RadarJob.id == job_id)
+                        .with_for_update(skip_locked=windows_only))
+        if job is None:
+            return None
         if occupied_slot(db, job_id, slot, now) is not None:
             return None
-        if slot == 'window':
+        if slot == 'window' or windows_only:
             query = query.where(RadarWorkItem.stage == 'window')
     if job_id is not None:
         eligible_job = select(RadarJob.id).where(RadarJob.id == job_id,

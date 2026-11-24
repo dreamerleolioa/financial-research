@@ -114,7 +114,8 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         if registered.get('effective_run_date') != run_date or registered.get('requested_run_date') != run_date:
             raise ValueError('radar_job_date_mismatch')
         jobs = [{'job_id': registered['job_id'], 'run_date': run_date}]
-    advanced, summaries, errors = 0, {}, []
+    advanced, settled_windows, summaries, errors = 0, 0, {}, []
+    validation_flow = {}
     in_flight = {}
     interrupted = []
     internal_failure_seen = False
@@ -125,6 +126,7 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
             # An interrupted invocation may already have delivered its POSTs.
             # Resume using the server queue and retain its already spent budget.
             advanced = previous.get('advanced_requests', 0)
+            settled_windows = previous.get('settled_windows', 0)
             summaries = {job['job_id']: job for job in previous.get('jobs', []) if 'job_id' in job}
             errors = previous.get('errors', [])
             internal_failure_seen = previous.get('internal_failure_seen', False) or any(
@@ -136,6 +138,7 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
     budget_exhausted = False
     def checkpoint(*, status='in_progress', deadline_passed=None, alerts=None):
         result = {'run_date': run_date, 'resume': resume, 'owner': owner, 'advanced_requests': advanced,
+                  'settled_windows': settled_windows, 'validation_flow': validation_flow,
                   'job_refs': [{'job_id': job['job_id'], 'run_date': job['run_date']} for job in jobs],
                   'jobs': list(summaries.values()), 'errors': errors, 'in_flight': list(in_flight.values()),
                   'interrupted_requests': interrupted, 'internal_failure_seen': internal_failure_seen,
@@ -155,7 +158,7 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         checkpoint()
 
     def record(job, slot, status, error):
-        nonlocal internal_failure_seen
+        nonlocal internal_failure_seen, settled_windows
         in_flight.pop((job['job_id'], slot), None)
         if error is not None:
             from radar_window_driver import AdvanceRequestError
@@ -169,6 +172,7 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
                 error.close()
             errors.append(details)
         else:
+            settled_windows += status.get('settled_windows', 0)
             previous = summaries.get(job['job_id'])
             internal_failure_seen |= any(lane.get('states', {}).get('failed_internal', 0)
                                          for lane in status.get('lanes', {}).values())
@@ -181,7 +185,8 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
         from radar_window_driver import advance_windows
         pending, budget_exhausted = advance_windows(pending, endpoint=endpoint, token=token, write=write,
             limit=max(0, max_work - advanced), deadline=deadline, seconds=work_request_seconds, clock=clock,
-            record=record, submitted=submitted, owner=owner)
+            record=record, submitted=submitted, owner=owner, prior_requests=advanced,
+            window_batch=owner == 'validation' and capability.get('validation_window_batch') is True)
     else:
         while pending and advanced < max_work:
             if deadline - clock() < work_request_seconds:
@@ -243,6 +248,8 @@ def run(*, endpoint, token, output_dir, run_date=None, resume=False, max_work=10
                     ready |= any(s.get('publication', {}).get('state') == 'closed' for s in summaries.values())
                 else:
                     validation = report.get('validation', {}).get(lane, {})
+                    if 'flow' in validation:
+                        validation_flow[lane] = validation['flow']
                     ready = validation.get('ready') is True
                     validation_alerts[lane] = (comparison_alert(validation, baseline_applicable) if compact
                                                else validation_alert(validation, known, run_date, lane))
@@ -285,7 +292,8 @@ def main():
         print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__}))
         return 1
     print(json.dumps({'run_date': result['run_date'], 'status': result['status'],
-                      'advanced_requests': result['advanced_requests'],
+                      'advanced_requests': result['advanced_requests'], 'settled_windows': result['settled_windows'],
+                      'validation_flow': result['validation_flow'],
                       'stop_reason': result['stop_reason'],
                       'validation_alerts': result['validation_alerts'],
                       'readiness_deadline_passed': result['readiness_deadline_passed']}, ensure_ascii=False))

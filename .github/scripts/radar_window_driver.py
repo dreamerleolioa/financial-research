@@ -1,5 +1,5 @@
 """Advance due jobs with one general request and one window request in flight."""
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from multiprocessing import get_context
 from time import monotonic
@@ -31,11 +31,12 @@ def _advance(write, url, token, seconds, deadline):
         raise AdvanceRequestError(type(exc).__name__, status) from None
 
 
-def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, clock, record, submitted, owner=None):
+def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, clock, record, submitted, owner=None, window_batch=False, prior_requests=0):
     pool = (ProcessPoolExecutor(max_workers=2, mp_context=get_context('spawn'))
             if write is post else ThreadPoolExecutor(max_workers=2))
     due = deque(jobs)
     unvisited = {job['job_id'] for job in jobs}
+    unvisited_dates = {job['run_date'] for job in jobs}
     running = {}
     paused = set()
     transferring = set()
@@ -43,6 +44,21 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
     latest = {}
     lease_observations = {}
     sent = 0
+    served = Counter()
+    served_by_date = Counter()
+
+    def pick(candidates):
+        # Choose among runnable dates. Legacy jobs sharing a date split its turns.
+        turn = (prior_requests + sent) % 4
+        dates = {job['run_date'] for job in candidates}
+        if turn in (0, 2):
+            day = max(dates)
+        elif turn == 1:
+            day = min(dates)
+        else:
+            day = min(dates, key=lambda d: (served_by_date[d], d))
+        return min((job for job in candidates if job['run_date'] == day),
+                   key=lambda job: served[job['job_id']])
     probe_at = None
     timed_out = False
 
@@ -53,7 +69,11 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
             path += '?window_only=true'
         if owner:
             path += ('&' if slot == 'window' else '?') + 'owner=' + owner
+        if window_batch and owner == 'validation' and seconds >= 120:
+            path += '&max_windows=8'
         sent += 1
+        served[job['job_id']] += 1
+        served_by_date[job['run_date']] += 1
         submitted(job, slot)
         worker_deadline = monotonic() + max(0, deadline - clock())
         future = pool.submit(_advance, write, endpoint + path, token, seconds, worker_deadline)
@@ -68,11 +88,17 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
             slots = {slot: job for job, slot in running.values()}
             can_start = deadline - clock() >= seconds and sent < limit
             if can_start and due and 'normal' not in slots:
-                job = next((candidate for candidate in due if candidate['job_id'] in unvisited), due[0])
+                unvisited_due = [job for job in due if job['job_id'] in unvisited]
+                if window_batch:
+                    new_dates = [job for job in unvisited_due if job['run_date'] in unvisited_dates]
+                    job = pick(new_dates or unvisited_due or due)
+                else:
+                    job = unvisited_due[0] if unvisited_due else due[0]
                 due.remove(job)
                 dispatch(job, 'normal')
                 slots['normal'] = job
                 unvisited.discard(job['job_id'])
+                unvisited_dates.discard(job['run_date'])
                 probe_at = clock() + .25
             normal = slots.get('normal')
             delay = None
@@ -85,7 +111,7 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
                 if eligible and limit - sent > len(unvisited):
                     delay = max(0, probe_at - clock()) if normal is not None else 0
                     if not delay:
-                        dispatch(eligible[0], 'window')
+                        dispatch(pick(eligible) if window_batch else eligible[0], 'window')
                         delay = None
             if not running:
                 break
@@ -147,11 +173,14 @@ def advance_windows(jobs, *, endpoint, token, write, limit, deadline, seconds, c
                     paused.add(key)
                 normal_active = any(other_slot == 'normal' and other == job
                                     for other, other_slot in running.values())
+                # Window-only responses carry the previous reconciliation's completion flag.
+                verified_complete = slot == 'normal' and effective is status and status.get('intent_complete')
+                needs_normal = key in unvisited or (effective.get('advanced_count') and not verified_complete)
                 if key in transferring and not normal_active:
                     # Paging copies queue membership and can run beside a live lease.
                     enqueue(job)
                 elif (key not in busy_normal and not normal_active
-                        and (effective.get('advanced_count') or effective.get('runnable_now'))):
+                        and (effective.get('runnable_now') or needs_normal)):
                     enqueue(job)
     finally:
         pool.shutdown(wait=not timed_out, cancel_futures=timed_out)
