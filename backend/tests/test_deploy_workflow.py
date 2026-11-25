@@ -27,14 +27,20 @@ def test_retired_cloud_test_environment_cannot_be_deployed_by_ci():
             assert 'scripts/gcp/migrate-test.sh' not in step.get('run', '')
 
 
-def test_pages_artifact_name_is_unique_per_run_attempt() -> None:
+def test_pages_deploys_the_id_returned_by_this_attempts_upload():
     workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
-    steps = workflow["jobs"]["deploy-frontend"]["steps"]
-    upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-pages-artifact@"))
-    deploy = next(step for step in steps if step.get("uses", "").startswith("actions/deploy-pages@"))
-    artifact_name = "github-pages-${{ github.run_attempt }}"
+    job = workflow["jobs"]["deploy-frontend"]
+    upload = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-pages-artifact@"))
+    deploy = next(step for step in job["steps"] if step.get("id") == "deployment")
 
-    assert upload["with"]["name"] == deploy["with"]["artifact_name"] == artifact_name
+    assert upload["with"]["name"] == "github-pages-${{ github.run_attempt }}"
+    assert job["steps"].index(upload) < job["steps"].index(deploy)
+    assert deploy["env"]["PAGES_ARTIFACT_ID"] == "${{ steps." + upload["id"] + ".outputs.artifact_id }}"
+    assert deploy["run"] == "exec python3 .github/scripts/deploy_pages.py"
+    assert deploy["working-directory"] == "${{ github.workspace }}"
+    setup = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/configure-pages@"))
+    assert job["environment"]["url"] == "${{ steps.deployment.outputs.page_url || steps." + setup["id"] + ".outputs.base_url }}"
+    assert job["permissions"]["pages"] == job["permissions"]["id-token"] == "write"
 
 
 @pytest.mark.parametrize(("path", "job_name"), [

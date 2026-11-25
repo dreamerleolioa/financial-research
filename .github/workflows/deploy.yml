@@ -150,7 +150,7 @@ jobs:
 
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.pages_config.outputs.base_url }}
 
     defaults:
       run:
@@ -193,9 +193,11 @@ jobs:
           VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
 
       - name: Setup Pages
+        id: pages_config
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload artifact
+        id: pages_upload
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: github-pages-${{ github.run_attempt }}
@@ -203,9 +205,11 @@ jobs:
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
-        with:
-          artifact_name: github-pages-${{ github.run_attempt }}
+        working-directory: ${{ github.workspace }}
+        env:
+          PAGES_ARTIFACT_ID: ${{ steps.pages_upload.outputs.artifact_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: exec python3 .github/scripts/deploy_pages.py
 
   deploy-gcp-production:
     name: Deploy GCP production backend
