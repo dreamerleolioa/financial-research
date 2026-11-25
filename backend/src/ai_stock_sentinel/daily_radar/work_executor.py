@@ -127,6 +127,23 @@ def advance_job(db, job_id, *, handlers=None, now=None, window_only=False, owner
     return status | observe_normal_slot(db, job_id, now)
 
 
+def price_retry_time(db, earliest, dependencies, optional_waits):
+    required = dict(dependencies)
+    for key, (previous, optional) in optional_waits.items():
+        if required.get(key) == optional:
+            if previous is None:
+                required.pop(key)
+            else:
+                required[key] = previous
+    deadlines = [earliest, *(aware(datetime.fromisoformat(value)) for value in required.values())]
+    if optional_waits:
+        # A provider-wide backoff applies even when triggered by an optional lookup.
+        deadlines.extend(aware(value) for value in db.scalars(select(RadarWorkItem.retry_at).where(
+            RadarWorkItem.work_key.in_(optional_waits), RadarWorkItem.stage == "provider-gate",
+            RadarWorkItem.state == "waiting_provider", RadarWorkItem.retry_at.is_not(None))))
+    return max(deadlines)
+
+
 def _execute_claim(db, claim, handlers, now):
     try:
         # Domain acceptance owns db. Default collectors get a separate reader;
@@ -165,8 +182,7 @@ def _execute_claim(db, claim, handlers, now):
                 retry_at = max(retry_at, aware(explicit))
             # A recoverable window may diagnose a failed required input without
             # propagating its exception. Keep the source cooldown in that case.
-            cooldowns = (aware(datetime.fromisoformat(value)) for value in result['source_dependencies'].values())
-            retry_at = max(retry_at, max(cooldowns, default=retry_at))
+            retry_at = price_retry_time(db, retry_at, result['source_dependencies'], accepted.get('optional_suspension_waits', {}))
         finish_work(db, claim, state=state, result=result, reason=accepted.get('reason'), retry_at=retry_at, now=now)
         db.commit()
         return state

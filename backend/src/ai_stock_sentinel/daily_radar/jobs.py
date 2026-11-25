@@ -627,6 +627,10 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
         RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True), RadarWorkItem.stage == 'window',
         RadarWorkItem.state == 'needs_review')).all()
     for window in review_windows:
+        if window.lane == 'signal_close' and window.reason == 'official_corporate_action_in_window':
+            from ai_stock_sentinel.daily_radar.rights_price_replay import resume_parked_price_wait
+            resume_parked_price_wait(db, window, now)
+            continue
         observations = (window.result or {}).get('source_observations') or []
         if not observations or window.reason not in {'conflicting_price_records', 'research_basis_mismatch', 'price_basis_mismatch'}:
             continue

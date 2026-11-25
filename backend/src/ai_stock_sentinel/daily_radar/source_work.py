@@ -30,6 +30,10 @@ def _provider_group(request):
     return "yahoo" if host.endswith(".yahoo.com") else "twse" if host.endswith(".twse.com.tw") else "tpex"
 
 
+def provider_gate_identity(request):
+    return {"kind": "provider_gate", "provider": _provider_group(request)}
+
+
 def _retry_after(exc, now):
     headers = getattr(getattr(exc, "response", None), "headers", None) or getattr(exc, "headers", None) or {}
     value = getattr(exc, "retry_after", None) or headers.get("Retry-After")
@@ -57,7 +61,7 @@ def _reserve(store, request):
     request_hash = fingerprint(request)
     with Session(store.bind, expire_on_commit=False) as db, db.begin():
         now = database_now(db)
-        gate = ensure_work(db, identity={"kind": "provider_gate", "provider": _provider_group(request)},
+        gate = ensure_work(db, identity=provider_gate_identity(request),
             stage="provider-gate", lane="source", run_date=None,
             scope={"provider": _provider_group(request)}, input_revision=fingerprint({"provider": _provider_group(request)}), retry_at=now)
         source = ensure_work(db, identity={"kind": "source_capture", "request_hash": request_hash},

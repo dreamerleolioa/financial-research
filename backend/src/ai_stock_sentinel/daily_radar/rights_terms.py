@@ -64,3 +64,24 @@ def read_terms(symbol, day, row, receipt, capture):
         "subscription_shares_per_thousand": shares,
         "source": receipt,
     }
+
+
+def supported_cash_issue_window(events, signal, target, terms_for):
+    """A paid issue can share a window with verified cash dividends or other paid issues."""
+    issue = False
+    seen = set()
+    for event in events or ():
+        day = event["effective_date"]
+        if event.get("start_date", day) <= target < day:
+            return False
+        if not signal < day <= target:
+            continue
+        if event["family"] != "rights" or day in seen:
+            return False
+        seen.add(day)
+        if event.get("notice") in {"息", "除息"} and (event.get("cash_dividend") or 0) > 0:
+            continue
+        if event.get("notice") not in {"權", "除權"} or (terms_for(event) or {}).get("kind") != "cash_rights_issue":
+            return False
+        issue = True
+    return issue

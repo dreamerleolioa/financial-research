@@ -460,6 +460,94 @@ def test_cash_issue_vendor_outage_remains_retryable():
     )
 
 
+@pytest.mark.parametrize("source", ["stock", "benchmark"])
+def test_cash_issue_retries_only_a_temporary_official_price_gap(source):
+    from dataclasses import replace
+    from ai_stock_sentinel.daily_radar.validation_execution import _collect_locked_signal_prices
+
+    candidate, stock, evidence = rights_window()
+    vendor = [row | {"open_observed": True} for row in stock]
+
+    def evaluate(official_prices):
+        (row,) = _collect_locked_signal_prices(
+            [candidate], None, calendar=SimpleNamespace(sessions=DAYS, through=TARGET),
+            request=SimpleNamespace(windows=[1], benchmark_symbol="TAIEX"),
+            collect_official=lambda *args: official_prices,
+            fetch_prices=lambda *args, **kwargs: {candidate["symbol"]: vendor},
+        )
+        return row
+
+    missing = replace(evidence, **{source: {}})
+    delayed = replace(missing, retryable_price_dates=frozenset({str(TARGET)}))
+    assert evaluate(delayed)["skip_reason"] == "validation_price_source_unavailable"
+    disqualifier = {"family": "face_value", "effective_date": str(TARGET)}
+    unsupported = replace(delayed, events=[*delayed.events, disqualifier])
+    assert evaluate(unsupported)["skip_reason"] == "official_corporate_action_in_window"
+    assert evaluate(missing)["skip_reason"] == "official_corporate_action_in_window"
+    unrelated_outage = replace(missing, retryable_price_dates=frozenset({"2020-01-01"}))
+    assert evaluate(unrelated_outage)["skip_reason"] == "official_corporate_action_in_window"
+    assert evaluate(evidence)["status"] == "validated"
+
+
+def test_a_paid_issue_and_a_separate_mixed_distribution_remain_in_review():
+    from dataclasses import replace
+    from ai_stock_sentinel.daily_radar.validation_execution import _collect_locked_signal_prices
+
+    candidate, stock, evidence = rights_window()
+    later = date(2026, 6, 5)
+    mixed = {"family": "rights", "notice": "權息", "effective_date": str(later), "previous_close": 96}
+    official = replace(evidence, stock={}, events=[*evidence.events, mixed],
+        event_coverage=frozenset(map(str, [*DAYS, later])),
+        rights_terms=dict(evidence.rights_terms) | {str(later): {"kind": "stock_distribution", "cash_per_share": 2}},
+        retryable_price_dates=frozenset({str(later)}))
+    row, = _collect_locked_signal_prices([candidate], None, calendar=SimpleNamespace(sessions=[*DAYS, later], through=later),
+        request=SimpleNamespace(windows=[2], benchmark_symbol="TAIEX"), collect_official=lambda *a: official,
+        fetch_prices=lambda *a, **kw: {candidate["symbol"]: stock})
+    assert row["skip_reason"] == "official_corporate_action_in_window"
+
+
+@pytest.mark.parametrize("failed_report", ["stock", "benchmark"])
+def test_optional_suspension_waits_do_not_extend_a_paid_issue_price_retry(db, monkeypatch, failed_report):
+    from dataclasses import replace
+    from datetime import datetime, timedelta, timezone
+    from ai_stock_sentinel.daily_radar import trading_status
+    from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector
+    from ai_stock_sentinel.daily_radar.work_queue import ensure_work
+    from ai_stock_sentinel.daily_radar.work_executor import price_retry_time
+
+    now = datetime(2026, 6, 4, tzinfo=timezone.utc)
+    short, long = now + timedelta(minutes=2), now + timedelta(hours=1)
+    candidate, _, evidence = rights_window()
+    gate = ensure_work(db, identity={"gate": "twse"}, stage="provider-gate", lane="source",
+        run_date=None, scope={}, input_revision="a" * 64, retry_at=now)
+    old = {gate.work_key: short.isoformat(), "monthly": short.isoformat()}
+    store = SimpleNamespace(dependencies=old.copy())
+    def blocked(*args):
+        store.dependencies.update({gate.work_key: long.isoformat(), "suspension": long.isoformat()})
+        raise OSError("suspension timeout")
+    monkeypatch.setattr(trading_status, "collect_target_suspension", blocked)
+    collector = OfficialPriceCollector(SimpleNamespace(source_store=store), return_basis="signal_close")
+    # A successfully loaded stock report with no target quote may mean a halt.
+    provider = collector.provider
+    def history(symbol, **kwargs):
+        if (symbol == "TAIEX") == (failed_report == "benchmark"):
+            raise OSError("price timeout")
+        return []
+    provider.official_research_history = history
+    from ai_stock_sentinel.daily_radar import next_open_action_scope
+    monkeypatch.setattr(next_open_action_scope, "_events", lambda *a, **kw: [])
+    monthly = collector._collect_range(candidate["symbol"], SIGNAL, TARGET)
+    delayed = replace(monthly, events=evidence.events, rights_terms=evidence.rights_terms)
+    monkeypatch.setattr(collector, "_collect_range", lambda *args: delayed)
+    assert collector.collect(candidate["symbol"], SIGNAL, TARGET).suspension_error
+    assert store.dependencies["suspension"] == long.isoformat()
+    expected = short if failed_report == "stock" else long
+    assert price_retry_time(db, now, store.dependencies, collector.optional_suspension_waits) == expected
+    gate.state, gate.retry_at = "waiting_provider", long
+    db.flush()
+    assert price_retry_time(db, now, store.dependencies, collector.optional_suspension_waits) == long
+
+
 def test_a_missing_price_report_for_a_whole_halted_month_cannot_prove_no_trades():
     from ai_stock_sentinel.daily_radar.signal_action_evidence import _covers_sources
     from ai_stock_sentinel.calibration.official_corporate_actions import CASH_REDUCTION_HALT

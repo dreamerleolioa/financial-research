@@ -11,6 +11,8 @@ from ai_stock_sentinel.daily_radar.readiness import inventory_items
 from ai_stock_sentinel.daily_radar.price_acceptance import OfficialPriceCollector, OfficialPriceEvidence
 from radar_calendar_support import calendar
 from test_radar_jobs import db
+from test_next_open_history_repair import db as replay_db
+from test_radar_job_postgres import pg_engine
 from test_daily_radar_validation_read import add_run, add_candidate, add_result
 
 
@@ -18,7 +20,7 @@ DAY = date(2026, 6, 8)
 NOW = datetime(2026, 6, 9, 2, tzinfo=timezone.utc)
 
 
-def setup(db, *, diagnostic_gap=False):
+def setup(db, *, diagnostic_gap=False, lane="signal_close"):
     candidate = add_candidate(db, add_run(db))
     candidate.input_snapshot = dict(candidate.input_snapshot) | {
         'ohlcv': {'close': 100}, 'indicators': {'support_level': 96, 'resistance_level': 104}}
@@ -27,7 +29,7 @@ def setup(db, *, diagnostic_gap=False):
     db.add(DailyRadarPreparedRun(run_date=DAY, market='TW', selected_symbols=[], universe=[],
         symbol_count=0, step_statuses={'validation-calendar': calendar(DAY-timedelta(days=364), DAY).payload()}))
     db.commit()
-    job = create_job(db, run_date=DAY, lanes=['signal_close'], now=NOW)
+    job = create_job(db, run_date=DAY, lanes=[lane], now=NOW)
     for w in db.scalars(select(RadarWorkItem)):
         if w.stage != 'window': w.state = 'ready'
     db.commit()
@@ -203,3 +205,114 @@ def test_another_job_attaches_unresolved_existing_window_conflict(db, monkeypatc
     second = create_job(db, run_date=DAY, lanes=['signal_close', 'next_open'], now=NOW)
     assert second.id != job.id
     assert [(row.id, row.state) for row in active(db, second)] == [(work.id, 'needs_review')]
+
+@pytest.mark.parametrize(("lane", "source", "params", "paid", "expect_retry", "capture_state"), [
+    ("signal_close", "STOCK_DAY", {"date": "20260601", "stockNo": "2330"}, True, True, "waiting_provider"),
+    ("signal_close", "MI_5MINS_HIST", {"date": "20260601"}, True, True, "waiting_provider"),
+    ("signal_close", "STOCK_DAY", {"date": "20260601", "stockNo": "2890"}, True, False, "waiting_provider"),
+    ("signal_close", "STOCK_DAY", {"date": "20260501", "stockNo": "2330"}, True, False, "waiting_provider"),
+    ("signal_close", "TWTAWU", {"date": "20260601", "stockNo": "2330"}, True, False, "waiting_provider"),
+    ("signal_close", "STOCK_DAY", {"date": "20260601", "stockNo": "2330"}, False, False, "waiting_provider"),
+    ("next_open", "STOCK_DAY", {"date": "20260601", "stockNo": "2330"}, True, False, "waiting_provider"),
+    ("signal_close", "STOCK_DAY", {"date": "20260601", "stockNo": "2330"}, True, True, "ready"),
+    ("signal_close", "STOCK_DAY", {"date": "20260601", "stockNo": "2330"}, True, True, "expired"),
+    ("signal_close", "STOCK_DAY", {"date": "20260601", "stockNo": "2330"}, True, True, "legacy"),
+])
+def test_reconcile_parked_action_with_price_wait_once(replay_db, lane, source, params, paid, expect_retry, capture_state):
+    from ai_stock_sentinel.daily_radar.work_queue import aware, claim_work, ensure_work, finish_work
+
+    db = replay_db
+    _, job = setup(db, lane=lane)
+    window, = active(db, job)
+    section = "indicesReport" if source == "MI_5MINS_HIST" else "exchangeReport"
+    request = {"provider": "twse", "parser_version": "radar-source-capture-v1",
+               "url": f"https://www.twse.com.tw/{section}/{source}", "params": params}
+    captured = ensure_work(db, identity={"request": request}, stage="source-capture", lane="source",
+                          run_date=None, scope={"request": request}, input_revision="a" * 64, retry_at=NOW)
+    reason = "official_corporate_action_in_window"
+    cooldown = NOW + timedelta(minutes=2)
+    window.state, window.reason, window.retry_at = "needs_review", reason, None
+    captured.state = {"expired": "ready", "legacy": "pending"}.get(capture_state, capture_state)
+    captured.retry_at = cooldown + timedelta(minutes=3)
+    expected_retry = NOW if capture_state == "ready" else captured.retry_at
+    from ai_stock_sentinel.daily_radar.source_snapshots import PARSER_VERSION, SourceSnapshotStore
+    if capture_state in {"ready", "expired", "legacy"}:
+        gate = ensure_work(db, identity={"kind": "provider_gate", "provider": "twse"}, stage="provider-gate",
+            lane="source", run_date=None, scope={"provider": "twse"}, input_revision="b" * 64, retry_at=NOW)
+        gate.state, gate.retry_at = "waiting_provider", NOW + timedelta(minutes=10)
+        expected_retry = NOW if capture_state == "ready" else gate.retry_at
+        if capture_state != "legacy":
+            captured.dependencies = [gate.work_key]
+            captured_at = NOW if capture_state == "ready" else NOW - timedelta(hours=1)
+            SourceSnapshotStore(db.get_bind(), clock=lambda: captured_at).record(request, {"stat": "OK"}, db=db)
+    from ai_stock_sentinel.calibration.twse_rights_recovery import TWSE, RIGHTS_DETAIL
+    from test_signal_mixed_distribution import CASH, FREE, BONUS, ISSUE
+
+    event_day = date(2026, 6, 4)
+    detail = {"fields": ["股票代號", CASH, FREE, BONUS, ISSUE, "每股認購金額", "按股東持股比例每千股認購"],
+              "stat": "OK", "data": [["2330", "0 元／股", "0 股" if paid else "100 股", "0 股",
+                                      "1000 股" if paid else "0 股", "35 元／股" if paid else "0 元／股",
+                                      "34 股" if paid else "0 股"]]}
+    _, proof = SourceSnapshotStore(db.get_bind()).record(
+        {"provider": "twse", "url": TWSE + RIGHTS_DETAIL, "parser_version": PARSER_VERSION,
+         "params": {"response": "json", "STK_NO": "2330", "T1": event_day.strftime("%Y%m%d")}}, detail, db=db)
+    unrelated = ensure_work(db, identity={"unrelated": True}, stage="source-capture", lane="source",
+        run_date=None, scope={"request": {"url": "https://www.twse.com.tw/rwd/zh/afterTrading/TWTAWU",
+                                         "params": {"stockNo": "2330"}}}, input_revision="c" * 64, retry_at=NOW)
+    review = {"events": [{"family": "rights", "notice": "權", "effective_date": str(event_day)}]}
+    window.result = {
+        "after": [{"outcome": {"official_event_review": review}}],
+        "source_dependencies": {captured.work_key: cooldown.isoformat(),
+                                unrelated.work_key: (cooldown + timedelta(hours=1)).isoformat()},
+        "source_observations": [proof],
+    }
+    if capture_state == "legacy":
+        window.result = window.result | {"source_dependencies": window.result["source_dependencies"] | {gate.work_key: cooldown.isoformat()}}
+    db.commit()
+
+    if expect_retry and db.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import text
+        from sqlalchemy.orm import Session
+        with Session(db.get_bind()) as owner:
+            owner.scalar(select(RadarWorkItem.id).where(RadarWorkItem.id == window.id).with_for_update())
+            db.execute(text("SET LOCAL lock_timeout = '1s'"))
+            reconcile_job(db, job.id, now=NOW)
+            db.refresh(window)
+            assert window.state == "needs_review"
+    reconcile_job(db, job.id, now=NOW)
+    db.refresh(window)
+    if expect_retry:
+        assert window.state == "waiting_provider" and aware(window.retry_at) == expected_retry
+        if expected_retry > NOW:
+            assert claim_work(db, work_id=window.id, now=NOW) is None
+        claim = claim_work(db, work_id=window.id, now=expected_retry)
+        assert claim is not None
+        # Even an inconclusive replay of the same work must stay parked.
+        finish_work(db, claim, state="needs_review", reason=reason, result=window.result, now=expected_retry)
+        db.commit()
+        reconcile_job(db, job.id, now=expected_retry)
+        db.refresh(window)
+    assert window.state == "needs_review" and window.retry_at is None
+
+
+@pytest.mark.parametrize("paid", [True, False])
+def test_archived_otc_paid_terms_are_bound_to_the_reported_stock_and_day(db, paid):
+    from ai_stock_sentinel.calibration.official_corporate_actions import TPEX_DISTRIBUTIONS
+    from ai_stock_sentinel.calibration.research_prices import TPEX
+    from ai_stock_sentinel.daily_radar.rights_price_replay import _recorded_cash_issue
+    from ai_stock_sentinel.daily_radar.source_snapshots import PARSER_VERSION, SourceSnapshotStore
+
+    signal, day, target = map(date.fromisoformat, ("2026-06-01", "2026-06-04", "2026-06-08"))
+    fields = ["除權息日期", "代號", "權/息", "現金股利", "每仟股無償配股", "現金增資股數", "現金增資認購價", "按持股比例仟股認購"]
+    row = ["115/06/04", "8042", "除權", "0", "0" if paid else "100", "1000" if paid else "0",
+           "35" if paid else "0", "34" if paid else "0"]
+    report = {"stat": "OK", "date": "20260601~20260608", "tables": [{"fields": fields, "data": [row], "totalCount": 1}]}
+    _, proof = SourceSnapshotStore(db.get_bind()).record(
+        {"provider": "tpex", "url": TPEX + TPEX_DISTRIBUTIONS, "parser_version": PARSER_VERSION,
+         "params": {"response": "json", "startDate": "2026/06/01", "endDate": "2026/06/08"}}, report, db=db)
+    event = {"family": "rights", "notice": "除權", "effective_date": str(day)}
+    result = {"after": [{"outcome": {"official_event_review": {"events": [event]}}}], "source_observations": [proof]}
+    assert _recorded_cash_issue(db, result, "8042.TWO", signal, target) is paid
+    assert not _recorded_cash_issue(db, result, "8041.TWO", signal, target)
+    event["effective_date"] = str(target)
+    assert not _recorded_cash_issue(db, result, "8042.TWO", signal, target)

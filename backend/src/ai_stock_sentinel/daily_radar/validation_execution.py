@@ -19,6 +19,7 @@ from ai_stock_sentinel.daily_radar.trading_calendar import require_calendar
 from ai_stock_sentinel.daily_radar.schemas import DailyRadarForwardValidationRunResponse
 from ai_stock_sentinel.daily_radar.price_acceptance import AcceptedPrices, accept_signal_close_prices, refused_prices
 from ai_stock_sentinel.calibration.research_prices import ResearchSourceError
+from ai_stock_sentinel.daily_radar.rights_terms import supported_cash_issue_window
 from ai_stock_sentinel.daily_radar.validation_preparation import (
     ValidationPreparation, accept_validation_results, capture_validation_acceptance,
 )
@@ -115,18 +116,24 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
                     continue
             if accepted.reason and row["skip_reason"] in {"missing_future_price", "missing_benchmark"}:
                 reason = accepted.reason
-                if (reason == "official_corporate_action_in_window"
-                        and official.retryable_price_dates.intersection(session_dates)
-                        and any(official.rights_terms.get(str(day), {}).get("cash_per_share", 0) > 0 for day in days[1:])):
-                    reason = "validation_price_source_unavailable"
-                if not window_prices:
-                    rights_need_quotes = reason == "official_corporate_action_in_window" and any(
-                        official.rights_terms.get(str(day), {}).get("kind") == "cash_rights_issue"
-                        for day in days[1:]
+                if reason == "official_corporate_action_in_window":
+                    waiting_for_report = not official.retryable_price_dates.isdisjoint(session_dates)
+                    events = signal_action_evidence.window_events(official.events, list(map(str, days)))
+                    distribution = {}
+                    if len(events) == 1 and events[0]["family"] == "rights" and events[0]["effective_date"] in session_dates:
+                        distribution = official.rights_terms.get(events[0]["effective_date"], {})
+                    cash_distribution = (distribution.get("kind") == "stock_distribution"
+                                         and distribution.get("cash_per_share", 0) > 0)
+                    retry_issue = (waiting_for_report or not window_prices) and supported_cash_issue_window(
+                        official.events, str(days[0]), str(days[-1]),
+                        lambda event: official.rights_terms.get(event["effective_date"]),
                     )
-                    if rights_need_quotes or (price_unavailable and reason in
-                            {"adjustment_factor_unverified", "official_validation_price_missing"}):
+                    if retry_issue or (waiting_for_report and cash_distribution):
                         reason = "validation_price_source_unavailable"
+                elif not window_prices and price_unavailable and reason in {
+                    "adjustment_factor_unverified", "official_validation_price_missing",
+                }:
+                    reason = "validation_price_source_unavailable"
                 row = refused_prices(row, reason, official, sessions=days, event_requires_prices=False)
             elif row["status"] == "validated":
                 row["outcome"]["observation_diagnostic"] = evaluate_observation(

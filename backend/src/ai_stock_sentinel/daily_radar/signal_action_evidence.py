@@ -164,6 +164,12 @@ def _distribution_action(symbol, day, previous_close, terms):
     }
 
 
+def window_events(events, dates):
+    scope = set(dates[1:])
+    return [event for event in events or () if event["effective_date"] in scope
+            or event.get("start_date", event["effective_date"]) <= dates[-1] < event["effective_date"]]
+
+
 def classify_action(candidate, sessions, official):
     from ai_stock_sentinel.daily_radar.terminal_integrity import _source
 
@@ -177,12 +183,7 @@ def classify_action(candidate, sessions, official):
         or any(dates[0] <= d <= dates[-1] for d in official.partial_stock_dates)
     ):
         return None
-    events = [
-        e
-        for e in official.events
-        if e["effective_date"] in scope
-        or e.get("start_date", e["effective_date"]) <= dates[-1] < e["effective_date"]
-    ]
+    events = window_events(official.events, dates)
     if len(events) != 1:
         return None
     (event,) = events
