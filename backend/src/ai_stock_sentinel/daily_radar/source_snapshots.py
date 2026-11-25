@@ -121,14 +121,16 @@ class SourceSnapshotStore:
             'sdk_version': version('yfinance') if operation in {'technical-refresh-payload', 'market-index-context'} else None}
         return self._capture_request(request, fetch=fetch)
 
+    @staticmethod
+    def current_snapshot(db, request, now):
+        return db.scalar(select(RadarSourceSnapshot).where(
+            RadarSourceSnapshot.request_hash == fingerprint(request),
+            RadarSourceSnapshot.captured_at <= now, RadarSourceSnapshot.expires_at > now,
+        ).order_by(RadarSourceSnapshot.captured_at.desc(), RadarSourceSnapshot.id.desc()).limit(1))
+
     def _lookup(self, request):
-        request_hash, now = fingerprint(request), _utc(self.clock())
         with Session(self.bind) as db:
-            cached = db.scalar(select(RadarSourceSnapshot).where(
-                RadarSourceSnapshot.request_hash == request_hash,
-                RadarSourceSnapshot.captured_at <= now,
-                RadarSourceSnapshot.expires_at > now,
-            ).order_by(RadarSourceSnapshot.captured_at.desc(), RadarSourceSnapshot.id.desc()).limit(1))
+            cached = self.current_snapshot(db, request, _utc(self.clock()))
             if cached is not None:
                 result = self._read(cached)
                 self.seen[cached.request_hash] = deepcopy(result[1])

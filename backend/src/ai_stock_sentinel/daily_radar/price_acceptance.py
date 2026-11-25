@@ -52,6 +52,7 @@ class OfficialPriceEvidence:
     partial_stock_dates: frozenset = frozenset()
     price_reports: Mapping = field(default_factory=dict)
     retryable_price_dates: frozenset = frozenset()
+    retryable_stock_dates: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -557,6 +558,7 @@ class OfficialPriceCollector:
         self.return_basis = return_basis
         self.sources = []
         self.detail_payloads = {}
+        self.optional_suspension_waits = {}
 
     def capture_twse_report(self, path, params):
         return self._capture_range_report(self.provider.capture_twse_report, path, params)
@@ -580,7 +582,23 @@ class OfficialPriceCollector:
                                         payload=self.detail_payloads.get(source.get("source_url"))))
 
     def collect(self, symbol, start, end):
-        return self._for_target(symbol, end, self._collect_range(symbol, start, end))
+        from ai_stock_sentinel.daily_radar.rights_terms import supported_cash_issue_window
+
+        evidence = self._collect_range(symbol, start, end)
+        store = getattr(self.provider, "source_store", None)
+        self.optional_suspension_waits = {}
+        if (self.return_basis == "signal_close" and store is not None and store.dependencies
+                and str(end) in evidence.retryable_stock_dates and not has_trade(evidence.stock, end)
+                and supported_cash_issue_window(evidence.events, str(start), str(end),
+                                                lambda event: evidence.rights_terms.get(event["effective_date"]))):
+            # A recovered target quote bypasses this suspension lookup. Retain
+            # both deadlines if the lookup touches an already-blocking gate.
+            required = dict(store.dependencies)
+            result = self._for_target(symbol, end, evidence)
+            self.optional_suspension_waits = {key: (required.get(key), value) for key, value in store.dependencies.items()
+                                              if required.get(key) != value}
+            return result
+        return self._for_target(symbol, end, evidence)
 
     def collect_targets(self, symbol, start, targets):
         # Range receipts establish coverage for all the enclosed windows. Only
@@ -600,6 +618,7 @@ class OfficialPriceCollector:
 
         unavailable = set()
         retryable_prices = set()
+        retryable_stock = set()
 
         from ai_stock_sentinel.daily_radar.rights_terms import read_terms
         from ai_stock_sentinel.calibration.research_prices import ResearchSourceError
@@ -626,11 +645,10 @@ class OfficialPriceCollector:
                 if ticker.endswith(".TW") and result["kind"] == "stock_distribution":
                     self._capture_event_detail(day, result["source"])
 
-        def add_unavailable(first, last, *, retryable_price=False):
+        def add_unavailable(first, last):
             days = {str(first + timedelta(days=i)) for i in range((last - first).days + 1)}
             unavailable.update(days)
-            if retryable_price:
-                retryable_prices.update(days)
+            return days
 
         def collect_prices(ticker, first, last):
             try:
@@ -640,7 +658,11 @@ class OfficialPriceCollector:
             except (ValueError, RuntimeError, OSError) as exc:
                 retryable = isinstance(exc, (SourceDependencyBusy, OSError)) or (
                     isinstance(exc, ResearchSourceError) and exc.retryable)
-                add_unavailable(first, last, retryable_price=retryable)
+                missing = add_unavailable(first, last)
+                if retryable:
+                    retryable_prices.update(missing)
+                    if ticker == symbol:
+                        retryable_stock.update(missing)
                 return {}
             return {row["date"]: row for row in rows}
 
@@ -672,7 +694,8 @@ class OfficialPriceCollector:
                                      unavailable_dates=frozenset(unavailable), rights_terms=terms,
                                      unavailable_terms=frozenset(unavailable_terms), partial_stock_dates=partial_stock_dates,
                                      price_reports=getattr(self.provider, "twse_price_reports", {}),
-                                     retryable_price_dates=frozenset(retryable_prices))
+                                     retryable_price_dates=frozenset(retryable_prices),
+                                     retryable_stock_dates=frozenset(retryable_stock))
 
     def recover_signal_basis(self, reason, candidate, days, vendor, official, load_snapshot=None):
         from ai_stock_sentinel.daily_radar import disclosed_rights

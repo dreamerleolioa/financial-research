@@ -297,10 +297,10 @@ class WorkHandlers:
             official_provider = (RecoveringResearchPriceProvider(session=None, source_store=self.store)
                                  if scope['return_basis'] == 'signal_close' else provider)
             execute = run_signal_close_validation if scope['return_basis'] == 'signal_close' else run_research_validation
+            collector = OfficialPriceCollector(official_provider, return_basis=request.return_basis)
             bundle = execute(self.db, request, as_of_date=asof, price_provider=provider,
                 calendar_provider=SimpleNamespace(fetch=lambda **kwargs: calendar), candidate_ids=[scope['candidate_id']],
-                prepare_only=True, official_price_collector=OfficialPriceCollector(
-                    official_provider, return_basis=request.return_basis))
+                prepare_only=True, official_price_collector=collector)
         revision = [validation_candidate_revision(c) for c in (bundle.candidates if bundle else candidates)]
 
         def settle_later(db, existing, current, latest):
@@ -375,6 +375,7 @@ class WorkHandlers:
             collection_gap = next((outcome['skip_reason'] for outcome in bundle.outcomes
                                    if outcome.get('skip_reason') and outcome['skip_reason'] != reason), None)
             return {'state': 'ready' if state in {'validated', 'terminal'} else 'needs_review' if action in {'needs_review', 'repair_calendar', 'repair_diagnostic'} else 'waiting_provider',
+                'optional_suspension_waits': collector.optional_suspension_waits if reason == 'validation_price_source_unavailable' else {},
                 'reason': reason, 'result': {'before': before, 'after': saved, 'expected_target_date': str(accepted_target),
                                              **({'collection_gap': collection_gap} if collection_gap else {})}}
         return Collected(apply)
