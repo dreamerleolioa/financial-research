@@ -284,3 +284,43 @@ def verified_repaired_frame(
             "reconciled_dates": sorted(str(day) for day in reconciled_dates),
         }
     return result, provenance
+
+
+def verified_rights_extension(*, run_date, prior, observed, bars, sessions, terms, events):
+    """Append one official candle to an immutable, previously accepted price series."""
+    from datetime import timedelta
+
+    dates = [index.date().isoformat() for index in prior.index]
+    if not dates or dates != sorted(set(dates)) or dates[-1] >= str(run_date):
+        raise TechnicalRepairRejected("prior_history_dates_invalid")
+    pair = [dates[-1], str(run_date)]
+    if (sessions != pair or [row["date"] for row in bars] != pair or events
+            or not terms or terms['ex_date'] != str(run_date + timedelta(days=1))
+            or terms['disclosed_on'] > str(run_date)):
+        raise TechnicalRepairRejected("rights_extension_evidence_incomplete")
+    from ai_stock_sentinel.daily_radar.disclosed_rights import subscription_factor
+
+    factor = subscription_factor(terms, _number(bars[-1]['close']))
+    if not 0 < factor < 1:
+        raise TechnicalRepairRejected("rights_extension_factor_invalid")
+    observations = {index.date().isoformat(): row for index, row in observed.iterrows()}
+    if len(observations) != len(observed) or not set(pair).issubset(observations):
+        raise TechnicalRepairRejected("rights_extension_dates_invalid")
+    for day, official in zip(pair, bars, strict=True):
+        values = {k: _number(official[k.lower()]) for k in PRICE_FIELDS}
+        if not 0 < values['Low'] <= min(values['Open'], values['Close']) <= max(values['Open'], values['Close']) <= values['High']:
+            raise TechnicalRepairRejected("official_ohlc_invalid")
+        for k, value in values.items():
+            if not math.isclose(_number(observations[day][k]), value * factor, rel_tol=1e-7, abs_tol=.00005):
+                raise TechnicalRepairRejected("rights_extension_factor_mismatch")
+            if day == dates[-1] and not math.isclose(_number(prior.iloc[-1][k]), value, rel_tol=1e-7, abs_tol=.005):
+                raise TechnicalRepairRejected("prior_official_anchor_mismatch")
+    volume = _number(bars[-1]['volume'])
+    if volume < 0 or not volume.is_integer():
+        raise TechnicalRepairRejected("official_volume_invalid")
+    # Re-downloaded history may have been restated even before this issue.
+    # The previous accepted snapshot owns every existing OHLCV observation.
+    frame = prior.copy()
+    frame.loc[pd.Timestamp(run_date), [*PRICE_FIELDS, 'Volume']] = [
+        *(bars[-1][k.lower()] for k in PRICE_FIELDS), int(volume)]
+    return frame

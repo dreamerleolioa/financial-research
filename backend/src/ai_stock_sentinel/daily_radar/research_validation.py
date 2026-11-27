@@ -1,9 +1,11 @@
 """Versioned next-open price research, isolated from legacy close-based results."""
+from dataclasses import replace
 from collections import Counter
 from datetime import date
 from collections import defaultdict
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
+from ai_stock_sentinel.calibration.research_prices import ResearchSourceError
 from ai_stock_sentinel.calibration import twse_rights_recovery as rights
 from ai_stock_sentinel.calibration import official_corporate_actions as corporate_actions
 from ai_stock_sentinel.calibration.repository import load_benchmark_calendar_from_prepared_market_context
@@ -355,6 +357,28 @@ def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, p
     accepted = accept_next_open_prices(candidate, days, yahoo, official)
     if accepted.reason == 'official_corporate_action_in_window':
         from ai_stock_sentinel.daily_radar.rights_prices import accept_rights_prices
+        from ai_stock_sentinel.daily_radar.rights_terms import read_terms
+        capture = getattr(provider, "capture_twse_report", None)
+        for event in official.events or ():
+            if not capture or event.get("notice") != "權息":
+                continue
+            day = date.fromisoformat(event["effective_date"])
+            if (not days[0] < day <= days[-1]
+                    or not candidate["symbol"].endswith(".TW") or str(day) in official.rights_terms):
+                continue
+            try:
+                term = read_terms(candidate["symbol"], day, {"權/息": "權息"}, None, capture,
+                                  disclosures=getattr(provider, "capture_rights_disclosures", None))
+            except (LostLease, SourceDependencyBusy):
+                raise
+            except (OSError, ResearchSourceError) as exc:
+                if isinstance(exc, OSError) or exc.retryable:
+                    official = replace(official, unavailable_terms=official.unavailable_terms | {str(day)})
+                continue
+            except (ArithmeticError, ValueError):
+                continue
+            if term and term["kind"] == "cash_rights_issue":
+                official = replace(official, rights_terms=official.rights_terms | {str(day): term})
         accepted = (accept_rights_prices(candidate, days, yahoo, official, basis='next_open',
                                          vendor_benchmark=benchmark) or accepted)
     base = evaluate_research_window(
@@ -373,6 +397,14 @@ def _evaluate_locked_next_open(candidate, days, *, yahoo, benchmark, official, p
     from ai_stock_sentinel.daily_radar.trading_status import suspended_outcome
     if suspended := suspended_outcome(base, candidate, days, official):
         return suspended
+    if accepted.reason == "official_corporate_action_in_window":
+        from ai_stock_sentinel.daily_radar.price_acceptance import vendor_suffix_missing
+        from ai_stock_sentinel.daily_radar.rights_terms import supported_cash_issue_window
+        if ((vendor_suffix_missing(yahoo, days) or vendor_suffix_missing(benchmark, days))
+                and supported_cash_issue_window(official.events, str(days[0]), str(days[-1]),
+                    lambda event: official.rights_terms.get(event["effective_date"]))):
+            return bind_validation_input(candidate, refused_prices(base | {"target_date": str(days[-1])},
+                "validation_price_source_unavailable", official, sessions=days))
     if (price_source_unavailable and accepted.reason == "official_corporate_action_in_window"
             and (not yahoo or not benchmark)):
         return bind_validation_input(candidate, refused_prices(base | {"target_date": str(days[-1])}, "validation_price_source_unavailable",

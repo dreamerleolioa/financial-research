@@ -51,6 +51,45 @@ def _recorded_cash_issue(db, result, symbol, signal, target):
         return False
 
 
+MIXED_ISSUE_POLICY = "twse-mixed-paid-issue-v1"
+
+
+def reopen_mixed_issue(db, window, now):
+    """Give older reviews one evaluation with the new same-day issue rules."""
+    scope, result = window.scope, window.result or {}
+    if (scope.get("mixed_issue_policy") == MIXED_ISSUE_POLICY or result.get("mixed_issue_policy") == MIXED_ISSUE_POLICY
+            or not scope.get("symbol", "").endswith(".TW") or not result.get("source_observations")):
+        return
+    signal, target = scope.get("signal_date"), scope.get("expected_target_date")
+    if not signal or not target:
+        return
+    for row in result.get("after", []):
+        events = (row.get("outcome", {}).get("official_event_review") or {}).get("events") or []
+        inside = [e for e in events if signal < e.get("effective_date", "") <= target]
+        if not any(e.get("family") == "rights" and e.get("notice") == "權息" for e in inside):
+            continue
+        if any(e.get("start_date", e.get("effective_date", "")) <= target < e.get("effective_date", "") for e in events):
+            continue
+        if len({e["effective_date"] for e in inside}) != len(inside):
+            continue
+        if all(e.get("family") == "rights" and (e.get("notice") == "權息" or
+               (e.get("notice") in {"息", "除息"} and isinstance(e.get("cash_dividend"), (int, float))
+                and e["cash_dividend"] > 0)) for e in inside):
+            break
+        if _recorded_cash_issue(db, result | {"after": [row]}, scope["symbol"], date.fromisoformat(signal), date.fromisoformat(target)):
+            break
+    else:
+        return
+    locked = db.scalar(select(RadarWorkItem).where(
+        RadarWorkItem.id == window.id, RadarWorkItem.state == "needs_review",
+        RadarWorkItem.reason == "official_corporate_action_in_window", RadarWorkItem.attempt_count == window.attempt_count,
+        RadarWorkItem.scope["mixed_issue_policy"].as_string().is_distinct_from(MIXED_ISSUE_POLICY),
+    ).with_for_update(skip_locked=True).execution_options(populate_existing=True))
+    if locked is not None:
+        locked.scope = locked.scope | {"mixed_issue_policy": MIXED_ISSUE_POLICY}
+        locked.state, locked.reason, locked.retry_at = "pending", None, now
+
+
 def resume_parked_price_wait(db, window, now):
     scope = window.scope
     result = window.result or {}

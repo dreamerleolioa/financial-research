@@ -248,6 +248,12 @@ def _events_cover_window(official, days):
     )
 
 
+def vendor_suffix_missing(rows, sessions):
+    dates = list(map(str, sessions))
+    indexed = _provider_index(rows, set(dates))
+    return indexed is not None and len(indexed) < len(dates) and set(indexed) == set(dates[:len(indexed)])
+
+
 def accept_signal_close_prices(candidate, sessions, adjusted_rows, official):
     return _signal_close_prices(candidate, sessions, adjusted_rows, official, anchor_evidence=None)
 
@@ -273,6 +279,8 @@ def _signal_close_prices(candidate, sessions, adjusted_rows, official, *, anchor
         from ai_stock_sentinel.daily_radar.rights_prices import accept_rights_prices
         return (accept_rights_prices(candidate, sessions, adjusted_rows, official, basis="signal_close")
                 or AcceptedPrices(reason="official_corporate_action_in_window"))
+    if 0 < len(adjusted) < len(dates) and set(adjusted) == set(dates[:len(adjusted)]):
+        return AcceptedPrices(reason="validation_price_source_unavailable")
     source = [adjusted.get(day, {}) for day in dates]
     ratios = [_proportional_factor(row, raw) for row, raw in zip(source, stock, strict=True)]
     versions = {row["source_capture"].get("snapshot_sha256") for row in source if row.get("source_capture")}
@@ -628,7 +636,8 @@ class OfficialPriceCollector:
             if row.get("權/息") == "權息" and self.return_basis != "signal_close":
                 return
             try:
-                result = read_terms(ticker, day, row, source, self.capture_twse_report)
+                result = read_terms(ticker, day, row, source, self.capture_twse_report,
+                                    disclosures=getattr(self.provider, "capture_rights_disclosures", None))
             except LostLease:
                 raise
             except (SourceDependencyBusy, OSError):
@@ -638,7 +647,7 @@ class OfficialPriceCollector:
                 if exc.retryable:
                     unavailable_terms.add(str(day))
                 return
-            except (ValueError, RuntimeError):
+            except (ArithmeticError, ValueError, RuntimeError):
                 return  # Unsupported or contradictory terms retain the original gap.
             if result:
                 terms[str(day)] = result

@@ -371,7 +371,7 @@ API lifespan 依 `DATABASE_MIGRATION_MODE` 執行 upgrade 或 verify；GCP 正�
 - `POST /internal/daily-radar/rule-review/monthly`：產生 Daily Radar 六個成熟月份 training / holdout 調權報表
 - `POST /internal/analysis-calibration/monthly`：產生一般分析 confidence 六個成熟月份 training / holdout 調權報表
 
-Daily Radar due validation 由 `.github/workflows/daily-radar-validation.yml` 在台北時間週二至週六 02:15 驗證、06:45 補修，沿用前一個交易日的排程日期。durable 模式下，Radar 每小時整點與半點續跑發布及輔助工作，validation 在 15 分與 45 分續跑歷史窗口，平日 17:45 留給行情歸檔。到期的舊混合待辦會把原工作與進度交給各自的排程；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
+Daily Radar due validation 由 `.github/workflows/daily-radar-validation.yml` 在台北時間週二至週六 02:15 驗證、06:45 補修，沿用前一個交易日的排程日期。durable 模式下，Radar 每小時整點與半點續跑發布及輔助工作，validation 在 15 分與 45 分續跑歷史窗口，平日 17:45 留給行情歸檔。確認當日開市且上市、上櫃行情均已歸檔後，下一次 validation 續跑就會登記當日到期窗口。凌晨排程沿用同一份工作與進度。到期的舊混合待辦會把原工作與進度交給各自的排程；一般分析由 `.github/workflows/analysis-forward-validation.yml` 每日執行，月報則由 `.github/workflows/monthly-analysis-calibration.yml` 每月執行。一般分析第一版 calibration 只收 `.TW`／`.TWO` 的 final `/analyze` 樣本，統一使用 TW／TAIEX，其他市場分析不寫入台股校準 cohort。
 
 候選池研究結果可在「盤後觀察雷達 → 驗證結果」查看次日開盤報酬、0／0.5／1 個百分點假設成本、下跌幅度與日期區塊可信度。新口徑不含股息，僅供候選研究；舊結果保留。獨立的 validation 排程保存兩種口徑，歷史補算不會隨查看自動執行，詳見 [次日開盤候選池研究規格](docs/specs/daily-stock-radar-spec.md#124-次日開盤候選池研究)。
 

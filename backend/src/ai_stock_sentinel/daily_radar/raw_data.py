@@ -122,12 +122,44 @@ class YFinanceBatchTechnicalFetcher:
                 for symbol in stale_symbols:
                     self._record_attempt(symbol, "fresh_retry", "yahoo_refresh_unavailable", exc)
         provenance_by_symbol = self._repair_stale_frames(frames, run_date=run_date, start_date=start_date)
+        rejected = set()
+        if self.source_store is not None and self._official_bar_loader is not None:
+            from ai_stock_sentinel.daily_radar.price_acceptance import quotes_match
+            from ai_stock_sentinel.daily_radar.technical_rights_extension import recover
+            from ai_stock_sentinel.daily_radar.source_work import SourceDependencyBusy
+            from ai_stock_sentinel.daily_radar.work_queue import LostLease
+            current = [s for s in ordered_symbols if s.endswith(".TW") and s not in provenance_by_symbol
+                       and _last_index_date(frames[s]) == str(run_date)]
+            bars = self._official_bar_loader(current, run_date=run_date) if current else {}
+            for symbol in current:
+                if (bar := bars.get(symbol)) is None:
+                    continue
+                raw = {k: float(getattr(bar, k)) for k in ("open", "high", "low", "close")}
+                observed = {k: float(frames[symbol].iloc[-1][k.title()]) for k in raw}
+                if quotes_match(observed, raw):
+                    continue
+                self._record_attempt(symbol, "official_signal_bar", "official_signal_bar_mismatch")
+                self.diagnostics[symbol]["conflicting_ohlc"] = {"provider": observed, "official": raw}
+                try:
+                    frames[symbol], provenance_by_symbol[symbol] = recover(self.source_store, symbol, frames[symbol],
+                        run_date=run_date, start=start_date, current=bar)
+                except (SourceDependencyBusy, LostLease):
+                    raise
+                except (ValueError, KeyError, OSError, RuntimeError) as exc:
+                    reason = str(exc) if isinstance(exc, TechnicalRepairRejected) else "rights_extension_evidence_unavailable"
+                    self._record_attempt(symbol, "post_session_rights", reason, exc)
+                    rejected.add(symbol)
+                else:
+                    self._record_attempt(symbol, "post_session_rights", "accepted")
         payloads: dict[str, Mapping[str, Any]] = {}
         for symbol in ordered_symbols:
             self.diagnostics[symbol].update({
                 "actual_data_date": _last_index_date(frames[symbol]),
                 "is_final": _last_index_date(frames[symbol]) == run_date.isoformat(),
             })
+            if symbol in rejected:
+                self.diagnostics[symbol]["is_final"] = False
+                continue
             payload = _build_technical_payload(
                 symbol,
                 frames[symbol],
@@ -488,6 +520,12 @@ def ensure_daily_radar_raw_rows(
             fetched_payloads = fetcher.fetch(missing_symbols, run_date=run_date)
         from ai_stock_sentinel.daily_radar.price_acceptance import verify_signal_bars
         from ai_stock_sentinel.daily_radar.source_snapshots import snapshots_enabled
+
+        for symbol, technical in fetched_payloads.items():
+            repair = (technical.get("source_provenance") or {}).get("repair") or {}
+            if repair.get("kind") == "verified_post_session_rights":
+                from ai_stock_sentinel.daily_radar.technical_rights_extension import verify_at_persistence
+                verify_at_persistence(session, symbol, run_date, repair)
 
         if snapshots_enabled():
             _, rejected = verify_signal_bars(session, [SimpleNamespace(symbol=symbol, technical=technical)

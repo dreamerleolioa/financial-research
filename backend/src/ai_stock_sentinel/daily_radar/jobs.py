@@ -3,7 +3,7 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
-from sqlalchemy import and_, func, select, update, or_, text, tuple_
+from sqlalchemy import String, cast, and_, func, select, update, or_, text, tuple_
 from ai_stock_sentinel.db.models import RadarJob, RadarWorkItem, RadarJobWork, RadarWorkAttempt, DailyRadarPreparedRun
 from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
 from ai_stock_sentinel.daily_radar.work_queue import ensure_work, insert, database_now, aware, work_insert_values, unsplit_job
@@ -194,9 +194,17 @@ def _plan_window_page(db, job, scope, *, now, calendar_work):
                     state='pending', reason='official_calendar_unavailable', retry_at=now)
                     .execution_options(synchronize_session='fetch'))
         return
-    inputs = inventory_input_revision(db, as_of_date=job.run_date)
     daily = scope.get('due_window_planner') is True
     since = date.fromisoformat(scope['window_due_after']) if daily and scope.get('window_due_after') else None
+    origin_cutoff, extra = job.run_date, {}
+    if daily:
+        eligible = maturity_signal_dates(calendar, after=start - timedelta(days=1), through=job.run_date)
+        origin_cutoff = max(eligible, default=start - timedelta(days=1))
+        if since is None:
+            # Full-history audits must still surface candidates published on closed days.
+            recent = {origin_cutoff + timedelta(days=i) for i in range(1, (job.run_date - origin_cutoff).days + 1)}
+            extra = {'extra_dates': sorted(recent.difference(calendar.sessions))}
+    inputs = inventory_input_revision(db, as_of_date=origin_cutoff, **extra)
     yesterday = job.run_date - timedelta(days=1)
     current_dates = maturity_signal_dates(calendar, after=yesterday, through=job.run_date) if daily else ()
     catchup_dates = maturity_signal_dates(calendar, after=since, through=yesterday) if since else ()
@@ -227,8 +235,8 @@ def _plan_window_page(db, job, scope, *, now, calendar_work):
     scope[progress_key] = progress
     def load_page():
         dates = {'current': current_dates, 'catchup': catchup_dates}.get(progress.get('pass'))
-        return candidate_page(db, start_date=start, as_of_date=job.run_date,
-            after=progress['cursor'], limit=WINDOW_PLAN_CANDIDATES, include_dates=dates)
+        return candidate_page(db, start_date=start, as_of_date=origin_cutoff,
+            after=progress['cursor'], limit=WINDOW_PLAN_CANDIDATES, include_dates=dates, **extra)
 
     ids = load_page()
     if not ids and progress.get('pass') == 'current':
@@ -346,7 +354,7 @@ def _plan_window_page(db, job, scope, *, now, calendar_work):
                 RadarWorkItem.id.in_(idle_ids), RadarWorkItem.reason.is_distinct_from(CONFLICT))))
             .values(active=False))
     latest_calendar = load_calendar(db, start_date=start, as_of_date=job.run_date)
-    if (inventory_input_revision(db, as_of_date=job.run_date) != inputs or latest_calendar is None
+    if (inventory_input_revision(db, as_of_date=origin_cutoff, **extra) != inputs or latest_calendar is None
             or latest_calendar.payload() != calendar.payload()):
         raise _WindowInputsChanged
     if page:
@@ -619,7 +627,24 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
         db.execute(update(RadarJobWork).where(RadarJobWork.job_id == job.id,
             RadarJobWork.work_id.in_(select(RadarWorkItem.id).where(RadarWorkItem.stage == 'calendar',
                 RadarWorkItem.id != calendar_work.id))).values(active=False))
-        finished_result_audit = plan_windows(db, job, scope, now=now, calendar_work=calendar_work)
+        early = stage_time(job.run_date, 'market-bars')
+        late = stage_time(job.run_date, 'window')
+        same_day = now.astimezone(ZoneInfo('Asia/Taipei')).date() == job.run_date
+        deferred = same_day and now < late
+        if deferred and early <= now:
+            deferred = db.scalar(archived_radar_dates().where(RadarJob.run_date == job.run_date).limit(1)) is None
+        finished_result_audit = False
+        if not deferred:
+            finished_result_audit = plan_windows(db, job, scope, now=now, calendar_work=calendar_work)
+        if early <= now < late:
+            allowed = late if deferred else early
+            db.execute(update(RadarWorkItem).where(
+                RadarWorkItem.run_date == job.run_date, RadarWorkItem.stage.in_(('calendar', 'window')),
+                RadarWorkItem.id.in_(select(RadarJobWork.work_id).where(
+                    RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True))),
+                RadarWorkItem.state.in_(('pending', 'waiting_provider')),
+                RadarWorkItem.not_before == (early if deferred else late),
+            ).values(not_before=allowed))
         if finished_result_audit and not radar:
             audit = True
     db.flush()
@@ -627,9 +652,11 @@ def reconcile_job(db, job_id, *, now=None, audit=False, recheck_publication=Fals
         RadarJobWork.job_id == job.id, RadarJobWork.active.is_(True), RadarWorkItem.stage == 'window',
         RadarWorkItem.state == 'needs_review')).all()
     for window in review_windows:
-        if window.lane == 'signal_close' and window.reason == 'official_corporate_action_in_window':
-            from ai_stock_sentinel.daily_radar.rights_price_replay import resume_parked_price_wait
-            resume_parked_price_wait(db, window, now)
+        if window.reason == 'official_corporate_action_in_window':
+            from ai_stock_sentinel.daily_radar.rights_price_replay import reopen_mixed_issue, resume_parked_price_wait
+            reopen_mixed_issue(db, window, now)
+            if window.state == 'needs_review' and window.lane == 'signal_close':
+                resume_parked_price_wait(db, window, now)
             continue
         observations = (window.result or {}).get('source_observations') or []
         if not observations or window.reason not in {'conflicting_price_records', 'research_basis_mismatch', 'price_basis_mismatch'}:
@@ -841,9 +868,53 @@ def _split_due_job(db, job_id, *, now):
     return successors
 
 
+def archived_radar_dates():
+    """Open radar dates with both same-day final archive receipts."""
+    w = RadarWorkItem
+    def completed(stage, *conditions):
+        return select(w.id).join(RadarJobWork).where(
+            RadarJobWork.job_id == RadarJob.id, RadarJobWork.active.is_(True),
+            w.run_date == RadarJob.run_date, w.lane == 'publication', w.stage == stage,
+            w.state == 'ready', *conditions).exists()
+
+    return select(RadarJob.run_date).where(
+        RadarJob.market == 'TW', RadarJob.scope['scheduler_owner'].as_string() == 'radar',
+        completed('market-session', w.result['status'].as_string() == 'open',
+                  w.result['run_date'].as_string() == cast(RadarJob.run_date, String),
+                  w.result['market'].as_string() == 'TW', w.result['provider'].as_string() == 'twse',
+                  w.result['dataset'].as_string() == 'MI_INDEX'),
+        *(completed('market-bars', w.scope['market'].as_string() == market,
+                    w.scope['trade_date'].as_string().is_(None),
+                    w.result['records_written'].as_integer() > 0) for market in ('TW', 'TWO'))
+    )
+
+
+def _register_archived_validation_day(db, now):
+    day = db.scalar(archived_radar_dates().where(RadarJob.run_date <= now.astimezone(ZoneInfo('Asia/Taipei')).date())
+                    .order_by(RadarJob.run_date.desc()).limit(1))
+    if day is None:
+        return
+    lanes = sorted(OWNER_LANES['validation'])
+    exists = db.scalar(select(RadarJob.id).where(
+        RadarJob.market == 'TW', RadarJob.run_date == day, RadarJob.lanes == lanes,
+        RadarJob.scope['scheduler_owner'].as_string() == 'validation',
+        RadarJob.scope['dated_registration'].as_boolean().is_(True), unsplit_job(db)).limit(1))
+    if exists is None:
+        create_job(db, run_date=day, lanes=lanes, owner='validation', now=now)
+    elif stage_time(day, 'market-bars') <= now < stage_time(day, 'window'):
+        deferred = db.scalar(select(RadarWorkItem.id).join(RadarJobWork).where(
+            RadarJobWork.job_id == exists, RadarJobWork.active.is_(True), RadarWorkItem.run_date == day,
+            RadarWorkItem.stage.in_(('calendar', 'window')), RadarWorkItem.state.in_(('pending', 'waiting_provider')),
+            RadarWorkItem.not_before == stage_time(day, 'window')).limit(1))
+        if deferred is not None:
+            reconcile_job(db, exists, now=now)
+
+
 def resume_jobs(db, *, owner, now=None, limit=20):
     allowed = OWNER_LANES[owner]
     now = database_now(db, now)
+    if owner == 'validation':
+        _register_archived_validation_day(db, now)
     # Job intents have at most four lanes. Filter before the limit on both
     # PostgreSQL and SQLite so an older backlog cannot hide the other owner's dates.
     query = _due_query(db, now).where(or_(*(RadarJob.lanes[i].as_string().in_(allowed)

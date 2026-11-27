@@ -461,7 +461,7 @@ def refresh_daily_radar_ohlcv_endpoint(
         raise
 
 
-def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher, fetched_payloads, market_bars, commit=True):
+def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher, fetched_payloads, market_bars, commit=True, captured_diagnostics=None):
     prepared = _prepared_run_or_404(db, run_date=run_date, market=request.market)
     db.refresh(prepared, with_for_update=True)
     if (prepared.id, prepared.selected_symbols, prepared.universe) != snapshot:
@@ -534,7 +534,7 @@ def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher
     missing_symbol_reasons.update(rejected_bars)
     status = "failed" if missing_symbols else "completed"
     rows_by_symbol = {row.symbol: row for row in stored_rows}
-    attempts_by_symbol = getattr(technical_fetcher, "diagnostics", {})
+    attempts_by_symbol = {**getattr(technical_fetcher, "diagnostics", {}), **(captured_diagnostics or {})}
     symbol_diagnostics = {}
     symbols_requiring_diagnostics = set(missing_symbols) | short_history_symbols
     for symbol in selected_symbols:
@@ -543,6 +543,8 @@ def _persist_ohlcv_refresh(db, *, request, run_date, snapshot, technical_fetcher
         diagnostic = dict(attempts_by_symbol.get(symbol) or technical.get("refresh_diagnostics") or {})
         if not diagnostic and symbol not in symbols_requiring_diagnostics:
             continue
+        if symbol in missing_symbols and diagnostic.get("conflicting_ohlc"):
+            missing_symbol_reasons[symbol] = "official_signal_bar_mismatch"
         diagnostic.update({
             "requested_run_date": run_date.isoformat(),
             "data_dates": technical.get("data_dates", {}),

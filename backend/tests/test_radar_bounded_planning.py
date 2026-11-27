@@ -421,3 +421,28 @@ def test_targetless_gap_stays_in_global_review_without_blocking_daily_interval(d
     assert report['ready'] is False
     assert any(g['reason']=='non_trading_signal_date' for g in report['gaps'])
     assert report['due_interval']['unresolved_count'] == 0
+
+
+def test_dated_planning_keeps_its_cursor_after_same_day_scoring(db):
+    seed(db, 20)
+    job = jobs.create_job(db, run_date=DAY, lanes=['signal_close', 'next_open'], owner='validation', now=NOW)
+    first = dict(job.scope['window_planning'])
+    add_candidate(db, add_run(db, DAY), '2615.TW')
+    add_candidate(db, add_run(db, DAY - timedelta(days=1)), '2616.TW')
+    db.commit()
+    jobs.reconcile_job(db, job.id, now=NOW)
+    later = job.scope['window_planning']
+    assert later['revision'] == first['revision']
+    assert later['processed_candidates'] > first['processed_candidates']
+    assert later['cursor'] > first['cursor']
+
+
+def test_first_dated_history_retains_recent_non_trading_origin_review(db):
+    seed(db, 1)
+    sunday = date(2026, 11, 1)
+    invalid = add_candidate(db, add_run(db, sunday), '2615.TW')
+    db.commit()
+    job = jobs.create_job(db, run_date=DAY, lanes=['signal_close', 'next_open'], owner='validation', now=NOW)
+    finish_plan(db, job)
+    gaps = [w for w in active(db, job) if w.scope['candidate_id'] == invalid.id]
+    assert gaps and all(w.scope['reason'] == 'non_trading_signal_date' for w in gaps)

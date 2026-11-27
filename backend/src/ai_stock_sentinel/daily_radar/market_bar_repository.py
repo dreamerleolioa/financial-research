@@ -136,6 +136,7 @@ def get_taiwan_daily_bars(
     dataset: str = DEFAULT_MARKET_BAR_DATASET,
     adjustment_mode: str = DEFAULT_ADJUSTMENT_MODE,
     final_only: bool = True,
+    lock_for_read: bool = False,
 ) -> list[TaiwanDailyBar]:
     if not symbols:
         return []
@@ -148,6 +149,8 @@ def get_taiwan_daily_bars(
     )
     if final_only:
         statement = statement.where(TaiwanDailyBar.is_final.is_(True))
+    if lock_for_read:
+        statement = statement.with_for_update(read=True, nowait=True).execution_options(populate_existing=True)
     return list(
         session.scalars(
             statement.order_by(TaiwanDailyBar.symbol.asc(), TaiwanDailyBar.trade_date.asc())
