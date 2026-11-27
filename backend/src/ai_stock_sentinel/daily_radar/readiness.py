@@ -190,6 +190,8 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
     if due_after is not None:
         for report in reports.values():
             report['due_interval'] = {'after': due_after, 'through': str(as_of_date), 'unresolved_count': 0}
+    for report in reports.values():
+        report["flow"]["pending_by_action"] = Counter()
     seen_windows = set()
     if known_hashes is not None:
         for report in reports.values():
@@ -206,6 +208,8 @@ def validation_inventory(session, *, as_of_date, lookback_days=365, sample_limit
             flow["settled_from_that_date"] += int(item["state"] in {"validated", "terminal"})
         if item["state"] not in {"validated", "terminal", "immature"}:
             report["reasons"][item["reason"]] += 1
+            category = "unprocessed" if item["state"] == "missing_outcome" else item["next_action"]
+            flow["pending_by_action"][category] += 1
             if target and (flow["oldest_unresolved_target"] is None or target < flow["oldest_unresolved_target"]):
                 flow["oldest_unresolved_target"] = target
             if due_after is not None and due_in_interval(item, due_after, as_of_date):

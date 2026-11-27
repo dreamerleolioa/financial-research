@@ -746,3 +746,101 @@ def test_unknown_adjustment_or_invalid_official_prices_remain_non_final(monkeypa
     result, _, _ = _fetch(monkeypatch, original, repaired, official)
     assert result["2330.TW"]["data_dates"]["ohlcv"] != RUN_DATE.isoformat()
     assert "source_provenance" not in result["2330.TW"]
+
+
+@pytest.mark.parametrize("invalid", [None, "missing_terms", "wrong_low", "prior_scale", "intervening_event", "gap"])
+def test_same_date_rights_recovery_keeps_the_frozen_adjusted_history(invalid):
+    from ai_stock_sentinel.daily_radar.technical_repair import verified_rights_extension, TechnicalRepairRejected
+
+    day = date(2026, 11, 26)
+    previous = _frame(end="2026-11-25")
+    prev = previous.iloc[-1]
+    raw = {"open": 59.6, "high": 60.5, "low": 58.1, "close": 60.1, "volume": 12944382}
+    terms = {"ex_date": "2026-11-27", "disclosed_on": "2026-11-17", "ratio": .06575641004, "subscription_price": 52}
+    factor = (60.1 + terms["ratio"] * 52) / ((1 + terms["ratio"]) * 60.1)
+    bars = [{k: prev[k.title()] for k in raw} | {"date": "2026-11-25"}, raw | {"date": str(day)}]
+    observed = pd.concat([previous.iloc[[-1]], pd.DataFrame([{k.title(): v for k, v in raw.items()}], index=[pd.Timestamp(day)])])
+    for key in ("Open", "High", "Low", "Close"):
+        observed[key] *= factor
+    if invalid == "wrong_low":
+        observed.loc[pd.Timestamp(day), "Low"] += .02
+    if invalid == "prior_scale":
+        observed.iloc[0, observed.columns.get_loc("Close")] *= .98
+    inputs = dict(run_date=day, prior=previous, observed=observed, bars=bars,
+                  sessions=[row['date'] for row in bars], terms=terms, events=[])
+    if invalid == "missing_terms":
+        inputs["terms"] = None
+    if invalid == "intervening_event":
+        inputs["events"] = [{"effective_date": str(day)}]
+    if invalid == "gap":
+        inputs["sessions"].insert(1, "2026-11-25")
+    if invalid:
+        with pytest.raises(TechnicalRepairRejected):
+            verified_rights_extension(**inputs)
+    else:
+        frame = verified_rights_extension(**inputs)
+        pd.testing.assert_frame_equal(frame.iloc[:-1], previous, check_freq=False, check_dtype=False)
+        assert frame.iloc[-1].Close == 60.10 and frame.iloc[-1].Volume == 12944382
+
+
+def test_same_day_rights_recovery_binds_prior_history_and_rechecks_archives(monkeypatch):
+    from datetime import timedelta
+    from ai_stock_sentinel.daily_radar import technical_rights_extension as extension
+    from ai_stock_sentinel.daily_radar.price_acceptance import verify_signal_bars
+    from ai_stock_sentinel.daily_radar.source_snapshots import SourceSnapshotStore
+
+    symbol = "3706.TW"
+    today = date(2026, 11, 26)
+    previous = today - timedelta(days=1)
+    frame = _frame(end=str(previous))
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    store = SourceSnapshotStore(engine)
+    monkeypatch.setattr("ai_stock_sentinel.daily_radar.raw_data.yf.download",
+                        lambda *a, **kw: pd.concat({symbol: frame}, axis=1))
+    _, _, base = _repair_fixture(symbol)
+    close = 60.10
+    with Session(engine) as db:
+        before = TaiwanDailyBar(**(vars(base) | {"trade_date": previous, "volume": int(frame.iloc[-1].Volume),
+            **{k.lower(): float(frame.iloc[-1][k]) for k in extension.PRICE_FIELDS}}))
+        after = TaiwanDailyBar(**(vars(base) | {"trade_date": today, "open": 59.6, "high": 60.5,
+            "low": 58.1, "close": close, "volume": 12944382}))
+        db.add(before)
+        db.commit()
+        fetcher = YFinanceBatchTechnicalFetcher(name_resolver=lambda _: None, source_store=store,
+            official_bar_loader=lambda symbols, run_date: {symbol: before if run_date == previous else after})
+        technical = fetcher.fetch([symbol], run_date=previous)[symbol]
+        row = StockRawData(symbol=symbol, record_date=previous, technical=technical, raw_data_is_final=True)
+        anchors, _ = verify_signal_bars(db, [row], run_date=previous)
+        technical["source_provenance"]["official_signal_anchor"] = anchors[symbol]
+        db.add(row)
+        db.commit()
+        frame.loc[pd.Timestamp(today)] = [float(getattr(after, str(k).lower())) for k in frame.columns]
+        ratio = .06575641004
+        factor = (close + 52 * ratio) / ((1 + ratio) * close)
+        frame.loc[:, list(extension.PRICE_FIELDS)] *= factor
+        filing = ["3706", "", "", "", "", "", "115/11/27", "", "", "", "", "", "8,500,000",
+                  "6.575641004", "52", "", "115/10/27", "", ""]
+        monkeypatch.setattr(extension.RecoveringResearchPriceProvider, "capture_rights_disclosures",
+                            lambda self, symbol, cutoff: ({"rows": [filing] if cutoff.month == 10 else []}, {"snapshot_sha256": "synthetic"}))
+        monkeypatch.setattr(extension.OfficialTradingCalendarProvider, "fetch",
+                            lambda *a, **kw: SimpleNamespace(sessions=(previous, today)))
+        monkeypatch.setattr(extension, "_events", lambda *a: [])
+        payload = fetcher.fetch([symbol], run_date=today)[symbol]
+        proof = payload["source_provenance"]["repair"]
+        assert proof["previous_history"] == technical["source_provenance"]["accepted_adjusted_history"]
+        assert payload["ohlcv"]["close"] == close
+        with pytest.raises(extension.TechnicalRepairRejected, match="rights_extension_inputs_changed"):
+            extension.verify_at_persistence(db, symbol, today, proof)
+        db.add(after)
+        db.flush()
+        extension.verify_at_persistence(db, symbol, today, proof)
+        after.volume += 1
+        db.commit()
+        with pytest.raises(extension.TechnicalRepairRejected, match="rights_extension_inputs_changed"):
+            ensure_daily_radar_raw_rows(db, today, [symbol], fetched_payloads={symbol: payload})
+        row.technical = technical | {"source_provenance": {}}
+        db.commit()
+        assert symbol not in fetcher.fetch([symbol], run_date=today)
+        assert fetcher.diagnostics[symbol]["is_final"] is False
+    engine.dispose()

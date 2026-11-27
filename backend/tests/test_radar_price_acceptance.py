@@ -342,3 +342,11 @@ def test_exact_and_covering_event_replay_share_price_lock():
     forged['reviewed_official_window_sha256'] = fingerprint(forged['reviewed_official_window'])
     with pytest.raises(ValueError):
         verify_price_lock({'signal_date':str(SIGNAL),'outcome':forged}, symbol='5880.TW', basis='next_open')
+
+
+def test_late_vendor_target_candle_keeps_a_complete_official_window_retryable():
+    rows = [bar(SIGNAL, 100.), bar(TARGET, 96.)]
+    evidence = official(rows)
+    partial = [rows[0] | {'open_observed': True}]
+    assert accept_signal_close_prices(CANDIDATE, DAYS, partial, evidence).reason == 'validation_price_source_unavailable'
+    assert accept_signal_close_prices(CANDIDATE, DAYS, partial + [rows[1] | {'open_observed': True}], evidence).stock

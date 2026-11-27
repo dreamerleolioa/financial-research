@@ -111,6 +111,8 @@ class SourceSnapshotStore:
             raise ValueError('radar_provider_operation_invalid')
         policy = {key: os.getenv(key, '') for key in ('DAILY_RADAR_TW_OHLCV_PROVIDER_MODE',
             'DAILY_RADAR_BACKGROUND_PROVIDER_MODE', 'DAILY_RADAR_LENDING_PROVIDER_MODE', 'DAILY_RADAR_AVWAP_PROVIDER_MODE')}
+        if operation == 'technical-refresh-payload' and params['symbol'].endswith('.TW'):
+            policy['technical_price_basis'] = 'post-session-rights-v1'
         if (operation == 'background-chip-context' and params.get('context_type') == 'full_margin'
                 and params['symbol'].endswith('.TW')):
             policy['twse_margin_eligibility'] = 'reconciled-twse-margin-v2'

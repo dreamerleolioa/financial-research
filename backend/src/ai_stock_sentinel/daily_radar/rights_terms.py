@@ -4,7 +4,7 @@ from ai_stock_sentinel.calibration import twse_rights_recovery as twse
 from ai_stock_sentinel.calibration.official_corporate_actions import _numeric
 
 
-def read_terms(symbol, day, row, receipt, capture):
+def read_terms(symbol, day, row, receipt, capture, *, disclosures=None):
     mixed_notice = symbol.endswith(".TW") and row.get("權/息") == "權息"
     if symbol.endswith(".TW"):
         raw, receipt = capture(
@@ -33,7 +33,9 @@ def read_terms(symbol, day, row, receipt, capture):
         if mixed_notice:
             detail = {field.strip(): value for field, value in details[0].items()}
             allocations = ("a. 公開承銷", "b. 員工認購", "c. 原股東認購")
-            if len(detail) != len(details[0]) or any(twse._amount(detail.get(k), "股") for k in allocations):
+            amounts = [twse._amount(detail.get(k), "股") for k in allocations]
+            if (len(detail) != len(details[0]) or sum(amounts) != issued
+                    or issued > 0 and amounts[-1] <= 0):
                 return None
     else:
         cash, free, issued, price, shares = (
@@ -50,20 +52,28 @@ def read_terms(symbol, day, row, receipt, capture):
         return None
     if free > 0 and issued == price == shares == 0:
         kind = "stock_distribution"
-    elif not mixed_notice and free == 0 and min(issued, price, shares) > 0:
+    elif free == 0 and min(issued, price, shares) > 0:
         kind = "cash_rights_issue"
     else:
         return None
-    return {
+    result = {
         "symbol": symbol,
         "date": str(day),
         "kind": kind,
         **({"cash_per_share": cash} if mixed_notice else {}),
+        **({"issued_shares": issued} if mixed_notice and kind == "cash_rights_issue" else {}),
         "free_shares_per_thousand": free,
         "subscription_price": price,
         "subscription_shares_per_thousand": shares,
         "source": receipt,
     }
+    if disclosures and result.get("issued_shares"):
+        from ai_stock_sentinel.daily_radar.disclosed_rights import mixed_issue_disclosure
+        proof = mixed_issue_disclosure(symbol, day, result, disclosures)
+        if not proof:
+            return None
+        result["cash_disclosure"] = proof
+    return result
 
 
 def supported_cash_issue_window(events, signal, target, terms_for):
@@ -81,7 +91,7 @@ def supported_cash_issue_window(events, signal, target, terms_for):
         seen.add(day)
         if event.get("notice") in {"息", "除息"} and (event.get("cash_dividend") or 0) > 0:
             continue
-        if event.get("notice") not in {"權", "除權"} or (terms_for(event) or {}).get("kind") != "cash_rights_issue":
+        if event.get("notice") not in {"權", "除權", "權息"} or (terms_for(event) or {}).get("kind") != "cash_rights_issue":
             return False
         issue = True
     return issue

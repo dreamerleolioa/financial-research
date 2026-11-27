@@ -117,6 +117,14 @@ def claim_work(db, *, job_id=None, work_id=None, now=None, lease_seconds=240, sl
     due = or_(and_(RadarWorkItem.state.in_(CLAIMABLE), RadarWorkItem.retry_at <= now),
               and_(RadarWorkItem.state == "running", RadarWorkItem.lease_expires_at <= now))
     query = select(RadarWorkItem).where(due, RadarWorkItem.not_before <= now)
+    from ai_stock_sentinel.daily_radar.jobs import archived_radar_dates, stage_time
+    from zoneinfo import ZoneInfo
+    today = now.astimezone(ZoneInfo("Asia/Taipei")).date()
+    early = stage_time(today, "market-bars")
+    if early <= now < stage_time(today, "window"):
+        query = query.where(or_(RadarWorkItem.stage.not_in(("calendar", "window")),
+            RadarWorkItem.run_date.is_(None), RadarWorkItem.run_date != today, RadarWorkItem.not_before != early,
+            RadarWorkItem.run_date.in_(archived_radar_dates().where(RadarJob.run_date == today))))
     if owner:
         from ai_stock_sentinel.daily_radar.jobs import OWNER_LANES
         lanes = (*OWNER_LANES['validation'], 'validation') if owner == 'validation' else OWNER_LANES[owner]

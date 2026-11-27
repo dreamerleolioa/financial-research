@@ -58,7 +58,7 @@ def _reason(exc):
     value = str(exc)
     # Only stable machine reasons may enter shared summaries. Never persist
     # provider bodies, URLs, tokens or private symbols from exception text.
-    if value in {'research_source_dependency_waiting', 'validation_price_source_unavailable',
+    if value in {'rights_extension_inputs_changed', 'rights_extension_inputs_busy', 'research_source_dependency_waiting', 'validation_price_source_unavailable',
         'official_trading_calendar_unavailable',
         'research_source_snapshot_integrity_invalid', 'radar_prepared_run_missing',
         'radar_collection_mutated_domain', 'market_session_identity_invalid',

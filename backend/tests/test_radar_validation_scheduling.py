@@ -1,9 +1,10 @@
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai_stock_sentinel.daily_radar import jobs, work_executor
@@ -11,6 +12,7 @@ from ai_stock_sentinel.db.models import Base, RadarJob, RadarWorkAttempt, RadarW
 from test_radar_job_postgres import pg_engine
 from test_radar_bounded_planning import DAY, NOW, active, finish_plan, seed
 from test_radar_jobs import db
+from test_next_open_history_repair import db as replay_db
 
 
 def test_slow_result_audit_keeps_planned_windows_and_resumes_after_restart(db, monkeypatch):
@@ -164,7 +166,7 @@ def test_flow_includes_unsampled_and_known_gaps(db):
     db.commit()
     full = validation_inventory(db, as_of_date=DAY, sample_limit=None)['signal_close']
     assert full['flow'] == {'maturity_known': True, 'matured_on_run_date': 1, 'settled_from_that_date': 0,
-                            'unresolved': 2, 'oldest_unresolved_target': '2026-11-05'}
+                            'unresolved': 2, 'oldest_unresolved_target': '2026-11-05', 'pending_by_action': {'unprocessed': 2}}
     known = {digest(validation_gap_key(g)) for g in full['gaps']}
     compact = validation_inventory(db, as_of_date=DAY, sample_limit=0, known_hashes=known)['signal_close']
     assert compact['flow'] == full['flow']
@@ -304,3 +306,104 @@ def test_two_reservations_on_same_date_leave_room_for_another_due_date(db):
     db.commit()
     refs = jobs.resume_jobs(db, owner='validation', now=NOW.replace(day=24), limit=2)
     assert [job['run_date'] for job in refs] == ['2026-11-23', '2026-11-22']
+
+
+def test_validation_resume_registers_an_archived_open_day_once(replay_db):
+    from ai_stock_sentinel.daily_radar.jobs import create_job, resume_jobs, OWNER_LANES
+    from ai_stock_sentinel.daily_radar.work_queue import aware
+
+    db = replay_db
+
+    day = date(2026, 11, 26)
+    now = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+    create_job(db, run_date=day, lanes=['publication'], owner='radar', now=now)
+    works = list(db.scalars(select(RadarWorkItem).where(RadarWorkItem.run_date == day)))
+    session = next(w for w in works if w.stage == 'market-session')
+    session.state = 'ready'
+    session.result = {'status': 'open', 'run_date': str(day), 'market': 'TW', 'provider': 'twse', 'dataset': 'MI_INDEX'}
+    archives = [w for w in works if w.stage == 'market-bars']
+    assert {w.scope['market'] for w in archives} == {'TW', 'TWO'}
+    archives[0].state = 'ready'
+    archives[0].result = {'records_written': 100}
+    db.commit()
+    assert not resume_jobs(db, owner='validation', now=now)
+    archives[1].state = 'ready'
+    archives[1].result = {'records_written': 100}
+    db.commit()
+    open_session = dict(session.result)
+    for invalid in ({'status': 'closed'}, {'run_date': '2026-11-25'}, {'provider': 'other'}):
+        session.result = open_session | invalid
+        db.commit()
+        assert not resume_jobs(db, owner='validation', now=now)
+    session.result = open_session
+    archive_scope = dict(archives[1].scope)
+    archives[1].scope = archive_scope | {'trade_date': '2026-11-25'}
+    db.commit()
+    assert not resume_jobs(db, owner='validation', now=now)
+    archives[1].scope = archive_scope
+    db.commit()
+    jobs = resume_jobs(db, owner='validation', now=now)
+    assert [r['run_date'] for r in jobs] == [str(day)]
+    job_id = jobs[0]['job_id']
+    assert db.get(RadarJob, job_id).scope['dated_registration']
+    cal = db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage == 'calendar'))
+    assert aware(cal.not_before) <= now
+    resume_jobs(db, owner='validation', now=now)
+    dated = create_job(db, run_date=day, lanes=OWNER_LANES['validation'], owner='validation', now=now + timedelta(hours=8))
+    assert dated.id == job_id
+
+
+def test_existing_dated_job_can_advance_only_after_both_archives(replay_db):
+    from ai_stock_sentinel.daily_radar.work_queue import aware, claim_work
+    db = replay_db
+    day = date(2026, 11, 26)
+    now = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+    from radar_calendar_support import calendar
+    from ai_stock_sentinel.db.models import DailyRadarPreparedRun
+    db.add(DailyRadarPreparedRun(run_date=day, market='TW', selected_symbols=[], universe=[], symbol_count=0,
+        step_statuses={'validation-calendar': calendar(day - timedelta(days=364), day).payload()}))
+    db.commit()
+    validation = jobs.create_job(db, run_date=day, lanes=jobs.OWNER_LANES['validation'], owner='validation', now=now)
+    assert not validation.scope.get('window_planning', {}).get('processed_candidates')
+    assert not validation.scope.get('window_plan')
+    cal = db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage == 'calendar'))
+    assert aware(cal.not_before) == jobs.stage_time(day, 'window')
+    assert claim_work(db, job_id=validation.id, owner='validation', now=now) is None
+    jobs.create_job(db, run_date=day, lanes=['publication'], owner='radar', now=now)
+    for work in db.scalars(select(RadarWorkItem).where(RadarWorkItem.run_date == day)):
+        if work.stage == 'market-session':
+            work.state, work.result = 'ready', {'status': 'open', 'market': 'TW', 'run_date': str(day),
+                                                'provider': 'twse', 'dataset': 'MI_INDEX'}
+        if work.stage == 'market-bars':
+            work.state, work.result = 'ready', {'records_written': 10}
+    db.commit()
+    jobs.resume_jobs(db, owner='validation', now=now)
+    assert validation.scope.get('window_planning', {}).get('complete')
+    cal.state, cal.retry_at, cal.not_before = 'pending', now, jobs.stage_time(day, 'market-bars')
+    db.commit()
+    assert claim_work(db, job_id=validation.id, owner='validation', now=now).work_id == cal.id
+    db.rollback()
+    archive = db.scalar(select(RadarWorkItem).where(RadarWorkItem.stage == 'market-bars'))
+    archive.state = 'waiting_provider'
+    db.commit()
+    assert claim_work(db, job_id=validation.id, owner='validation', now=now) is None
+    assert claim_work(db, job_id=validation.id, owner='validation', now=jobs.stage_time(day, 'window')).work_id == cal.id
+
+
+def test_repair_retries_without_waiting_for_an_archive_range_writer(pg_engine):
+    from sqlalchemy import text
+    from ai_stock_sentinel.daily_radar.technical_rights_extension import verify_at_persistence, TechnicalRepairRejected
+    from ai_stock_sentinel.db.models import TaiwanDailyBar
+    from test_daily_radar_technical_repair import _repair_fixture
+    Base.metadata.create_all(pg_engine)
+    day = date(2026, 11, 26)
+    previous = day - timedelta(days=1)
+    _, _, bar = _repair_fixture('3706.TW')
+    with Session(pg_engine) as writer, Session(pg_engine) as repair:
+        values = vars(bar) | {key: float(getattr(bar, key)) for key in ('open', 'high', 'low', 'close')}
+        writer.add_all([TaiwanDailyBar(**(values | {'trade_date': d})) for d in (previous, day)])
+        writer.commit()
+        writer.scalar(select(TaiwanDailyBar).where(TaiwanDailyBar.trade_date == previous).with_for_update())
+        repair.execute(text("SET LOCAL statement_timeout = '1000ms'"))
+        with pytest.raises(TechnicalRepairRejected, match='rights_extension_inputs_busy'):
+            verify_at_persistence(repair, '3706.TW', day, {'previous_anchor': {'date': str(previous)}})

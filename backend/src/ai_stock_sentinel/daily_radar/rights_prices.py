@@ -1,5 +1,6 @@
 """Explain original versus adjusted quotes using dated exchange subscription terms."""
 
+from decimal import Decimal, ROUND_HALF_UP
 from math import isclose
 from urllib.parse import parse_qs, urlsplit
 
@@ -22,7 +23,7 @@ def _issue(event, terms, symbol, previous):
     day = event["effective_date"]
     if (
         event["family"] != "rights"
-        or event.get("notice") not in {"權", "除權"}
+        or event.get("notice") not in {"權", "除權", "權息"}
         or terms.get("date") != day
         or terms.get("kind") != "cash_rights_issue"
         or terms.get("symbol") != symbol
@@ -33,7 +34,11 @@ def _issue(event, terms, symbol, previous):
     rate = shares / 1000
     if min(price, rate) <= 0:
         return None
-    factor = (previous + price * rate) / (1 + rate) / previous
+    cash = number((terms.get("cash_disclosure") or {}).get("declared_cash_per_share", terms.get("cash_per_share", 0)))
+    if (cash is None or not 0 <= cash < previous
+            or (cash > 0) != (event.get("notice") == "權息")):
+        return None
+    factor = (previous - cash + price * rate) / (1 + rate) / previous
     receipt = terms["source"]
     source = _source_identity(receipt)
     if symbol.endswith(".TW"):
@@ -86,6 +91,8 @@ def _event_factors(events, official, symbol, stock):
             if issue is None:
                 return None
             factors[day], proof = issue
+            if proof.get("cash_per_share"):
+                dividends[day] = float((proof.get("cash_disclosure") or {}).get("declared_cash_per_share", proof["cash_per_share"]))
             terms.append(proof)
     return (factors, dividends, terms) if terms else None
 
@@ -114,7 +121,7 @@ def _matches_basis(observed, raw, factors):
     )
 
 
-def _research_prices(vendor, vendor_benchmark, stock, benchmark, factors, dividends):
+def _research_prices(vendor, vendor_benchmark, stock, benchmark, factors, dividends, terms):
     dates = {r["date"] for r in stock}
     index = _provider_index(vendor_benchmark, dates)
     if not index or set(index) != dates:
@@ -139,16 +146,22 @@ def _research_prices(vendor, vendor_benchmark, stock, benchmark, factors, divide
         expected = dividends.get(day, 0.0)
         if cash == expected:
             continue
+        term = next((t for t in terms if t["date"] == day and t.get("cash_disclosure")), {})
+        disclosure = term.get("cash_disclosure")
+        if disclosure and cash is not None:
+            if cash == term["cash_per_share"] or Decimal(str(cash)) == Decimal(disclosure["declared_cash_per_share"]).quantize(
+                    Decimal(".000001"), rounding=ROUND_HALF_UP):
+                continue
         # Dividend values in raw-price feeds can themselves be scaled by a
         # later issue. Reconcile the quoted amount before excluding the cash.
-        if (
-            cash is None
-            or not expected
-            or not any(
-                isclose(cash, expected * f, rel_tol=0, abs_tol=0.0000005)
-                for f in (1.0, *_subsequent_factors(day, factors))
-            )
-        ):
+        later = list(_subsequent_factors(day, factors))
+        amounts = [expected]
+        if disclosure:
+            amounts.append(term["cash_per_share"])
+        else:
+            later.append(1.0)
+        if cash is None or not expected or not any(isclose(cash, amount * factor, rel_tol=0, abs_tol=.0000005)
+                                                   for amount in amounts for factor in later):
             return None
     return research_rows(stock, dividends), research_rows(benchmark, {})
 
@@ -171,7 +184,7 @@ def accept_rights_prices(candidate, sessions, vendor_rows, official, *, basis, v
     events = sorted(
         (e for e in official.events if e["effective_date"] in scope), key=lambda e: e["effective_date"]
     )
-    if not events or (symbol.endswith(".TW") and basis == "next_open" and len(events) == 1):
+    if not events or (symbol.endswith(".TW") and basis == "next_open" and len(events) == 1 and events[0].get("notice") != "權息"):
         return None  # Keep existing single-issue TWSE next-open recovery and its proof format.
     stock = _window(official.stock, dates)
     benchmark = _window(official.benchmark, dates)
@@ -189,9 +202,21 @@ def accept_rights_prices(candidate, sessions, vendor_rows, official, *, basis, v
         return None
     factors, dividends, terms = parsed
     if not all(_matches_basis(row, raw, factors) for row, raw in zip(vendor, stock, strict=True)):
-        return None
+        # A mixed issue can be quoted on a dividend-only scale by an adjusted
+        # provider. Require that one scale to explain every field of the full window.
+        if basis != "signal_close" or len(events) != 1 or not terms[0].get("cash_per_share"):
+            return None
+        term = terms[0]
+        cash = float((term.get("cash_disclosure") or {}).get("declared_cash_per_share", term["cash_per_share"]))
+        dividend_factor = 1 - cash / term["previous_close"]
+        for observed, raw in zip(vendor, stock, strict=True):
+            scale = dividend_factor if raw["date"] < term["date"] else 1.0
+            quote = _quote(observed)
+            if not quote or not all(isclose(quote[k], raw[k] * scale, rel_tol=1e-7, abs_tol=.00005)
+                                    for k in OHLC_PRICE_FIELDS):
+                return None
     if basis == "next_open":
-        prices = _research_prices(vendor, vendor_benchmark, stock, benchmark, factors, dividends)
+        prices = _research_prices(vendor, vendor_benchmark, stock, benchmark, factors, dividends, terms)
         if prices is None:
             return None
         return _price_lock(

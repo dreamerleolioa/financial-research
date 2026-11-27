@@ -124,7 +124,8 @@ def _collect_locked_signal_prices(candidates, windows_by_candidate, *, calendar,
                         distribution = official.rights_terms.get(events[0]["effective_date"], {})
                     cash_distribution = (distribution.get("kind") == "stock_distribution"
                                          and distribution.get("cash_per_share", 0) > 0)
-                    retry_issue = (waiting_for_report or not window_prices) and supported_cash_issue_window(
+                    from ai_stock_sentinel.daily_radar.price_acceptance import vendor_suffix_missing
+                    retry_issue = (waiting_for_report or vendor_suffix_missing(window_prices, days)) and supported_cash_issue_window(
                         official.events, str(days[0]), str(days[-1]),
                         lambda event: official.rights_terms.get(event["effective_date"]),
                     )

@@ -613,3 +613,96 @@ def test_price_recovery_rejects_a_calendar_missing_an_official_session():
         "previous_close": 100,
     }
     assert accept_signal_close_prices(candidate, days, vendor, replace(evidence, events=[dividend])).reason
+
+
+def test_same_day_cash_dividend_and_paid_issue_checks_both_price_bases():
+    from ai_stock_sentinel.daily_radar.rights_prices import accept_rights_prices
+
+    candidate, stock, evidence = rights_window()
+    event = evidence.events[0]
+    event['notice'] = '權息'
+    terms = evidence.rights_terms[str(TARGET)]
+    terms['cash_per_share'] = 2.0
+    # (100 - 2 + 0.1 * 50) / (1 + 0.1) on the effective day.
+    factor = 103 / 110
+    vendor = [r | {'open_observed': True, 'stock_splits': 0, 'corporate_actions_checked': True,
+                   'price_basis': 'unadjusted_price', 'dividends': 2 if r['date'] == str(TARGET) else 0}
+              for r in stock]
+    adjusted = accept_signal_close_prices(candidate, DAYS, vendor, evidence)
+    assert adjusted.stock and adjusted.stock[-1]['close'] == pytest.approx(96 / factor)
+    benchmark = [r | {'dividends': 0, 'stock_splits': 0} for r in evidence.benchmark.values()]
+    def research(bars):
+        return accept_rights_prices(candidate, DAYS, bars, evidence, basis='next_open', vendor_benchmark=benchmark)
+    result = research(vendor)
+    assert result and result.stock[-1]['close'] == 96 and result.stock[-1]['dividends'] == 2
+    assert not research([vendor[0], vendor[1] | {'dividends': 3}])
+    terms.pop('cash_per_share')
+    assert accept_signal_close_prices(candidate, DAYS, vendor, evidence).reason
+
+
+def test_dividend_only_vendor_scale_and_rounded_cash_need_reconciled_mixed_terms():
+    from ai_stock_sentinel.daily_radar.rights_prices import accept_rights_prices
+
+    candidate, stock, official = rights_window()
+    official.events[0]['notice'] = '權息'
+    terms = official.rights_terms[str(TARGET)]
+    terms.update(cash_per_share=.471403, cash_disclosure={'declared_cash_per_share': '0.47140374'})
+    scale = 1 - .47140374 / 100
+    fields = ('open', 'high', 'low', 'close')
+    adjusted = [r | {'open_observed': True} for r in stock]
+    adjusted[0].update({k: stock[0][k] * scale for k in fields})
+    accepted = accept_signal_close_prices(candidate, DAYS, adjusted, official)
+    assert accepted.stock[-1]['close'] == pytest.approx(96 * 110 / (105 - .47140374))
+    assert accept_signal_close_prices(candidate, DAYS, [adjusted[0] | {'low': adjusted[0]['low'] - .01},
+                                                        adjusted[1]], official).reason
+    vendor = [r | {'stock_splits': 0, 'corporate_actions_checked': True, 'price_basis': 'unadjusted_price',
+                   'dividends': .471404 if r['date'] == str(TARGET) else 0} for r in stock]
+    benchmark = [r | {'dividends': 0, 'stock_splits': 0} for r in official.benchmark.values()]
+    def accept():
+        return accept_rights_prices(candidate, DAYS, vendor, official, basis='next_open', vendor_benchmark=benchmark)
+    for reported in (.471403, .47140374, .471404):
+        vendor[-1]['dividends'] = reported
+        result = accept()
+        assert result.stock[-1]['close'] == 96
+        assert result.stock[-1]['dividends'] == .47140374
+    vendor[-1]['dividends'] = .4714033
+    assert accept() is None
+    vendor[-1]['dividends'] = .471404
+    terms.pop('cash_disclosure')
+    assert accept() is None
+
+
+@pytest.mark.parametrize('late', ['stock', 'benchmark'])
+def test_next_open_mixed_issue_retries_a_vendor_suffix_and_then_settles(late):
+    from types import SimpleNamespace
+    from ai_stock_sentinel.daily_radar.research_validation import _evaluate_locked_next_open
+    candidate, stock, official = rights_window()
+    official.events[0]['notice'] = '權息'
+    official.rights_terms[str(TARGET)]['cash_per_share'] = 2.
+    vendor = [r | {'stock_splits': 0, 'corporate_actions_checked': True, 'price_basis': 'unadjusted_price',
+                   'dividends': 2. if r['date'] == str(TARGET) else 0} for r in stock]
+    benchmark = [r | {'dividends': 0, 'stock_splits': 0} for r in official.benchmark.values()]
+    def evaluate(stock_rows, index_rows):
+        return _evaluate_locked_next_open(candidate, DAYS, yahoo=stock_rows, benchmark=index_rows,
+            official=official, provider=SimpleNamespace(), as_of_date=TARGET, benchmark_symbol='TAIEX',
+            calendar=SimpleNamespace(sessions=DAYS))
+    pending = evaluate(vendor[:1] if late == 'stock' else vendor, benchmark[:1] if late == 'benchmark' else benchmark)
+    assert pending['skip_reason'] == 'validation_price_source_unavailable'
+    assert pending['outcome'].get('forward_return_pct') is None
+    assert evaluate(vendor, benchmark)['status'] == 'validated'
+
+
+def test_later_issue_can_scale_either_verified_dividend_representation():
+    from datetime import timedelta
+    from ai_stock_sentinel.daily_radar.rights_prices import _research_prices
+    later = TARGET + timedelta(days=1)
+    dates = [SIGNAL, TARGET, later]
+    stock = [bar(d, 100.) for d in dates]
+    benchmark = [bar(d, 1000.) | {'dividends': 0, 'stock_splits': 0} for d in dates]
+    amounts = {str(TARGET): .47140374}
+    terms = [{'date': str(TARGET), 'cash_per_share': .471403, 'cash_disclosure': {'declared_cash_per_share': '0.47140374'}}]
+    for representation in (.471403, .47140374):
+        source = [r | {'price_basis': 'unadjusted_price', 'stock_splits': 0, 'corporate_actions_checked': True,
+                       'dividends': representation * .95 if r['date'] == str(TARGET) else 0} for r in stock]
+        result = _research_prices(source, benchmark, stock, benchmark, {str(later): .95}, amounts, terms)
+        assert result[0][1]['dividends'] == .47140374

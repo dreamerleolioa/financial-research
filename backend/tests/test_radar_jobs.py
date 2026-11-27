@@ -197,3 +197,19 @@ def test_existing_price_conflict_is_not_recalculated_for_each_daily_job(db, monk
     db.commit()
     create_job(db, run_date=day, lanes=['next_open'], now=NOW)
     assert claim_work(db, work_id=work.id, now=NOW).work_id == work.id
+
+
+def test_cached_technical_conflict_retains_the_original_diagnostic(db):
+    from types import SimpleNamespace
+    from ai_stock_sentinel.daily_radar.raw_data import RawPayloadCollection
+    from ai_stock_sentinel.daily_radar.work_handlers import WorkHandlers
+
+    symbol = '3706.TW'
+    day = date(2026, 11, 26)
+    claim = SimpleNamespace(scope={'symbol': symbol}, run_date=day)
+    diagnostic = {'conflicting_ohlc': {'provider': {'close': 59.6002}, 'official': {'close': 60.10}}}
+    first = SimpleNamespace(diagnostics={symbol: diagnostic}, fetch=lambda *a, **kw: {})
+    second = SimpleNamespace(diagnostics={}, fetch=lambda *a, **kw: pytest.fail('expected a cache hit'))
+    for fetcher in (first, second):
+        collection = RawPayloadCollection(day, (symbol,), fetcher)
+        assert WorkHandlers(db)._capture_technical_payloads(collection, claim) == ({}, {symbol: diagnostic})

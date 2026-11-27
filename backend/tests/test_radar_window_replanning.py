@@ -316,3 +316,27 @@ def test_archived_otc_paid_terms_are_bound_to_the_reported_stock_and_day(db, pai
     assert not _recorded_cash_issue(db, result, "8041.TWO", signal, target)
     event["effective_date"] = str(target)
     assert not _recorded_cash_issue(db, result, "8042.TWO", signal, target)
+
+
+@pytest.mark.parametrize('lane', ['signal_close', 'next_open'])
+@pytest.mark.parametrize('ordinary_dividend', [False, True])
+def test_parked_twse_mixed_issue_is_reopened_once(replay_db, lane, ordinary_dividend):
+    db = replay_db
+    _, job = setup(db, lane=lane)
+    window, = active(db, job)
+    day = window.scope['expected_target_date']
+    reason = 'official_corporate_action_in_window'
+    window.state, window.reason, window.retry_at = 'needs_review', reason, None
+    events = [{'effective_date': day, 'family': 'rights', 'notice': '權息'}]
+    if ordinary_dividend:
+        events.append({'effective_date': str(date.fromisoformat(day) - timedelta(days=3)),
+                       'family': 'rights', 'notice': '息', 'cash_dividend': 2.})
+    window.result = {'source_observations': [{'request_hash': 'a' * 64, 'snapshot_sha256': 'b' * 64}],
+        'after': [{'outcome': {'official_event_review': {'events': events}}}]}
+    db.commit()
+    reconcile_job(db, job.id, now=NOW)
+    assert window.state == 'pending' and window.scope.get('mixed_issue_policy')
+    window.state, window.reason, window.retry_at = 'needs_review', reason, None
+    db.commit()
+    reconcile_job(db, job.id, now=NOW)
+    assert window.state == 'needs_review'

@@ -2,7 +2,7 @@
 from datetime import date, datetime
 from hashlib import sha256
 
-from sqlalchemy import Text, cast, func, literal, select
+from sqlalchemy import Text, cast, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from ai_stock_sentinel.db.models import DailyRadarCandidate, DailyRadarRun
@@ -27,9 +27,18 @@ def _digest(db, query, columns, order):
     return digest.hexdigest()
 
 
-def inventory_input_revision(db, *, as_of_date):
+def _planning_runs(as_of_date, *, start_date=None, extra_dates=()):
+    through = max((as_of_date, *extra_dates))
+    runs = canonical_radar_run_ids(market='TW', start_date=start_date, end_date=through)
+    if not extra_dates:
+        return runs
+    return select(DailyRadarRun.id).where(DailyRadarRun.id.in_(runs), or_(
+        DailyRadarRun.run_date <= as_of_date, DailyRadarRun.run_date.in_(extra_dates)))
+
+
+def inventory_input_revision(db, *, as_of_date, extra_dates=()):
     """Include canonical origin history; exclude display names and result writes."""
-    runs = canonical_radar_run_ids(market='TW', end_date=as_of_date)
+    runs = _planning_runs(as_of_date, extra_dates=extra_dates)
     columns = [c for c in forward_validation_snapshot_columns() if c.key != 'name']
     run_columns = [DailyRadarRun.id, DailyRadarRun.run_date, DailyRadarRun.status, DailyRadarRun.candidate_count]
     candidates = select(*columns).join(DailyRadarRun, DailyRadarCandidate.run_id == DailyRadarRun.id).where(
@@ -61,10 +70,9 @@ def maturity_signal_dates(calendar, *, after, through):
             for window in DAILY_RADAR_VALIDATION_WINDOWS if index >= window}
 
 
-def candidate_page(db, *, start_date, as_of_date, after, limit, include_dates=None):
+def candidate_page(db, *, start_date, as_of_date, after, limit, include_dates=None, extra_dates=()):
     query = select(DailyRadarCandidate.id).where(
-        DailyRadarCandidate.run_id.in_(canonical_radar_run_ids(
-            market='TW', start_date=start_date, end_date=as_of_date)),
+        DailyRadarCandidate.run_id.in_(_planning_runs(as_of_date, start_date=start_date, extra_dates=extra_dates)),
         taiwan_stock_symbol_predicate(DailyRadarCandidate.symbol))
     if include_dates is not None:
         query = query.join(DailyRadarRun, DailyRadarRun.id == DailyRadarCandidate.run_id)

@@ -121,3 +121,36 @@ def test_snapshot_enabled_api_captures_adjusted_quotes_without_durable_queue(mon
             DailyRadarForwardValidationRunRequest(as_of_date=day),db,provider,object(),object())
     assert row["source_capture"]["snapshot_sha256"] and row["close"] == 478.
     engine.dispose()
+
+
+def test_same_day_filing_explains_only_the_two_reported_cash_precisions():
+    from datetime import date
+    from ai_stock_sentinel.daily_radar.disclosed_rights import mixed_issue_disclosure, URL
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+
+    row = ['2464','盟立','114年','115/09/08','','','115/09/02','0.23570187','0.23570187','',
+           '115/09/02','115/10/01','8,500,000','3.106882903','138.00','218,868,886','115/08/26','10:32:12','']
+    terms = {'cash_per_share': .471403, 'subscription_price': 138, 'subscription_shares_per_thousand': 31.06882903,
+             'issued_shares': 8500000}
+    def capture(symbol, cutoff):
+        payload = {'rows': [row] if cutoff.month == 8 else []}
+        return payload, {'source_url': URL, 'snapshot_sha256': fingerprint(payload)}
+    def verify():
+        return mixed_issue_disclosure('2464.TW', date(2026,9,2), terms, capture)
+    assert verify()['declared_cash_per_share'] == '0.47140374'
+    row[8] = '0.23571187'
+    assert verify() is None
+    row[8] = '0.23570187'
+    row[13] = '3.14'
+    assert verify() is None
+
+
+def test_rights_filing_must_come_from_its_announcement_month():
+    day = date(2026, 11, 17)
+    notice = row()
+    notice[16] = '115/10/28'
+    def filing(month):
+        return rights.dated_subscription_filing('5434.TW', day, lambda symbol, cutoff: (
+            {'rows': [notice] if cutoff.month == month else []}, {'month': cutoff.month}))
+    assert filing(10)[1] == {'month': 10}
+    assert filing(11) is None

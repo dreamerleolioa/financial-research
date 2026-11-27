@@ -64,6 +64,29 @@ def subscription_terms(rows, symbol, target):
             "subscription_price": price}
 
 
+def dated_subscription_filing(symbol, day, capture):
+    reports = []
+    ex_date = day + timedelta(days=1)
+    for cutoff in (day.replace(day=1) - timedelta(days=1), day):
+        report, receipt = capture(symbol, cutoff)
+        for row in report["rows"]:
+            if len(row) != 19 or row[0] != symbol.removesuffix(".TW"):
+                continue
+            if any(row[i] and _roc_date(row[i]) == ex_date for i in (6, 10)):
+                if not cutoff.replace(day=1) <= _roc_date(row[16]) <= cutoff:
+                    return None
+        reports.append((report["rows"], receipt))
+    terms = subscription_terms([row for rows, _ in reports for row in rows], symbol, day)
+    if terms:
+        return terms, next(receipt for rows, receipt in reports if subscription_terms(rows, symbol, day))
+    return None
+
+
+def subscription_factor(terms, close):
+    ratio = terms["ratio"]
+    return (close + terms["subscription_price"] * ratio) / ((1 + ratio) * close)
+
+
 def _matches(row, raw, factor):
     return all(isclose(row[k], raw[k] * factor, rel_tol=1e-7, abs_tol=.00005) for k in prices.OHLC_PRICE_FIELDS)
 
@@ -99,8 +122,7 @@ def recover(candidate, sessions, vendor, official, capture):
     terms = subscription_terms(report["rows"], candidate["symbol"], sessions[-1])
     if not terms:
         return None
-    close, ratio = stock[-1]["close"], terms["ratio"]
-    factor = (close + terms["subscription_price"] * ratio) / ((1 + ratio) * close)
+    factor = subscription_factor(terms, stock[-1]["close"])
     if not all(_matches(source[i], stock[i], factor) and not _matches(source[i], stock[i], 1)
                for i in range(first_changed, len(dates))):
         return None
@@ -108,3 +130,43 @@ def recover(candidate, sessions, vendor, official, capture):
                 "vendor_factor": factor, "source": receipt["source_url"], "snapshot_sha256": receipt["snapshot_sha256"]}
     return prices._price_lock(candidate, "signal_close", stock, benchmark, official, vendor=source,
                               factors=[1.0] * len(stock), basis_evidence=evidence)
+
+
+def mixed_issue_disclosure(symbol, day, terms, capture):
+    """Reconcile the TWSE six-decimal dividend with the company's full declaration."""
+    from decimal import ROUND_DOWN
+    from ai_stock_sentinel.daily_radar.source_snapshots import fingerprint
+
+    matches = []
+    previous_month = day.replace(day=1) - timedelta(days=1)
+    for cutoff in (previous_month, day):
+        report, receipt = capture(symbol, cutoff)
+        if fingerprint(report) != receipt['snapshot_sha256']:
+            return None
+        for row in report['rows']:
+            if len(row) != 19 or row[0] != symbol.removesuffix('.TW'):
+                continue
+            if not row[6] or _roc_date(row[6]) != day:
+                if row[10] and _roc_date(row[10]) == day:
+                    return None
+                continue
+            if not cutoff.replace(day=1) <= _roc_date(row[16]) <= cutoff:
+                return None
+            matches.append((row, receipt))
+    if len(matches) != 1:
+        return None
+    row, receipt = matches[0]
+    if (not row[10] or _roc_date(row[10]) != day or _roc_date(row[16]) > day
+            or any(Decimal(row[i] or '0') != 0 for i in (4, 5, 9))
+            or Decimal(row[12].replace(',', '')) != Decimal(str(terms['issued_shares']))
+            or Decimal(row[13]) * 10 != Decimal(str(terms['subscription_shares_per_thousand']))
+            or Decimal(row[14]) != Decimal(str(terms['subscription_price']))):
+        return None
+    components = [Decimal(row[i] or '0') for i in (7, 8)]
+    if any(not value.is_finite() or value < 0 for value in components):
+        return None
+    cash = sum(components)
+    if cash <= 0 or cash.quantize(Decimal('.000001'), rounding=ROUND_DOWN) != Decimal(str(terms['cash_per_share'])):
+        return None
+    return {'declared_cash_per_share': str(cash), 'source_url': receipt['source_url'],
+            'snapshot_sha256': receipt['snapshot_sha256']}

@@ -182,18 +182,23 @@ class WorkHandlers:
         return self._collect_context(claim, 'full_margin')
 
     def _capture_technical_payloads(self, collection, claim):
+        def fetch():
+            payloads = collection.fetch()
+            diagnostics = getattr(collection.technical_fetcher, 'diagnostics', {})
+            return {'payloads': payloads, 'conflicts': {s: d for s, d in diagnostics.items() if d.get('conflicting_ohlc')}}
+
         captured, _ = self.store.capture_operation(operation='technical-refresh-payload',
             params={'symbol': claim.scope['symbol'], 'run_date': str(claim.run_date)},
-            fetch=lambda: {'payloads': collection.fetch()})
+            fetch=fetch)
         payloads = captured['payloads']
         # A cached technical payload still depends on the source revisions
         # that proved a face value change, even if this claim made no HTTP calls.
         for payload in payloads.values():
             repair = (payload.get('source_provenance') or {}).get('repair') or {}
             change = repair.get('face_value_change') or {}
-            for proof in change.get('sources', ()):
+            for proof in (*change.get('sources', ()), *repair.get('sources', ())):
                 self.store.seen[proof['request_hash']] = proof
-        return payloads
+        return payloads, captured.get('conflicts', {})
 
     def collect_ohlcv(self, claim):
         from ai_stock_sentinel.daily_radar.raw_data import LocalFirstBatchTechnicalFetcher, prepare_daily_radar_raw_payloads
@@ -203,12 +208,12 @@ class WorkHandlers:
         collection = prepare_daily_radar_raw_payloads(self.db, claim.run_date,
             [claim.scope['symbol']], technical_fetcher=fetcher)
         self.db.rollback()
-        payloads = self._capture_technical_payloads(collection, claim)
+        payloads, conflicts = self._capture_technical_payloads(collection, claim)
         def apply(db):
             latest = prepared(db, claim.run_date)
             current_snapshot = latest.id, deepcopy(latest.selected_symbols), deepcopy(latest.universe)
             result = _persist_ohlcv_refresh(db, request=DailyRadarRefreshStepRequest(run_date=claim.run_date),
-                run_date=claim.run_date, snapshot=current_snapshot, technical_fetcher=fetcher, fetched_payloads=payloads, market_bars=[], commit=False)
+                run_date=claim.run_date, snapshot=current_snapshot, technical_fetcher=fetcher, fetched_payloads=payloads, market_bars=[], commit=False, captured_diagnostics=conflicts)
             symbol = claim.scope['symbol']
             return {'state': 'waiting_provider' if symbol in result.missing_symbols else 'ready',
                 'reason': result.missing_symbol_reasons.get(symbol),
@@ -367,6 +372,7 @@ class WorkHandlers:
                 return settle_later(db, accepted, current, latest)
             save_calendar(db, calendar)
             db.flush()
+            from ai_stock_sentinel.daily_radar.rights_price_replay import MIXED_ISSUE_POLICY
             saved = persisted_forward_validation_outcomes(db, current, windows=request.windows, as_of_date=asof,
                 validation_version=scope['validation_version'])
             state, reason, accepted_target = classify_window(current[0], saved[0] if saved else None,
@@ -377,6 +383,7 @@ class WorkHandlers:
             return {'state': 'ready' if state in {'validated', 'terminal'} else 'needs_review' if action in {'needs_review', 'repair_calendar', 'repair_diagnostic'} else 'waiting_provider',
                 'optional_suspension_waits': collector.optional_suspension_waits if reason == 'validation_price_source_unavailable' else {},
                 'reason': reason, 'result': {'before': before, 'after': saved, 'expected_target_date': str(accepted_target),
+                                             **({'mixed_issue_policy': MIXED_ISSUE_POLICY} if reason == 'official_corporate_action_in_window' else {}),
                                              **({'collection_gap': collection_gap} if collection_gap else {})}}
         return Collected(apply)
 
@@ -445,7 +452,7 @@ class WorkHandlers:
         industries = _industry_classifications_by_symbol([symbol])
         collection = prepare_daily_radar_raw_payloads(self.db, claim.run_date, [symbol], technical_fetcher=fetcher)
         self.db.rollback()
-        payloads = self._capture_technical_payloads(collection, claim)
+        payloads, _ = self._capture_technical_payloads(collection, claim)
         def apply(db):
             rows = ensure_daily_radar_raw_rows(db, claim.run_date, [symbol], technical_fetcher=fetcher, fetched_payloads=payloads)
             _materialize_industry_classifications(rows, resolver=industries.get)
